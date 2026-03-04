@@ -1,0 +1,32 @@
+name: Zizmor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    name: Workflow security scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run Zizmor
+        uses: woodruffw/zizmor-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

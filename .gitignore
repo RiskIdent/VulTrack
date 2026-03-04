@@ -1,0 +1,39 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+data/postgres/
+
+# Backend
+backend/tmp/
+backend/vultrack
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Misc
+coverage/
+*.cover
+*.out
+reset_postgres.sh
+*.oval.xml
+docs/AGENT_DEVELOPMENT_PROMPT.md

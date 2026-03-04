@@ -1,0 +1,66 @@
+version: '3.8'
+
+# =============================================================================
+# VulTrack Docker Compose
+# For local development and testing
+# In production, use your own orchestration and reverse proxy
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # PostgreSQL Database
+  # ===========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: vultrack-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vultrack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vultrack}
+      POSTGRES_DB: ${POSTGRES_DB:-vultrack}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vultrack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Go Backend API
+  # ===========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vultrack-backend
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-vultrack}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-vultrack}
+      - POSTGRES_DB=${POSTGRES_DB:-vultrack}
+      - BACKEND_PORT=8080
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  # ===========================================================================
+  # React Frontend (static files)
+  # ===========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vultrack-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:8080"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true

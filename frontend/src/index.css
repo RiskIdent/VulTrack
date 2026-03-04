@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0a0f0d;
+  --bg-secondary: #111916;
+  --bg-tertiary: #1a2420;
+  --text-primary: #e8f5e9;
+  --text-secondary: #a5d6a7;
+  --accent: #4ade80;
+  --border: #2d3f36;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* Severity badge colors */
+.severity-critical {
+  @apply bg-red-600/20 text-red-400 border border-red-600/50;
+}
+
+.severity-high {
+  @apply bg-orange-600/20 text-orange-400 border border-orange-600/50;
+}
+
+.severity-medium {
+  @apply bg-yellow-600/20 text-yellow-400 border border-yellow-600/50;
+}
+
+.severity-low {
+  @apply bg-green-600/20 text-green-400 border border-green-600/50;
+}
+
+.severity-none {
+  @apply bg-gray-600/20 text-gray-400 border border-gray-600/50;
+}
+
+/* Card styles */
+.card {
+  @apply bg-[#111916] border border-[#2d3f36] rounded-lg p-4;
+}
+
+.card-hover {
+  @apply transition-all duration-200 hover:border-[#4ade80]/50 hover:shadow-lg hover:shadow-[#4ade80]/5;
+}
+
+/* Button styles */
+.btn {
+  @apply px-4 py-2 rounded-md font-medium transition-all duration-200;
+}
+
+.btn-primary {
+  @apply bg-[#4ade80] text-[#0a0f0d] hover:bg-[#22c55e];
+}
+
+.btn-secondary {
+  @apply bg-[#1a2420] text-[#a5d6a7] border border-[#2d3f36] hover:border-[#4ade80]/50;
+}
+
+.btn-danger {
+  @apply bg-red-600/20 text-red-400 border border-red-600/50 hover:bg-red-600/30;
+}
+
+/* Input styles */
+.input {
+  @apply bg-[#0a0f0d] border border-[#2d3f36] rounded-md px-3 py-2 text-[#e8f5e9] placeholder-[#6b7280] focus:outline-none focus:border-[#4ade80]/50 focus:ring-1 focus:ring-[#4ade80]/50;
+}
+
+/* Table styles */
+.table-row {
+  @apply border-b border-[#2d3f36] hover:bg-[#1a2420]/50 transition-colors;
+}
+
+.table-header {
+  @apply text-[#a5d6a7] text-xs uppercase tracking-wider;
+}
