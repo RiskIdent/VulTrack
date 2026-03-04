@@ -4,6 +4,8 @@ A vulnerability management system for tracking and triaging security vulnerabili
 
 VulTrack was **developed entirely with AI**. There might be dragons. 🐉
 
+The VulTrack Agent can be found in [this repository](https://github.com/RiskIdent/VulTrack-Agent).
+
 ## Features
 
 - **Dashboard**: Overview of your vulnerability landscape with key metrics and charts
