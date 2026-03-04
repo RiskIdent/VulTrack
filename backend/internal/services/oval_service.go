@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -65,7 +66,7 @@ func (s *OVALService) GetDistributionByName(ctx context.Context, name string) (*
 		WHERE name = $1
 	`, name).Scan(&d.ID, &d.Name, &d.DisplayName, &d.URLTemplate, &d.URLTemplateCve, &d.PackageManager, &versionsJSON)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -147,7 +148,7 @@ func (s *OVALService) GetSourceByID(ctx context.Context, id int64) (*models.OVAL
 		&src.CreatedAt, &src.UpdatedAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -658,7 +659,7 @@ func (s *OVALService) GetDefinitionByID(ctx context.Context, id int64) (*OVALDef
 		&def.Distribution, &def.Version, &def.Codename, &def.SourceType,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err

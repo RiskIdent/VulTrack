@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -39,7 +40,7 @@ func (s *UserService) GetByID(ctx context.Context, id int64) (*models.User, erro
 		&u.OIDCIssuer,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -101,7 +102,7 @@ func (s *UserService) GetOrCreateFromOIDC(ctx context.Context, oidcSubject, oidc
 		}
 		return &u, nil
 	}
-	if err != pgx.ErrNoRows {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
 

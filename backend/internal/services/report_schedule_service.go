@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -68,7 +69,7 @@ func (s *ReportScheduleService) GetByID(ctx context.Context, id int64) (*models.
 
 	rs, err := scanScheduleRow(row)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("report schedule %d not found", id)
 		}
 		return nil, fmt.Errorf("get report schedule %d: %w", id, err)
