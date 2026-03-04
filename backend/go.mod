@@ -5,10 +5,11 @@ go 1.24.0
 require (
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/gofiber/fiber/v2 v2.52.0
+	github.com/google/uuid v1.5.0
 	github.com/jackc/pgx/v5 v5.5.2
 	github.com/johnfercher/maroto/v2 v2.3.3
 	github.com/joho/godotenv v1.5.1
-	github.com/rs/zerolog v1.31.0
+	github.com/rs/zerolog v1.34.0
 	github.com/wcharczuk/go-chart/v2 v2.1.2
 	golang.org/x/oauth2 v0.35.0
 )
@@ -19,7 +20,6 @@ require (
 	github.com/f-amaral/go-async v0.3.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.3 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
-	github.com/google/uuid v1.5.0 // indirect
 	github.com/hhrutter/lzw v1.0.0 // indirect
 	github.com/hhrutter/tiff v1.0.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
