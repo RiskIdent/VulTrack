@@ -26,7 +26,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run Zizmor
-        uses: woodruffw/zizmor-action@v1
+      - name: Install zizmor
+        run: pip install zizmor
+
+      - name: Run zizmor
+        run: zizmor --format sarif . > zizmor.sarif
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: zizmor.sarif
