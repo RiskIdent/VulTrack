@@ -113,7 +113,7 @@ export default function Layout({ children }: LayoutProps) {
             </Link>
           ) : null}
           <div className="text-xs text-[#6b7280]">
-            <p>VulTrack v{__APP_VERSION__}</p>
+            <p>VulTrack {__APP_VERSION__}</p>
           </div>
         </div>
       </aside>
