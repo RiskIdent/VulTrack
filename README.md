@@ -1,6 +1,7 @@
 # VulTrack
 
 A vulnerability management system for tracking and triaging security vulnerabilities across your Ubuntu Linux infrastructure using agent-based scanning and OVAL definitions.
+
 VulTrack was **developed entirely with AI**. There might be dragons. 🐉
 
 ## Features
@@ -28,19 +29,19 @@ VulTrack was **developed entirely with AI**. There might be dragons. 🐉
                                                          └───────▲────────┘
                                                                  │
                                         ┌─────────────────┐      │
-                              ┌────────▶│    Frontend     │      │
+                              ┌───────▶│    Frontend     │      │
                               │         │    (React)      │      │
                               │         │    Port: 8080   │      │
 ┌───────────┐       ┌─────────┴─────┐   └─────────────────┘      │
 │           │       │               │                            │
-│  Browser  │──────▶│    Reverse    │   ┌─────────────────┐      │
-│           │       │    Proxy      │──▶│    Backend      │──────┘
+│  Browser  │─────▶│    Reverse    │   ┌─────────────────┐      │
+│           │       │    Proxy      │─▶│    Backend      │──────┘
 │           │       │               │   │    (Go/Fiber)   │
 └───────────┘       │  Port: 443    │   │    Port: 8080   │
                     │               │   └─────────────────┘
 ┌───────────┐       │   /*  → FE    │           ▲
 │           │       │  /api/* → BE  │           │
-│  Agents   │──────▶│               │───────────┘
+│  Agents   │─────▶│               │───────────┘
 │           │       │               │
 └───────────┘       └───────────────┘
 ```
