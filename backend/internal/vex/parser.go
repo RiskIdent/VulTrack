@@ -94,6 +94,7 @@ func extractCVEIDs(v Vulnerability) []string {
 
 	addIfCVE := func(s string) {
 		upper := strings.ToUpper(strings.TrimSpace(s))
+		upper = trimCVEID(upper)
 		if strings.HasPrefix(upper, "CVE-") && !seen[upper] {
 			seen[upper] = true
 			ids = append(ids, upper)
@@ -140,6 +141,18 @@ func parsePurl(purl string) (pkgName, distro string) {
 	}
 
 	return pkgName, distro
+}
+
+// trimCVEID truncates s at the first character that is not a digit, uppercase
+// letter, or hyphen — isolating the bare CVE-YYYY-NNNN token from a URL or
+// other surrounding text.
+func trimCVEID(s string) string {
+	for i, c := range s {
+		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // sourceIDFromDoc derives the source identifier (CVE-XXXX or USN-XXXX) from the document.

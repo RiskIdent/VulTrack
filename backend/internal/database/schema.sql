@@ -546,7 +546,7 @@ CREATE INDEX IF NOT EXISTS idx_oval_states_source_id ON oval_states(source_id);
 
 CREATE TABLE IF NOT EXISTS vex_statements (
     id              BIGSERIAL PRIMARY KEY,
-    cve_id          VARCHAR(30)  NOT NULL,
+    cve_id          VARCHAR(50)  NOT NULL,
     package_name    VARCHAR(255) NOT NULL,
     distro          VARCHAR(50)  NOT NULL,       -- Ubuntu codename, e.g. "focal", "jammy", "noble"
     status          VARCHAR(30)  NOT NULL,       -- 'fixed' | 'not_affected' | 'affected' | 'under_investigation'
@@ -556,6 +556,9 @@ CREATE TABLE IF NOT EXISTS vex_statements (
     sync_generation INT          NOT NULL DEFAULT 0,
     UNIQUE (cve_id, package_name, distro, source_type)
 );
+
+-- Widen cve_id on existing deployments (no-op on fresh installs).
+ALTER TABLE vex_statements ALTER COLUMN cve_id TYPE VARCHAR(50);
 
 CREATE INDEX IF NOT EXISTS idx_vex_lookup ON vex_statements (cve_id, package_name, distro);
 CREATE INDEX IF NOT EXISTS idx_vex_generation ON vex_statements (sync_generation);
