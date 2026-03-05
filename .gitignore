@@ -6,6 +6,9 @@
 # Database
 data/postgres/
 
+# VEX sample data
+data/vex/
+
 # Backend
 backend/tmp/
 backend/vultrack

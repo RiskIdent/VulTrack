@@ -246,11 +246,6 @@ func (s *Syncer) SyncSource(ctx context.Context, sourceID int64) error {
 		Int("size", len(xmlData)).
 		Msg("Downloaded OVAL file")
 
-	// Clear existing data
-	if err := s.ovalService.ClearSourceData(ctx, sourceID); err != nil {
-		log.Warn().Err(err).Msg("Failed to clear existing OVAL data")
-	}
-
 	// Parse and store OVAL data
 	parser := NewParser(s.ovalService)
 	stats, err := parser.ParseAndStore(ctx, sourceID, xmlData)

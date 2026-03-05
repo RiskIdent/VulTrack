@@ -898,6 +898,25 @@ func (s *OVALService) ClearSourceData(ctx context.Context, sourceID int64) error
 	return err
 }
 
+// ClearSourceDataTx deletes all OVAL data for a source within an existing transaction.
+// Use this instead of ClearSourceData to make the clear+insert atomic.
+func (s *OVALService) ClearSourceDataTx(ctx context.Context, tx pgx.Tx, sourceID int64) error {
+	_, err := tx.Exec(ctx, `DELETE FROM oval_definitions WHERE source_id = $1`, sourceID)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM oval_tests WHERE source_id = $1`, sourceID)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM oval_objects WHERE source_id = $1`, sourceID)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM oval_states WHERE source_id = $1`, sourceID)
+	return err
+}
+
 // ============================================================================
 // SYNC STATUS
 // ============================================================================

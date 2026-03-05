@@ -331,6 +331,13 @@ func (p *Parser) ParseAndStore(ctx context.Context, sourceID int64, xmlData []by
 	}
 	defer tx.Rollback(ctx)
 
+	// Clear existing data atomically before inserting new data.
+	// This ensures concurrent scans always see either the old complete
+	// dataset or the new complete dataset — never an empty intermediate state.
+	if err := p.ovalService.ClearSourceDataTx(ctx, tx, sourceID); err != nil {
+		return nil, fmt.Errorf("failed to clear existing OVAL data: %w", err)
+	}
+
 	// Maps to store OVAL ID -> DB ID mappings
 	testIDMap := make(map[string]int64)
 	objectIDMap := make(map[string]int64)
