@@ -6,8 +6,9 @@ import (
 )
 
 // ParseFile parses a single OpenVEX JSON file and returns deduplicated Rows.
-// sourceType is "cve" or "usn".
-func ParseFile(data []byte, sourceType string) ([]Row, error) {
+// sourceType is "cve" or "usn". sourceName is the canonical ID derived from
+// the filename (e.g. "CVE-2024-0046" or "USN-1234-1") and is stored as-is.
+func ParseFile(data []byte, sourceType, sourceName string) ([]Row, error) {
 	var doc Document
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, err
@@ -47,7 +48,7 @@ func ParseFile(data []byte, sourceType string) ([]Row, error) {
 					Status:        mappedStatus,
 					Justification: justification,
 					SourceType:    sourceType,
-					SourceID:      sourceIDFromDoc(doc, sourceType),
+					SourceID:      sourceName,
 				}
 				if existing, ok := best[k]; !ok || statusPriority[row.Status] < statusPriority[existing.Status] {
 					best[k] = row
@@ -155,19 +156,3 @@ func trimCVEID(s string) string {
 	return s
 }
 
-// sourceIDFromDoc derives the source identifier (CVE-XXXX or USN-XXXX) from the document.
-func sourceIDFromDoc(doc Document, sourceType string) string {
-	if len(doc.Statements) == 0 {
-		return ""
-	}
-	name := doc.Statements[0].Vulnerability.Name
-	if name != "" {
-		return name
-	}
-	// Fall back to the document @id basename
-	id := doc.Metadata.ID
-	if idx := strings.LastIndex(id, "/"); idx >= 0 {
-		return id[idx+1:]
-	}
-	return id
-}

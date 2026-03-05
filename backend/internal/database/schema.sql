@@ -552,13 +552,14 @@ CREATE TABLE IF NOT EXISTS vex_statements (
     status          VARCHAR(30)  NOT NULL,       -- 'fixed' | 'not_affected' | 'affected' | 'under_investigation'
     justification   TEXT,                        -- action_statement or status_notes from Canonical
     source_type     VARCHAR(5)   NOT NULL,       -- 'cve' | 'usn'
-    source_id       VARCHAR(50)  NOT NULL,       -- e.g. 'CVE-2024-0046' or 'USN-2169-1'
+    source_id       TEXT         NOT NULL,        -- e.g. 'CVE-2024-0046' or 'USN-2169-1'
     sync_generation INT          NOT NULL DEFAULT 0,
     UNIQUE (cve_id, package_name, distro, source_type)
 );
 
--- Widen cve_id on existing deployments (no-op on fresh installs).
+-- Widen columns on existing deployments (no-op on fresh installs).
 ALTER TABLE vex_statements ALTER COLUMN cve_id TYPE VARCHAR(50);
+ALTER TABLE vex_statements ALTER COLUMN source_id TYPE TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_vex_lookup ON vex_statements (cve_id, package_name, distro);
 CREATE INDEX IF NOT EXISTS idx_vex_generation ON vex_statements (sync_generation);

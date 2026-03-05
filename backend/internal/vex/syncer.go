@@ -250,7 +250,9 @@ func (s *Syncer) streamAndImport(ctx context.Context, url string, generation int
 			defer parseWg.Done()
 			for entry := range fileCh {
 				sourceType := sourceTypeFromPath(entry.name)
-				rows, err := ParseFile(entry.data, sourceType)
+				// Derive a stable source ID from the filename (e.g. "CVE-2024-0046" or "USN-1234-1").
+				sourceName := strings.TrimSuffix(filepath.Base(entry.name), ".json")
+				rows, err := ParseFile(entry.data, sourceType, sourceName)
 				if err != nil {
 					log.Warn().Err(err).Str("file", entry.name).Msg("Failed to parse VEX file")
 					continue
@@ -286,7 +288,7 @@ func (s *Syncer) streamAndImport(ctx context.Context, url string, generation int
 				SourceID:      row.SourceID,
 			})
 			if len(batch) >= insertBatchSize {
-				n, err := s.vexService.BulkInsert(ctx, batch, generation)
+				n, err := s.vexService.BulkInsert(ctx, dedupBatch(batch), generation)
 				totalCount += n
 				if err != nil {
 					log.Warn().Err(err).Msg("VEX batch insert error")
@@ -297,7 +299,7 @@ func (s *Syncer) streamAndImport(ctx context.Context, url string, generation int
 		}
 		// Flush remainder.
 		if len(batch) > 0 {
-			n, err := s.vexService.BulkInsert(ctx, batch, generation)
+			n, err := s.vexService.BulkInsert(ctx, dedupBatch(batch), generation)
 			totalCount += n
 			if err != nil {
 				log.Warn().Err(err).Msg("VEX final batch insert error")
@@ -347,6 +349,36 @@ func (s *Syncer) streamAndImport(ctx context.Context, url string, generation int
 		return totalCount, insertErr
 	}
 	return totalCount, nil
+}
+
+// dedupBatch removes duplicate rows within a batch that share the same
+// (CVEID, PackageName, Distro, SourceType) unique key, keeping the last
+// occurrence. PostgreSQL rejects a single INSERT ... ON CONFLICT DO UPDATE
+// that would update the same row more than once.
+func dedupBatch(batch []services.VEXRow) []services.VEXRow {
+	seen := make(map[string]int, len(batch))
+	for i, r := range batch {
+		key := r.CVEID + "|" + r.PackageName + "|" + r.Distro + "|" + r.SourceType
+		seen[key] = i
+	}
+	if len(seen) == len(batch) {
+		return batch // no duplicates
+	}
+	out := make([]services.VEXRow, 0, len(seen))
+	// Preserve order: re-iterate and keep only the last-indexed entry.
+	added := make(map[string]bool, len(seen))
+	for i := len(batch) - 1; i >= 0; i-- {
+		key := batch[i].CVEID + "|" + batch[i].PackageName + "|" + batch[i].Distro + "|" + batch[i].SourceType
+		if !added[key] {
+			added[key] = true
+			out = append(out, batch[i])
+		}
+	}
+	// Reverse to maintain original order.
+	for l, r := 0, len(out)-1; l < r; l, r = l+1, r-1 {
+		out[l], out[r] = out[r], out[l]
+	}
+	return out
 }
 
 // sourceTypeFromPath infers "cve" or "usn" from the archive entry path.
