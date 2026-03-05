@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play } from 'lucide-react';
-import { CVSSBadge, VendorSeverityBadge } from '../components/SeverityBadge';
+import { CVSSBadge, VendorSeverityBadge, VEXBadge } from '../components/SeverityBadge';
 import { getTriageQueue, TriageFilter } from '../api/client';
 import type { Finding } from '../types';
 
@@ -16,7 +16,8 @@ export default function Triage() {
   const [filter, setFilter] = useState<TriageFilter | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+  const [hideNotAffected, setHideNotAffected] = useState(true);
+
   // Filtering, sorting, pagination
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('cvss3Score');
@@ -27,7 +28,7 @@ export default function Triage() {
     async function fetchData() {
       setLoading(true);
       try {
-        const data = await getTriageQueue({ limit: 1000 });
+        const data = await getTriageQueue({ limit: 1000, hideVexNotAffected: hideNotAffected });
         setFindings(data.findings || []);
         setTotal(data.total);
         setFilter(data.filter);
@@ -38,7 +39,7 @@ export default function Triage() {
       }
     }
     fetchData();
-  }, []);
+  }, [hideNotAffected]);
 
   // Reset page when search changes
   useEffect(() => {
@@ -172,6 +173,17 @@ export default function Triage() {
             />
           </div>
 
+          {/* VEX toggle */}
+          <label className="flex items-center gap-2 cursor-pointer text-sm text-[#a5d6a7]">
+            <input
+              type="checkbox"
+              className="w-4 h-4 rounded border-[#2d3f36] bg-[#0a0f0d] text-[#4ade80] focus:ring-[#4ade80]"
+              checked={hideNotAffected}
+              onChange={(e) => { setHideNotAffected(e.target.checked); setCurrentPage(1); }}
+            />
+            Hide "Not Affected"
+          </label>
+
           {/* Start Triage Button */}
           {findings.length > 0 && (
             <Link
@@ -202,6 +214,7 @@ export default function Triage() {
                 <SortHeader field="severity">Vendor</SortHeader>
                 <SortHeader field="packageName">Package</SortHeader>
                 <SortHeader field="serverName">Example Server</SortHeader>
+                <th className="table-header text-left py-3 px-4">VEX</th>
                 <th className="table-header text-left py-3 px-4">Summary</th>
                 <th className="table-header text-left py-3 px-4">Action</th>
               </tr>
@@ -224,6 +237,9 @@ export default function Triage() {
                   <td className="py-3 px-4 text-[#a5d6a7]">
                     {finding.serverName}
                   </td>
+                  <td className="py-3 px-4">
+                    <VEXBadge status={finding.vexStatus} justification={finding.vexJustification} />
+                  </td>
                   <td className="py-3 px-4 max-w-xs">
                     <span className="text-sm text-[#a5d6a7] truncate block">
                       {finding.summary || '-'}
@@ -241,7 +257,7 @@ export default function Triage() {
               ))}
               {paginatedFindings.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-[#6b7280]">
+                  <td colSpan={8} className="py-12 text-center text-[#6b7280]">
                     {searchQuery 
                       ? 'No CVEs match your search' 
                       : 'All caught up! No high-severity findings require assessment.'}

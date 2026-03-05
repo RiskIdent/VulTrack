@@ -121,6 +121,40 @@ export function VendorSeverityBadge({ severity, sourceLink, className }: { sever
   return badge;
 }
 
+// VEXBadge displays the Ubuntu VEX status
+export function VEXBadge({ status, justification }: { status?: string | null; justification?: string | null }) {
+  if (!status) return null;
+
+  const config: Record<string, { label: string; className: string }> = {
+    not_affected: {
+      label: 'Not Affected',
+      className: 'bg-sky-600/20 text-sky-400 border-sky-600/40',
+    },
+    will_not_fix: {
+      label: 'Will Not Fix',
+      className: 'bg-orange-600/20 text-orange-400 border-orange-600/40',
+    },
+    under_investigation: {
+      label: 'Under Investigation',
+      className: 'bg-purple-600/20 text-purple-400 border-purple-600/40',
+    },
+  };
+
+  const c = config[status] || {
+    label: status,
+    className: 'bg-gray-600/20 text-gray-400 border-gray-600/40',
+  };
+
+  return (
+    <span
+      className={`px-2 py-0.5 rounded text-xs font-medium border ${c.className}`}
+      title={justification || undefined}
+    >
+      {c.label}
+    </span>
+  );
+}
+
 // FixStateBadge displays the fix state with appropriate color coding
 export function FixStateBadge({ fixState }: { fixState?: string }) {
   if (!fixState) {

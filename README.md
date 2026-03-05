@@ -1,6 +1,6 @@
 # VulTrack
 
-A vulnerability management system for tracking and triaging security vulnerabilities across your Ubuntu Linux infrastructure using agent-based scanning and OVAL definitions.
+A vulnerability management system for tracking and triaging security vulnerabilities across your Ubuntu Linux infrastructure using agent-based scanning, OVAL definitions, and Ubuntu VEX data.
 
 VulTrack was **developed entirely with AI**. There might be dragons. 🐉
 
@@ -17,6 +17,7 @@ The VulTrack Agent can be found in [this repository](https://github.com/RiskIden
 - **OVAL Integration**: Automatic vulnerability detection using OVAL definitions (Ubuntu and others)
 - **NVD Enrichment**: CVE details enriched with CVSS scores, CWE IDs, and descriptions
 - **ExploitDB Integration**: Identify vulnerabilities with known exploits
+- **Ubuntu VEX Integration**: Automatic enrichment of findings with Canonical's VEX (Vulnerability Exploitability eXchange) data — surfaces `Not Affected`, `Will Not Fix`, and `Under Investigation` assessments from Ubuntu Security directly in your findings and triage queue
 - **Scheduled Reports**: Automated PDF reports delivered by email (weekly / monthly)
 - **Server Groups**: Organize servers into groups for targeted reporting and filtering
 - **Jira Integration**: Automatically create Jira tickets for relevant findings
@@ -169,6 +170,14 @@ All configuration is done via environment variables.
 | `TRIAGE_CVSS_THRESHOLD` | Minimum CVSS score for triage queue | `7.0` |
 | `CORS_ORIGINS` | Comma-separated origins for CORS (required when using OIDC) | *(empty)* |
 
+### Ubuntu VEX (optional)
+
+VulTrack automatically downloads and syncs Canonical's VEX data (`vex-all.tar.xz`) to enrich findings with Ubuntu's own exploitability assessments. The sync runs on a configurable schedule.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VEX_SYNC_INTERVAL_HOURS` | How often the VEX data is refreshed (hours) | `24` |
+
 ### Scan Queue
 
 | Variable | Description | Default |
@@ -282,8 +291,8 @@ docker compose up -d postgres
 - `DELETE /api/v1/admin/servers/:id` - Delete server
 
 ### Findings
-- `GET /api/v1/findings` - List findings with filters
-- `GET /api/v1/findings/triage` - Get triage queue
+- `GET /api/v1/findings` - List findings with filters (supports `vexStatus` query param: `not_affected`, `will_not_fix`, `under_investigation`)
+- `GET /api/v1/findings/triage` - Get triage queue (supports `hideVexNotAffected=false` to include not-affected findings; default is `true`)
 - `GET /api/v1/findings/:id` - Get finding details
 
 ### CVEs
@@ -367,12 +376,14 @@ docker compose up -d postgres
 - `POST /api/v1/admin/oval/sources/:id/sync` - Trigger sync for a specific source
 - `POST /api/v1/admin/oval/sync-all` - Trigger sync for all enabled sources
 
-### Admin: NVD & ExploitDB
+### Admin: NVD, ExploitDB & VEX
 - `POST /api/v1/admin/nvd/sync` - Trigger NVD CVE sync
 - `GET /api/v1/admin/nvd/status` - NVD sync status
 - `POST /api/v1/admin/exploitdb/sync` - Trigger ExploitDB sync
 - `GET /api/v1/admin/exploitdb/status` - ExploitDB sync status
 - `GET /api/v1/admin/sync/status` - Combined sync status
+- `POST /api/v1/admin/vex/sync` - Trigger Ubuntu VEX sync
+- `GET /api/v1/admin/vex/status` - VEX sync status and statement count
 
 ### Admin: System
 - `POST /api/v1/admin/system/reset` - Reset all application data
@@ -391,7 +402,7 @@ For a deeper OIDC setup guide including IdP-specific instructions, see [docs/OID
 
 ## Roadmap
 
-- [ ] Support for more Linux ditributions (Debian, RHEL...)
+- [ ] Support for more Linux distributions (Debian, RHEL, ...)
 - [ ] REST API for report export (CSV)
 - [ ] Multi-tenancy / team workspaces
 

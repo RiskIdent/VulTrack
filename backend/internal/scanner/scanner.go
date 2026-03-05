@@ -9,16 +9,18 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/vultrack/vultrack/internal/models"
+	"github.com/vultrack/vultrack/internal/services"
 )
 
 // Scanner handles vulnerability scanning using OVAL definitions
 type Scanner struct {
-	db *pgxpool.Pool
+	db         *pgxpool.Pool
+	vexService *services.VEXService
 }
 
 // NewScanner creates a new Scanner
-func NewScanner(db *pgxpool.Pool) *Scanner {
-	return &Scanner{db: db}
+func NewScanner(db *pgxpool.Pool, vexService *services.VEXService) *Scanner {
+	return &Scanner{db: db, vexService: vexService}
 }
 
 // ScanResult contains the results of a vulnerability scan
@@ -226,6 +228,16 @@ func (s *Scanner) ScanServer(ctx context.Context, serverID int64) (*ScanResult, 
 		log.Warn().Err(err).Msg("Failed to resolve old findings")
 	}
 	result.ResolvedFindings = resolved
+
+	// Enrich active findings with VEX data (single bulk UPDATE)
+	if s.vexService != nil && server.OSCodename != "" {
+		enriched, err := s.vexService.EnrichFindings(ctx, serverID, server.OSCodename)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to enrich findings with VEX data")
+		} else if enriched > 0 {
+			log.Debug().Int64("enriched", enriched).Str("distro", server.OSCodename).Msg("VEX enrichment applied")
+		}
+	}
 
 	result.Duration = time.Since(startTime)
 

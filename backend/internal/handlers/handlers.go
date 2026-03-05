@@ -25,6 +25,7 @@ import (
 	"github.com/vultrack/vultrack/internal/scanqueue"
 	"github.com/vultrack/vultrack/internal/services"
 	"github.com/vultrack/vultrack/internal/session"
+	"github.com/vultrack/vultrack/internal/vex"
 )
 
 // Handler contains all HTTP handlers
@@ -53,6 +54,10 @@ type Handler struct {
 
 	// ExploitDB syncer
 	exploitDBSyncer *exploitdb.Syncer
+
+	// VEX service + syncer
+	vexService *services.VEXService
+	vexSyncer  *vex.Syncer
 
 	// Scanner
 	scanner   *scanner.Scanner
@@ -93,6 +98,9 @@ func New(
 	nvdSyncer *nvd.Syncer,
 	// ExploitDB syncer
 	exploitDBSyncer *exploitdb.Syncer,
+	// VEX service + syncer
+	vexService *services.VEXService,
+	vexSyncer *vex.Syncer,
 	// Scanner
 	vulnScanner *scanner.Scanner,
 	// Scan queue
@@ -124,6 +132,8 @@ func New(
 		ovalSyncer:            ovalSyncer,
 		nvdSyncer:             nvdSyncer,
 		exploitDBSyncer:       exploitDBSyncer,
+		vexService:            vexService,
+		vexSyncer:             vexSyncer,
 		scanner:               vulnScanner,
 		scanQueue:             scanQ,
 		reportScheduleService: reportScheduleService,
@@ -307,6 +317,10 @@ func New(
 	admin.Post("/exploitdb/sync", h.triggerExploitDBSync)
 	admin.Get("/exploitdb/status", h.getExploitDBStatus)
 
+	// Admin: VEX Management
+	admin.Post("/vex/sync", h.triggerVEXSync)
+	admin.Get("/vex/status", h.getVEXStatus)
+
 	// Admin: Sync Status
 	admin.Get("/sync/status", h.getSyncStatus)
 
@@ -436,6 +450,10 @@ func (h *Handler) getFindings(c *fiber.Ctx) error {
 		filter.MinCVSS = &minCVSS
 	}
 
+	if vexStatus := c.Query("vexStatus"); vexStatus != "" {
+		filter.VexStatus = &vexStatus
+	}
+
 	ctx := c.Context()
 	findings, total, err := h.findingService.GetAll(ctx, filter)
 	if err != nil {
@@ -462,10 +480,13 @@ func (h *Handler) getTriageQueue(c *fiber.Ctx) error {
 	limit := c.QueryInt("limit", 50)
 	offset := c.QueryInt("offset", 0)
 
+	hideNotAffected := c.QueryBool("hideVexNotAffected", true)
+
 	opts := services.TriageFilterOptions{
-		Mode:   filterMode,
-		Limit:  limit,
-		Offset: offset,
+		Mode:               filterMode,
+		HideVexNotAffected: hideNotAffected,
+		Limit:              limit,
+		Offset:             offset,
 	}
 
 	// Build response info

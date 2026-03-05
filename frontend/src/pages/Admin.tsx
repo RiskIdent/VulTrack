@@ -33,6 +33,8 @@ import {
   triggerNVDSync,
   getExploitDBStatus,
   triggerExploitDBSync,
+  getVEXStatus,
+  triggerVEXSync,
   getAdminUsers,
   updateUserAdmin,
 } from '../api/client';
@@ -1305,15 +1307,23 @@ function DataSourcesTab() {
     exploitCount: number;
     exploitsWithCve: number;
   } | null>(null);
+  const [vexStatus, setVexStatus] = useState<{
+    syncing: boolean;
+    lastSync: string | null;
+    statementCount: number;
+    status?: string;
+    error?: string;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  
+
   // Configuration state
   const [config, setConfig] = useState({
     nvd_api_key: '',
     nvd_sync_interval_hours: '6',
     exploitdb_sync_interval_hours: '24',
+    vex_sync_interval_hours: '24',
   });
   const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1330,7 +1340,7 @@ function DataSourcesTab() {
       const data = await getSettings();
       const settings: Record<string, string> = {};
       (data.settings || []).forEach((s: Setting) => {
-        if (['nvd_api_key', 'nvd_sync_interval_hours', 'exploitdb_sync_interval_hours'].includes(s.key)) {
+        if (['nvd_api_key', 'nvd_sync_interval_hours', 'exploitdb_sync_interval_hours', 'vex_sync_interval_hours'].includes(s.key)) {
           settings[s.key] = s.value;
         }
       });
@@ -1342,12 +1352,14 @@ function DataSourcesTab() {
 
   async function fetchStatus() {
     try {
-      const [nvd, exploit] = await Promise.all([
+      const [nvd, exploit, vex] = await Promise.all([
         getNVDStatus(),
         getExploitDBStatus(),
+        getVEXStatus(),
       ]);
       setNvdStatus(nvd);
       setExploitStatus(exploit);
+      setVexStatus(vex);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load status');
     } finally {
@@ -1385,6 +1397,15 @@ function DataSourcesTab() {
       setTimeout(fetchStatus, 1000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger ExploitDB sync');
+    }
+  }
+
+  async function handleVEXSync() {
+    try {
+      await triggerVEXSync();
+      setTimeout(fetchStatus, 1000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger VEX sync');
     }
   }
 
@@ -1521,6 +1542,73 @@ function DataSourcesTab() {
         </div>
       </div>
 
+      {/* VEX Status */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <Shield className="w-6 h-6 text-sky-400" />
+            <div>
+              <h2 className="text-lg font-semibold text-[#e8f5e9]">Ubuntu VEX</h2>
+              <p className="text-sm text-[#6b7280]">Canonical VEX statements — marks packages as not affected, under investigation, or won't fix</p>
+            </div>
+          </div>
+          <button
+            onClick={handleVEXSync}
+            disabled={vexStatus?.syncing}
+            className="btn btn-primary flex items-center gap-2"
+          >
+            <RefreshCw className={`w-4 h-4 ${vexStatus?.syncing ? 'animate-spin' : ''}`} />
+            {vexStatus?.syncing ? 'Syncing...' : 'Sync Now'}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-[#1a2420] rounded-lg p-4">
+            <div className="text-2xl font-bold text-[#e8f5e9]">
+              {formatNumber(vexStatus?.statementCount || 0)}
+            </div>
+            <div className="text-sm text-[#6b7280]">VEX statements</div>
+          </div>
+          <div className="bg-[#1a2420] rounded-lg p-4">
+            <div className="flex items-center gap-2">
+              {vexStatus?.syncing ? (
+                <Clock className="w-5 h-5 text-yellow-400" />
+              ) : vexStatus?.lastSync ? (
+                <CheckCircle2 className="w-5 h-5 text-[#4ade80]" />
+              ) : (
+                <AlertCircle className="w-5 h-5 text-[#6b7280]" />
+              )}
+              <span className="text-[#e8f5e9]">
+                {vexStatus?.syncing ? 'Syncing...' : formatDate(vexStatus?.lastSync || null)}
+              </span>
+            </div>
+            <div className="text-sm text-[#6b7280]">Last sync</div>
+          </div>
+          <div className="bg-[#1a2420] rounded-lg p-4">
+            <div className="flex items-center gap-2">
+              {vexStatus?.status === 'success' ? (
+                <CheckCircle2 className="w-5 h-5 text-[#4ade80]" />
+              ) : vexStatus?.status === 'failed' ? (
+                <AlertCircle className="w-5 h-5 text-red-400" />
+              ) : vexStatus?.status === 'syncing' ? (
+                <Clock className="w-5 h-5 text-yellow-400" />
+              ) : (
+                <AlertCircle className="w-5 h-5 text-[#6b7280]" />
+              )}
+              <span className="text-[#e8f5e9] capitalize">
+                {vexStatus?.status || 'Never synced'}
+              </span>
+            </div>
+            <div className="text-sm text-[#6b7280]">Sync status</div>
+          </div>
+        </div>
+        {vexStatus?.error && (
+          <div className="mt-3 p-2 bg-red-600/10 border border-red-600/30 rounded text-sm text-red-400">
+            {vexStatus.error}
+          </div>
+        )}
+      </div>
+
       {/* Configuration */}
       <div className="card">
         <div className="flex items-center gap-3 mb-4">
@@ -1571,7 +1659,7 @@ function DataSourcesTab() {
           </div>
 
           {/* Sync Intervals */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-[#a5d6a7] mb-1">
                 NVD Sync Interval (hours)
@@ -1601,6 +1689,22 @@ function DataSourcesTab() {
                 max="168"
                 value={config.exploitdb_sync_interval_hours}
                 onChange={(e) => setConfig({ ...config, exploitdb_sync_interval_hours: e.target.value })}
+                className="input w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-[#a5d6a7] mb-1">
+                VEX Sync Interval (hours)
+              </label>
+              <p className="text-xs text-[#6b7280] mb-2">
+                How often to sync Ubuntu VEX data. Default: 24 hours.
+              </p>
+              <input
+                type="number"
+                min="1"
+                max="168"
+                value={config.vex_sync_interval_hours}
+                onChange={(e) => setConfig({ ...config, vex_sync_interval_hours: e.target.value })}
                 className="input w-full"
               />
             </div>

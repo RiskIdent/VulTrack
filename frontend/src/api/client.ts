@@ -131,6 +131,7 @@ export const getFindings = (params?: {
   sortOrder?: string;
   limit?: number;
   offset?: number;
+  vexStatus?: string;
 }) => {
   const searchParams = new URLSearchParams();
   if (params?.cveId) searchParams.set('cveId', params.cveId);
@@ -142,6 +143,7 @@ export const getFindings = (params?: {
   if (params?.sortOrder) searchParams.set('sortOrder', params.sortOrder);
   if (params?.limit) searchParams.set('limit', params.limit.toString());
   if (params?.offset != null) searchParams.set('offset', params.offset.toString());
+  if (params?.vexStatus) searchParams.set('vexStatus', params.vexStatus);
   
   return fetchAPI<{
     findings: import('../types').Finding[];
@@ -158,11 +160,12 @@ export interface TriageFilter {
   includeUnrated?: boolean;
 }
 
-export const getTriageQueue = (params?: { minCvss?: number; limit?: number; offset?: number }) => {
+export const getTriageQueue = (params?: { minCvss?: number; limit?: number; offset?: number; hideVexNotAffected?: boolean }) => {
   const searchParams = new URLSearchParams();
   if (params?.minCvss) searchParams.set('minCvss', params.minCvss.toString());
   if (params?.limit) searchParams.set('limit', params.limit.toString());
   if (params?.offset) searchParams.set('offset', params.offset.toString());
+  if (params?.hideVexNotAffected === false) searchParams.set('hideVexNotAffected', 'false');
   
   return fetchAPI<{
     findings: import('../types').Finding[];
@@ -561,6 +564,19 @@ export const getExploitDBStatus = () =>
 
 export const triggerExploitDBSync = () =>
   fetchAPI<{ message: string }>('/admin/exploitdb/sync', { method: 'POST' });
+
+export const getVEXStatus = () =>
+  fetchAPI<{
+    syncing: boolean;
+    lastSync: string | null;
+    statementCount: number;
+    status?: string;
+    recordsProcessed?: number;
+    error?: string;
+  }>('/admin/vex/status');
+
+export const triggerVEXSync = () =>
+  fetchAPI<{ message: string }>('/admin/vex/sync', { method: 'POST' });
 
 export const getSyncStatus = () =>
   fetchAPI<{

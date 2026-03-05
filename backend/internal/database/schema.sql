@@ -539,3 +539,28 @@ CREATE INDEX IF NOT EXISTS idx_oval_definitions_oval_id_source ON oval_definitio
 CREATE INDEX IF NOT EXISTS idx_oval_tests_source_id ON oval_tests(source_id);
 CREATE INDEX IF NOT EXISTS idx_oval_objects_source_id ON oval_objects(source_id);
 CREATE INDEX IF NOT EXISTS idx_oval_states_source_id ON oval_states(source_id);
+
+-- ============================================================================
+-- VEX (Vulnerability Exploitability eXchange) — Ubuntu/Canonical VEX data
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS vex_statements (
+    id              BIGSERIAL PRIMARY KEY,
+    cve_id          VARCHAR(30)  NOT NULL,
+    package_name    VARCHAR(255) NOT NULL,
+    distro          VARCHAR(50)  NOT NULL,       -- Ubuntu codename, e.g. "focal", "jammy", "noble"
+    status          VARCHAR(30)  NOT NULL,       -- 'fixed' | 'not_affected' | 'affected' | 'under_investigation'
+    justification   TEXT,                        -- action_statement or status_notes from Canonical
+    source_type     VARCHAR(5)   NOT NULL,       -- 'cve' | 'usn'
+    source_id       VARCHAR(50)  NOT NULL,       -- e.g. 'CVE-2024-0046' or 'USN-2169-1'
+    sync_generation INT          NOT NULL DEFAULT 0,
+    UNIQUE (cve_id, package_name, distro, source_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vex_lookup ON vex_statements (cve_id, package_name, distro);
+CREATE INDEX IF NOT EXISTS idx_vex_generation ON vex_statements (sync_generation);
+
+-- VEX enrichment columns on findings
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS vex_status VARCHAR(30);
+    -- 'not_affected' | 'will_not_fix' | 'under_investigation' | NULL
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS vex_justification TEXT;

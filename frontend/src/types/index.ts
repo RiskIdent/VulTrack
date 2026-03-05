@@ -65,6 +65,9 @@ export interface Finding {
   exploitCount?: number;
   exploitIds?: number[];
   verifiedExploit?: boolean;
+  // VEX enrichment (Ubuntu VEX data)
+  vexStatus?: string | null;
+  vexJustification?: string | null;
 }
 
 // Assessment types

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, X, ExternalLink, AlertTriangle } from 'lucide-react';
-import { CVSSBadge, VendorSeverityBadge, FixStateBadge } from '../components/SeverityBadge';
+import { CVSSBadge, VendorSeverityBadge, FixStateBadge, VEXBadge } from '../components/SeverityBadge';
 import { getFindings, getFinding } from '../api/client';
 import type { Finding } from '../types';
 
@@ -21,6 +21,7 @@ export default function Findings() {
   const [severity, setSeverity] = useState('');
   const [minCvss, setMinCvss] = useState(0);
   const [includeResolved, setIncludeResolved] = useState(false);
+  const [vexStatusFilter, setVexStatusFilter] = useState('');
 
   // Search (server-side with debounce)
   const [searchQuery, setSearchQuery] = useState(searchParams.get('search') || '');
@@ -58,7 +59,7 @@ export default function Findings() {
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [severity, minCvss, includeResolved]);
+  }, [severity, minCvss, includeResolved, vexStatusFilter]);
 
   // Fetch findings from server
   const fetchData = useCallback(async () => {
@@ -74,6 +75,7 @@ export default function Findings() {
         sortOrder: sortDirection,
         limit: ITEMS_PER_PAGE,
         offset: (currentPage - 1) * ITEMS_PER_PAGE,
+        vexStatus: vexStatusFilter || undefined,
       });
       setFindings(data.findings || []);
       setTotal(data.total);
@@ -82,7 +84,7 @@ export default function Findings() {
     } finally {
       setLoading(false);
     }
-  }, [severity, minCvss, includeResolved, debouncedSearch, sortField, sortDirection, currentPage]);
+  }, [severity, minCvss, includeResolved, debouncedSearch, sortField, sortDirection, currentPage, vexStatusFilter]);
 
   useEffect(() => {
     fetchData();
@@ -180,6 +182,19 @@ export default function Findings() {
               onChange={(e) => setMinCvss(parseFloat(e.target.value) || 0)}
             />
           </div>
+          <div>
+            <label className="block text-sm text-[#a5d6a7] mb-1">VEX Status</label>
+            <select
+              className="input"
+              value={vexStatusFilter}
+              onChange={(e) => setVexStatusFilter(e.target.value)}
+            >
+              <option value="">All</option>
+              <option value="not_affected">Not Affected</option>
+              <option value="will_not_fix">Will Not Fix</option>
+              <option value="under_investigation">Under Investigation</option>
+            </select>
+          </div>
           <div className="flex items-end">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -263,15 +278,18 @@ export default function Findings() {
                       <VendorSeverityBadge severity={finding.severity} sourceLink={finding.sourceLink} />
                     </td>
                     <td className="py-3 px-4">
-                      {finding.resolvedAt ? (
-                        <span className="px-2 py-1 rounded text-xs font-medium bg-green-600/20 text-green-400">
-                          Resolved
-                        </span>
-                      ) : (
-                        <span className="px-2 py-1 rounded text-xs font-medium bg-red-600/20 text-red-400">
-                          Active
-                        </span>
-                      )}
+                      <div className="flex flex-wrap gap-1">
+                        {finding.resolvedAt ? (
+                          <span className="px-2 py-1 rounded text-xs font-medium bg-green-600/20 text-green-400">
+                            Resolved
+                          </span>
+                        ) : (
+                          <span className="px-2 py-1 rounded text-xs font-medium bg-red-600/20 text-red-400">
+                            Active
+                          </span>
+                        )}
+                        <VEXBadge status={finding.vexStatus} justification={finding.vexJustification} />
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -467,6 +485,21 @@ export default function Findings() {
                   </div>
                 </div>
               </div>
+
+              {/* VEX Status */}
+              {selectedFinding.vexStatus && (
+                <div>
+                  <h3 className="text-lg font-semibold text-[#e8f5e9] mb-3">Ubuntu VEX Assessment</h3>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      <VEXBadge status={selectedFinding.vexStatus} />
+                    </div>
+                    {selectedFinding.vexJustification && (
+                      <p className="text-sm text-[#a5d6a7] mt-2">{selectedFinding.vexJustification}</p>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Description (OVAL preferred, NVD fallback) */}
               {(selectedFinding.description || selectedFinding.nvdDescription || selectedFinding.summary) && (

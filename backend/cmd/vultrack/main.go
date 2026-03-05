@@ -23,6 +23,7 @@ import (
 	"github.com/vultrack/vultrack/internal/scheduler"
 	"github.com/vultrack/vultrack/internal/services"
 	"github.com/vultrack/vultrack/internal/session"
+	"github.com/vultrack/vultrack/internal/vex"
 )
 
 func main() {
@@ -88,8 +89,12 @@ func main() {
 	// ExploitDB syncer
 	exploitDBSyncer := exploitdb.New(db, settingsService)
 
+	// VEX service + syncer
+	vexService := services.NewVEXService(db)
+	vexSyncer := vex.New(vexService, settingsService)
+
 	// Vulnerability scanner + scan queue
-	vulnScanner := scanner.NewScanner(db)
+	vulnScanner := scanner.NewScanner(db, vexService)
 	scanQ := scanqueue.New(db, vulnScanner, cfg)
 
 	// OIDC auth (provider is nil when OIDC disabled)
@@ -121,6 +126,9 @@ func main() {
 	// Start ExploitDB syncer
 	go exploitDBSyncer.Start()
 
+	// Start VEX syncer
+	go vexSyncer.Start()
+
 	// Start scan queue
 	scanQ.Start()
 
@@ -145,6 +153,8 @@ func main() {
 		ovalSyncer,
 		nvdSyncer,
 		exploitDBSyncer,
+		vexService,
+		vexSyncer,
 		vulnScanner,
 		scanQ,
 		reportScheduleService,
@@ -173,5 +183,6 @@ func main() {
 	ovalSyncer.Stop()
 	nvdSyncer.Stop()
 	exploitDBSyncer.Stop()
+	vexSyncer.Stop()
 	handler.Shutdown()
 }

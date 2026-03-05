@@ -27,7 +27,8 @@ type FindingFilter struct {
 	CVEID           *string
 	Severity        *string
 	MinCVSS         *float64
-	Search          string // free-text search across cve_id, package_name, server_name
+	VexStatus       *string // filter by vex_status value (e.g. 'not_affected')
+	Search          string  // free-text search across cve_id, package_name, server_name
 	IncludeResolved bool
 	SortBy          string // column to sort by (cveId, serverName, packageName, cvss3Score, severity, fixState, fixedIn, firstSeenAt)
 	SortOrder       string // asc or desc
@@ -65,6 +66,11 @@ func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]mo
 	if !filter.IncludeResolved {
 		baseWhere += ` AND f.resolved_at IS NULL`
 	}
+	if filter.VexStatus != nil {
+		baseWhere += ` AND f.vex_status = $` + strconv.Itoa(argIndex)
+		args = append(args, *filter.VexStatus)
+		argIndex++
+	}
 	if filter.Search != "" {
 		searchPattern := "%" + filter.Search + "%"
 		baseWhere += ` AND (f.cve_id ILIKE $` + strconv.Itoa(argIndex) +
@@ -90,15 +96,16 @@ func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]mo
 
 	// Lightweight SELECT (scores only, no descriptions, no exploit join)
 	selectQuery := `
-		SELECT 
+		SELECT
 			f.id, f.server_id, f.cve_id, f.package_name, COALESCE(f.package_version, ''),
-			COALESCE(f.fix_state, ''), COALESCE(f.fixed_in, ''), f.cvss3_score, 
+			COALESCE(f.fix_state, ''), COALESCE(f.fixed_in, ''), f.cvss3_score,
 			COALESCE(f.severity, ''), COALESCE(f.source_link, ''),
 			COALESCE(f.source_type, ''),
 			f.first_seen_at, f.last_seen_at, f.resolved_at, f.created_at, f.updated_at,
 			srv.name as server_name,
 			cve.cvss3_score,
-			COALESCE(cve.cvss3_severity, '')
+			COALESCE(cve.cvss3_severity, ''),
+			f.vex_status, f.vex_justification
 	` + countFrom + baseWhere + orderBy
 
 	if filter.Limit > 0 {
@@ -126,6 +133,7 @@ func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]mo
 			&f.FirstSeenAt, &f.LastSeenAt, &f.ResolvedAt, &f.CreatedAt, &f.UpdatedAt,
 			&f.ServerName,
 			&f.NVDCvss3Score, &f.CVSS3Severity,
+			&f.VexStatus, &f.VexJustification,
 		)
 		if err != nil {
 			return nil, 0, fmt.Errorf("scan error: %w", err)
@@ -177,6 +185,7 @@ type TriageFilterOptions struct {
 	CVSSThreshold    float64  // Used when Mode == "cvss"
 	VendorSeverities []string // Used when Mode == "vendor_severity"
 	IncludeUnrated   bool     // Include findings without vendor severity
+	HideVexNotAffected bool   // When true, exclude findings with vex_status = 'not_affected'
 	Limit            int
 	Offset           int
 }
@@ -219,6 +228,11 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 		argIndex++
 	}
 
+	notAffectedClause := ""
+	if opts.HideVexNotAffected {
+		notAffectedClause = "\n\t\tAND (f.vex_status IS NULL OR f.vex_status != 'not_affected')"
+	}
+
 	baseQuery := fmt.Sprintf(`
 		FROM findings f
 		JOIN servers srv ON f.server_id = srv.id
@@ -226,8 +240,8 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 		LEFT JOIN assessments a ON f.cve_id = a.cve_id
 		WHERE f.resolved_at IS NULL
 		AND %s
-		AND (a.id IS NULL OR a.status = 'pending')
-	`, filterCondition)
+		AND (a.id IS NULL OR a.status = 'pending')%s
+	`, filterCondition, notAffectedClause)
 
 	// Count total
 	var total int
@@ -244,13 +258,14 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 	selectQuery := fmt.Sprintf(`
 		SELECT DISTINCT ON (f.cve_id)
 			f.id, f.server_id, f.cve_id, f.package_name, COALESCE(f.package_version, ''),
-			COALESCE(f.fix_state, ''), COALESCE(f.fixed_in, ''), f.cvss3_score, 
+			COALESCE(f.fix_state, ''), COALESCE(f.fixed_in, ''), f.cvss3_score,
 			COALESCE(f.severity, ''), COALESCE(f.summary, ''), COALESCE(f.source_link, ''),
 			COALESCE(f.source_type, ''),
 			f.first_seen_at, f.last_seen_at, f.resolved_at, f.created_at, f.updated_at,
 			srv.name as server_name,
 			COALESCE(cve.description, ''),
-			cve.cvss3_score
+			cve.cvss3_score,
+			f.vex_status, f.vex_justification
 		%s
 		ORDER BY f.cve_id, COALESCE(cve.cvss3_score, f.cvss3_score) DESC NULLS LAST
 		LIMIT %s OFFSET %s
@@ -273,6 +288,7 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 			&f.ServerName,
 			&f.NVDDescription,
 			&f.NVDCvss3Score,
+			&f.VexStatus, &f.VexJustification,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -306,7 +322,9 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 			-- ExploitDB enrichment
 			COALESCE(exp.exploit_count, 0)::int,
 			COALESCE(exp.exploit_ids, ARRAY[]::int[]),
-			COALESCE(exp.has_verified, false)
+			COALESCE(exp.has_verified, false),
+			-- VEX enrichment
+			f.vex_status, f.vex_justification
 		FROM findings f
 		JOIN servers srv ON f.server_id = srv.id
 		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id
@@ -346,6 +364,8 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 		&ovalDescription,
 		// ExploitDB
 		&exploitCount, &exploitIDs, &hasVerified,
+		// VEX
+		&f.VexStatus, &f.VexJustification,
 	)
 	if err != nil {
 		return nil, err

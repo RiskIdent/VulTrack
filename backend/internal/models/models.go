@@ -65,6 +65,10 @@ type Finding struct {
 	ExploitCount    int   `json:"exploitCount,omitempty"`
 	ExploitIDs      []int `json:"exploitIds,omitempty"`
 	VerifiedExploit bool  `json:"verifiedExploit,omitempty"`
+
+	// VEX enrichment (Ubuntu VEX data)
+	VexStatus        *string `json:"vexStatus,omitempty"`
+	VexJustification *string `json:"vexJustification,omitempty"`
 }
 
 // Assessment represents a user's evaluation of a CVE
