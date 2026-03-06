@@ -498,11 +498,13 @@ func (s *AgentService) ValidateAndRotateRefreshToken(ctx context.Context, token 
 }
 
 // RecordAuthFailure records a JWT authentication failure for an agent identified by ID.
+// Only updates active agents — revoked agents are ignored so the warning
+// does not get lost on a stale record after re-enrollment.
 func (s *AgentService) RecordAuthFailure(ctx context.Context, agentID int64, ip string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE registered_agents
 		SET last_auth_failure_at = NOW(), auth_failure_ip = $2
-		WHERE id = $1
+		WHERE id = $1 AND status = 'active'
 	`, agentID, ip)
 	return err
 }
