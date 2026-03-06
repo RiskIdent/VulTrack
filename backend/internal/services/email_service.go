@@ -132,7 +132,7 @@ func (s *EmailService) tlsConfig() *tls.Config {
 // Microsoft, etc.) reject. By driving the protocol directly we control every step
 // and produce detailed diagnostics at each phase.
 func (s *EmailService) send(to []string, msg []byte) error {
-	addr := fmt.Sprintf("%s:%d", s.host, s.port)
+	addr := net.JoinHostPort(s.host, fmt.Sprintf("%d", s.port))
 
 	// ── Step 1: TCP / TLS connect ──────────────────────────────────────
 	var conn net.Conn

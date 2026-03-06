@@ -19,6 +19,7 @@ import (
 	"github.com/johnfercher/maroto/v2/pkg/components/text"
 	"github.com/johnfercher/maroto/v2/pkg/config"
 	"github.com/johnfercher/maroto/v2/pkg/consts/align"
+	"github.com/johnfercher/maroto/v2/pkg/consts/border"
 	"github.com/johnfercher/maroto/v2/pkg/consts/extension"
 	"github.com/johnfercher/maroto/v2/pkg/consts/fontstyle"
 	"github.com/johnfercher/maroto/v2/pkg/core"
@@ -70,6 +71,7 @@ type ReportData struct {
 	AllCVEs              []CVEDetail
 	TrendData            []TrendPoint
 	AssessmentStats      map[string]int
+	VexStats             VexStats
 	// Content flags
 	IncludeSeverityChart bool
 	IncludeTrendChart    bool
@@ -96,6 +98,14 @@ type ServerStat struct {
 	Low      int
 }
 
+// VexStats summarises VEX status counts for the report
+type VexStats struct {
+	NotAffected int
+	Fixed       int
+	Affected    int
+	Total       int
+}
+
 // TopCVEData represents a CVE for the report
 type TopCVEData struct {
 	CVEID          string
@@ -104,6 +114,7 @@ type TopCVEData struct {
 	VendorSeverity string  // Vendor severity from OVAL
 	ServerCount    int
 	PackageCount   int
+	VexStatus      string // dominant VEX status for this CVE
 }
 
 // CVEDetail represents a CVE with full details
@@ -115,6 +126,7 @@ type CVEDetail struct {
 	Summary        string
 	ServerCount    int
 	FirstSeen      time.Time
+	VexStatus      string // dominant VEX status for this CVE
 }
 
 // TrendPoint represents a data point in the trend chart
@@ -238,7 +250,51 @@ func (s *ReportService) gatherReportData(ctx context.Context, req ReportRequest)
 	}
 	data.AssessmentBySeverity = assessmentBySeverity
 
+	// Get VEX status summary
+	vexStats, err := s.getVexStats(ctx, serverIDs, req.StartDate, req.EndDate)
+	if err != nil {
+		return nil, err
+	}
+	data.VexStats = vexStats
+
 	return data, nil
+}
+
+func (s *ReportService) getVexStats(ctx context.Context, serverIDs []int64, startDate, endDate time.Time) (VexStats, error) {
+	whereClause := "WHERE vex_status IS NOT NULL"
+	args := []interface{}{}
+	argIndex := 1
+
+	if len(serverIDs) > 0 {
+		whereClause += fmt.Sprintf(" AND server_id = ANY($%d)", argIndex)
+		args = append(args, serverIDs)
+		argIndex++
+	}
+	if !endDate.IsZero() {
+		whereClause += fmt.Sprintf(" AND first_seen_at <= $%d", argIndex)
+		args = append(args, endDate)
+		argIndex++
+	}
+	if !startDate.IsZero() {
+		whereClause += fmt.Sprintf(" AND (resolved_at IS NULL OR resolved_at >= $%d)", argIndex)
+		args = append(args, startDate)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			COUNT(*) FILTER (WHERE vex_status = 'not_affected'),
+			COUNT(*) FILTER (WHERE vex_status = 'fixed'),
+			COUNT(*) FILTER (WHERE vex_status = 'affected'),
+			COUNT(*)
+		FROM findings
+		%s
+	`, whereClause)
+
+	var stats VexStats
+	err := s.db.QueryRow(ctx, query, args...).Scan(
+		&stats.NotAffected, &stats.Fixed, &stats.Affected, &stats.Total,
+	)
+	return stats, err
 }
 
 type findingsStats struct {
@@ -537,12 +593,19 @@ func (s *ReportService) getTopCVEs(ctx context.Context, serverIDs []int64, start
 	}
 
 	query := fmt.Sprintf(`
-		SELECT 
+		SELECT
 			f.cve_id,
 			COALESCE(MAX(cve.cvss3_score), MAX(f.cvss3_score), 0) as max_cvss,
 			MAX(COALESCE(f.severity, '')) as vendor_severity,
 			COUNT(DISTINCT f.server_id) as server_count,
-			COUNT(DISTINCT f.package_name) as package_count
+			COUNT(DISTINCT f.package_name) as package_count,
+			CASE
+				WHEN bool_or(f.vex_status = 'affected')            THEN 'affected'
+				WHEN bool_or(f.vex_status = 'under_investigation') THEN 'under_investigation'
+				WHEN bool_or(f.vex_status = 'fixed')               THEN 'fixed'
+				WHEN bool_or(f.vex_status = 'not_affected')        THEN 'not_affected'
+				ELSE ''
+			END as vex_status
 		FROM findings f
 		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id
 		%s
@@ -561,7 +624,7 @@ func (s *ReportService) getTopCVEs(ctx context.Context, serverIDs []int64, start
 	var cves []TopCVEData
 	for rows.Next() {
 		var cve TopCVEData
-		if err := rows.Scan(&cve.CVEID, &cve.CVSS3Score, &cve.VendorSeverity, &cve.ServerCount, &cve.PackageCount); err != nil {
+		if err := rows.Scan(&cve.CVEID, &cve.CVSS3Score, &cve.VendorSeverity, &cve.ServerCount, &cve.PackageCount, &cve.VexStatus); err != nil {
 			return nil, err
 		}
 		// Derive NVD severity from CVSS score
@@ -607,13 +670,20 @@ func (s *ReportService) getAllCVEs(ctx context.Context, serverIDs []int64, start
 	}
 
 	query := fmt.Sprintf(`
-		SELECT 
+		SELECT
 			f.cve_id,
 			COALESCE(MAX(cve.cvss3_score), MAX(f.cvss3_score), 0) as max_cvss,
 			MAX(COALESCE(f.severity, '')) as vendor_severity,
 			COALESCE(MAX(cve.description), MAX(f.summary), '') as summary,
 			COUNT(DISTINCT f.server_id) as server_count,
-			MIN(f.first_seen_at) as first_seen
+			MIN(f.first_seen_at) as first_seen,
+			CASE
+				WHEN bool_or(f.vex_status = 'affected')            THEN 'affected'
+				WHEN bool_or(f.vex_status = 'under_investigation') THEN 'under_investigation'
+				WHEN bool_or(f.vex_status = 'fixed')               THEN 'fixed'
+				WHEN bool_or(f.vex_status = 'not_affected')        THEN 'not_affected'
+				ELSE ''
+			END as vex_status
 		FROM findings f
 		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id
 		%s
@@ -630,7 +700,7 @@ func (s *ReportService) getAllCVEs(ctx context.Context, serverIDs []int64, start
 	var cves []CVEDetail
 	for rows.Next() {
 		var cve CVEDetail
-		if err := rows.Scan(&cve.CVEID, &cve.CVSS3Score, &cve.VendorSeverity, &cve.Summary, &cve.ServerCount, &cve.FirstSeen); err != nil {
+		if err := rows.Scan(&cve.CVEID, &cve.CVSS3Score, &cve.VendorSeverity, &cve.Summary, &cve.ServerCount, &cve.FirstSeen, &cve.VexStatus); err != nil {
 			return nil, err
 		}
 		// Derive NVD severity from CVSS score
@@ -642,64 +712,74 @@ func (s *ReportService) getAllCVEs(ctx context.Context, serverIDs []int64, start
 }
 
 func (s *ReportService) getTrendData(ctx context.Context, serverIDs []int64, startDate, endDate time.Time) ([]TrendPoint, error) {
-	// Generate daily data points
-	whereClause := ""
-	args := []interface{}{}
-	argIndex := 1
+	// queryDailyByDate returns a map of date string → count for the given date column.
+	queryDailyByDate := func(dateCol string) (map[string]int, error) {
+		args := []interface{}{startDate, endDate}
+		serverFilter := ""
+		if len(serverIDs) > 0 {
+			serverFilter = " AND server_id = ANY($3)"
+			args = append(args, serverIDs)
+		}
 
-	if len(serverIDs) > 0 {
-		whereClause = fmt.Sprintf(" AND server_id = ANY($%d)", argIndex)
-		args = append(args, serverIDs)
-		argIndex++
+		q := fmt.Sprintf(`
+			SELECT DATE(%s) AS d, COUNT(*) AS cnt
+			FROM findings
+			WHERE %s >= $1 AND %s <= $2 AND %s IS NOT NULL%s
+			GROUP BY DATE(%s)
+			ORDER BY 1
+		`, dateCol, dateCol, dateCol, dateCol, serverFilter, dateCol)
+
+		rows, err := s.db.Query(ctx, q, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		result := make(map[string]int)
+		for rows.Next() {
+			var d time.Time
+			var cnt int
+			if err := rows.Scan(&d, &cnt); err != nil {
+				return nil, err
+			}
+			result[d.Format("2006-01-02")] = cnt
+		}
+		return result, rows.Err()
 	}
 
-	// Get new findings per day
-	newQuery := fmt.Sprintf(`
-		SELECT DATE(first_seen_at) as date, COUNT(*) as count
-		FROM findings
-		WHERE first_seen_at >= $%d AND first_seen_at <= $%d %s
-		GROUP BY DATE(first_seen_at)
-		ORDER BY date
-	`, argIndex, argIndex+1, whereClause)
-	args = append(args, startDate, endDate)
-
-	rows, err := s.db.Query(ctx, newQuery, args...)
+	newByDate, err := queryDailyByDate("first_seen_at")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	newByDate := make(map[string]int)
-	for rows.Next() {
-		var date time.Time
-		var count int
-		if err := rows.Scan(&date, &count); err != nil {
-			return nil, err
-		}
-		newByDate[date.Format("2006-01-02")] = count
+	resolvedByDate, err := queryDailyByDate("resolved_at")
+	if err != nil {
+		return nil, err
 	}
 
-	// Generate trend points for each day in range
 	var trendData []TrendPoint
 	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
 		dateStr := d.Format("2006-01-02")
-		point := TrendPoint{
-			Date:     d,
-			NewCount: newByDate[dateStr],
-		}
-		trendData = append(trendData, point)
+		trendData = append(trendData, TrendPoint{
+			Date:          d,
+			NewCount:      newByDate[dateStr],
+			ResolvedCount: resolvedByDate[dateStr],
+		})
 	}
-
 	return trendData, nil
 }
 
 // generatePDF creates the PDF document
 func (s *ReportService) generatePDF(data *ReportData) ([]byte, error) {
 	cfg := config.NewBuilder().
-		WithPageNumber().
+		WithPageNumber(props.PageNumber{
+			Pattern: "Generated by VulTrack  |  Page {current} of {total}",
+			Place:   props.Bottom,
+			Size:    8,
+		}).
 		WithLeftMargin(15).
 		WithTopMargin(15).
 		WithRightMargin(15).
+		WithBottomMargin(18).
 		Build()
 
 	m := maroto.New(cfg)
@@ -765,9 +845,6 @@ func (s *ReportService) generatePDF(data *ReportData) ([]byte, error) {
 		}
 	}
 
-	// Add footer
-	s.addFooter(m, data)
-
 	// Generate PDF
 	doc, err := m.Generate()
 	if err != nil {
@@ -808,148 +885,114 @@ func (s *ReportService) addHeader(m core.Maroto, data *ReportData) {
 }
 
 func (s *ReportService) addExecutiveSummary(m core.Maroto, data *ReportData) {
+	// Shared table style colours
+	headerBg := &props.Color{Red: 41, Green: 82, Blue: 148}
+	headerText := &props.Color{Red: 255, Green: 255, Blue: 255}
+	zebraOdd := &props.Color{Red: 245, Green: 248, Blue: 253}
+	totalsBg := &props.Color{Red: 225, Green: 232, Blue: 245}
+	headerCell := &props.Cell{BackgroundColor: headerBg, BorderType: border.Full, BorderColor: headerBg}
+
 	// Section title
 	m.AddRow(10,
 		col.New(12).Add(
-			text.New("Executive Summary", props.Text{
-				Size:  14,
-				Style: fontstyle.Bold,
-			}),
+			text.New("Executive Summary", props.Text{Size: 14, Style: fontstyle.Bold}),
 		),
 	)
 
 	// Summary stats in a row
 	m.AddRow(8,
-		col.New(3).Add(
-			text.New(fmt.Sprintf("Total Findings: %d", data.TotalFindings), props.Text{Size: 10}),
-		),
-		col.New(3).Add(
-			text.New(fmt.Sprintf("Active: %d", data.ActiveFindings), props.Text{Size: 10, Style: fontstyle.Bold}),
-		),
-		col.New(3).Add(
-			text.New(fmt.Sprintf("Resolved: %d", data.ResolvedFindings), props.Text{Size: 10}),
-		),
-		col.New(3).Add(
-			text.New(fmt.Sprintf("Servers: %d", data.TotalServers), props.Text{Size: 10}),
-		),
+		col.New(3).Add(text.New(fmt.Sprintf("Total Findings: %d", data.TotalFindings), props.Text{Size: 10})),
+		col.New(3).Add(text.New(fmt.Sprintf("Active: %d", data.ActiveFindings), props.Text{Size: 10, Style: fontstyle.Bold})),
+		col.New(3).Add(text.New(fmt.Sprintf("Resolved: %d", data.ResolvedFindings), props.Text{Size: 10})),
+		col.New(3).Add(text.New(fmt.Sprintf("Servers: %d", data.TotalServers), props.Text{Size: 10})),
 	)
 
-	// Spacer
-	m.AddRow(5, col.New(12))
-
-	// Server statistics table
-	if len(data.ServerStats) > 0 {
+	// VEX status overview (only if there is any VEX data)
+	if data.VexStats.Total > 0 {
+		m.AddRow(5, col.New(12))
 		m.AddRow(8,
-			col.New(12).Add(
-				text.New("Servers in Scope", props.Text{
-					Size:  11,
-					Style: fontstyle.Bold,
-				}),
-			),
+			col.New(12).Add(text.New("Vendor Assessment (VEX)", props.Text{Size: 11, Style: fontstyle.Bold})),
 		)
-
-		// Table header
-		grayBg := props.Color{Red: 240, Green: 240, Blue: 240}
 		m.AddRow(7,
-			col.New(4).Add(
-				text.New("Server", props.Text{Size: 9, Style: fontstyle.Bold}),
-			),
-			col.New(2).Add(
-				text.New("Critical", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New("High", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New("Medium", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New("Low", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-		).WithStyle(&props.Cell{BackgroundColor: &grayBg})
-
-		// Table rows
-		for _, stat := range data.ServerStats {
-			m.AddRow(6,
-				col.New(4).Add(
-					text.New(stat.Name, props.Text{Size: 8}),
-				),
-				col.New(2).Add(
-					text.New(fmt.Sprintf("%d", stat.Critical), props.Text{Size: 8, Align: align.Center}),
-				),
-				col.New(2).Add(
-					text.New(fmt.Sprintf("%d", stat.High), props.Text{Size: 8, Align: align.Center}),
-				),
-				col.New(2).Add(
-					text.New(fmt.Sprintf("%d", stat.Medium), props.Text{Size: 8, Align: align.Center}),
-				),
-				col.New(2).Add(
-					text.New(fmt.Sprintf("%d", stat.Low), props.Text{Size: 8, Align: align.Center}),
-				),
+			col.New(4).Add(text.New("Not Affected (vendor confirmed)", props.Text{Size: 9})),
+			col.New(2).Add(text.New(fmt.Sprintf("%d findings", data.VexStats.NotAffected), props.Text{Size: 9, Style: fontstyle.Bold})),
+			col.New(3).Add(text.New("Fixed (patch available)", props.Text{Size: 9})),
+			col.New(3).Add(text.New(fmt.Sprintf("%d findings", data.VexStats.Fixed), props.Text{Size: 9, Style: fontstyle.Bold})),
+		)
+		if data.VexStats.Affected > 0 {
+			m.AddRow(7,
+				col.New(4).Add(text.New("Confirmed Affected", props.Text{Size: 9})),
+				col.New(8).Add(text.New(fmt.Sprintf("%d findings", data.VexStats.Affected), props.Text{Size: 9, Style: fontstyle.Bold})),
 			)
 		}
 	}
 
 	// Spacer
-	m.AddRow(10, col.New(12))
+	m.AddRow(5, col.New(12))
 
-	// Assessment statistics by severity table
-	if len(data.AssessmentBySeverity) > 0 {
+	// --- Server statistics table ---
+	if len(data.ServerStats) > 0 {
 		m.AddRow(8,
-			col.New(12).Add(
-				text.New("Assessment Status by Severity", props.Text{
-					Size:  11,
-					Style: fontstyle.Bold,
-				}),
-			),
+			col.New(12).Add(text.New("Servers in Scope", props.Text{Size: 11, Style: fontstyle.Bold})),
 		)
 
-		// Table header
-		grayBg := props.Color{Red: 240, Green: 240, Blue: 240}
 		m.AddRow(7,
-			col.New(2).Add(
-				text.New("Severity", props.Text{Size: 9, Style: fontstyle.Bold}),
-			),
-			col.New(2).Add(
-				text.New("Pending", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New("Relevant", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New("Not Relevant", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New("Accepted", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New("Total", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-		).WithStyle(&props.Cell{BackgroundColor: &grayBg})
+			col.New(4).Add(text.New("Server", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+			col.New(2).Add(text.New("Critical", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+			col.New(2).Add(text.New("High", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+			col.New(2).Add(text.New("Medium", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+			col.New(2).Add(text.New("Low", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+		).WithStyle(headerCell)
 
-		// Table rows
-		var totalPending, totalRelevant, totalNotRelevant, totalAccepted, grandTotal int
-		for _, stat := range data.AssessmentBySeverity {
+		for i, stat := range data.ServerStats {
+			rowBg := &props.Color{Red: 255, Green: 255, Blue: 255}
+			if i%2 == 1 {
+				rowBg = zebraOdd
+			}
+			rowCell := &props.Cell{BackgroundColor: rowBg, BorderType: border.Full, BorderColor: headerBg}
 			m.AddRow(6,
-				col.New(2).Add(
-					text.New(capitalizeFirst(stat.Severity), props.Text{Size: 8}),
-				),
-				col.New(2).Add(
-					text.New(fmt.Sprintf("%d", stat.Pending), props.Text{Size: 8, Align: align.Center}),
-				),
-				col.New(2).Add(
-					text.New(fmt.Sprintf("%d", stat.Relevant), props.Text{Size: 8, Align: align.Center}),
-				),
-				col.New(2).Add(
-					text.New(fmt.Sprintf("%d", stat.NotRelevant), props.Text{Size: 8, Align: align.Center}),
-				),
-				col.New(2).Add(
-					text.New(fmt.Sprintf("%d", stat.AcceptedRisk), props.Text{Size: 8, Align: align.Center}),
-				),
-				col.New(2).Add(
-					text.New(fmt.Sprintf("%d", stat.Total), props.Text{Size: 8, Align: align.Center}),
-				),
-			)
+				col.New(4).Add(text.New(stat.Name, props.Text{Size: 8})),
+				col.New(2).Add(text.New(fmt.Sprintf("%d", stat.Critical), props.Text{Size: 8, Align: align.Center})),
+				col.New(2).Add(text.New(fmt.Sprintf("%d", stat.High), props.Text{Size: 8, Align: align.Center})),
+				col.New(2).Add(text.New(fmt.Sprintf("%d", stat.Medium), props.Text{Size: 8, Align: align.Center})),
+				col.New(2).Add(text.New(fmt.Sprintf("%d", stat.Low), props.Text{Size: 8, Align: align.Center})),
+			).WithStyle(rowCell)
+		}
+	}
+
+	// Spacer
+	m.AddRow(8, col.New(12))
+
+	// --- Assessment statistics by severity table ---
+	if len(data.AssessmentBySeverity) > 0 {
+		m.AddRow(8,
+			col.New(12).Add(text.New("Assessment Status by Severity", props.Text{Size: 11, Style: fontstyle.Bold})),
+		)
+
+		m.AddRow(7,
+			col.New(2).Add(text.New("Severity", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+			col.New(2).Add(text.New("Pending", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+			col.New(2).Add(text.New("Relevant", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+			col.New(2).Add(text.New("Not Relevant", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+			col.New(2).Add(text.New("Accepted", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+			col.New(2).Add(text.New("Total", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+		).WithStyle(headerCell)
+
+		var totalPending, totalRelevant, totalNotRelevant, totalAccepted, grandTotal int
+		for i, stat := range data.AssessmentBySeverity {
+			rowBg := &props.Color{Red: 255, Green: 255, Blue: 255}
+			if i%2 == 1 {
+				rowBg = zebraOdd
+			}
+			rowCell := &props.Cell{BackgroundColor: rowBg, BorderType: border.Full, BorderColor: headerBg}
+			m.AddRow(6,
+				col.New(2).Add(text.New(capitalizeFirst(stat.Severity), props.Text{Size: 8})),
+				col.New(2).Add(text.New(fmt.Sprintf("%d", stat.Pending), props.Text{Size: 8, Align: align.Center})),
+				col.New(2).Add(text.New(fmt.Sprintf("%d", stat.Relevant), props.Text{Size: 8, Align: align.Center})),
+				col.New(2).Add(text.New(fmt.Sprintf("%d", stat.NotRelevant), props.Text{Size: 8, Align: align.Center})),
+				col.New(2).Add(text.New(fmt.Sprintf("%d", stat.AcceptedRisk), props.Text{Size: 8, Align: align.Center})),
+				col.New(2).Add(text.New(fmt.Sprintf("%d", stat.Total), props.Text{Size: 8, Align: align.Center})),
+			).WithStyle(rowCell)
 			totalPending += stat.Pending
 			totalRelevant += stat.Relevant
 			totalNotRelevant += stat.NotRelevant
@@ -958,62 +1001,15 @@ func (s *ReportService) addExecutiveSummary(m core.Maroto, data *ReportData) {
 		}
 
 		// Totals row
+		totalsCell := &props.Cell{BackgroundColor: totalsBg, BorderType: border.Full, BorderColor: headerBg}
 		m.AddRow(7,
-			col.New(2).Add(
-				text.New("Total", props.Text{Size: 9, Style: fontstyle.Bold}),
-			),
-			col.New(2).Add(
-				text.New(fmt.Sprintf("%d", totalPending), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New(fmt.Sprintf("%d", totalRelevant), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New(fmt.Sprintf("%d", totalNotRelevant), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New(fmt.Sprintf("%d", totalAccepted), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-			col.New(2).Add(
-				text.New(fmt.Sprintf("%d", grandTotal), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center}),
-			),
-		).WithStyle(&props.Cell{BackgroundColor: &grayBg})
-	}
-
-	// Spacer
-	m.AddRow(10, col.New(12))
-}
-
-func (s *ReportService) addSeverityChart(m core.Maroto, data *ReportData) {
-	// Section title
-	m.AddRow(10,
-		col.New(12).Add(
-			text.New("Severity Distribution", props.Text{
-				Size:  14,
-				Style: fontstyle.Bold,
-			}),
-		),
-	)
-
-	// Generate pie chart
-	chartBytes, err := s.generateSeverityPieChart(data)
-	if err == nil && len(chartBytes) > 0 {
-		// Centered chart - full width, large size
-		m.AddRow(120,
-			col.New(12).Add(
-				image.NewFromBytes(chartBytes, extension.Png, props.Rect{
-					Center:  true,
-					Percent: 85,
-				}),
-			),
-		)
-	}
-
-	// Legend below the chart - centered
-	m.AddRow(5, col.New(12)) // Spacer
-	legendRows := s.buildSeverityLegendRows(data)
-	for _, r := range legendRows {
-		m.AddRows(r)
+			col.New(2).Add(text.New("Total", props.Text{Size: 9, Style: fontstyle.Bold})),
+			col.New(2).Add(text.New(fmt.Sprintf("%d", totalPending), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center})),
+			col.New(2).Add(text.New(fmt.Sprintf("%d", totalRelevant), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center})),
+			col.New(2).Add(text.New(fmt.Sprintf("%d", totalNotRelevant), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center})),
+			col.New(2).Add(text.New(fmt.Sprintf("%d", totalAccepted), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center})),
+			col.New(2).Add(text.New(fmt.Sprintf("%d", grandTotal), props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center})),
+		).WithStyle(totalsCell)
 	}
 
 	// Spacer
@@ -1191,41 +1187,6 @@ func (s *ReportService) generateSeverityPieChart(data *ReportData) ([]byte, erro
 	return buf.Bytes(), nil
 }
 
-func (s *ReportService) addTrendChart(m core.Maroto, data *ReportData) {
-	// Section title
-	m.AddRow(10,
-		col.New(12).Add(
-			text.New("Findings Trend", props.Text{
-				Size:  14,
-				Style: fontstyle.Bold,
-			}),
-		),
-	)
-
-	// Generate trend chart - full width
-	chartBytes, err := s.generateTrendChart(data)
-	if err == nil && len(chartBytes) > 0 {
-		m.AddRow(100,
-			col.New(12).Add(
-				image.NewFromBytes(chartBytes, extension.Png, props.Rect{
-					Center:  true,
-					Percent: 90,
-				}),
-			),
-		)
-	}
-
-	// Legend below the chart
-	m.AddRow(5, col.New(12)) // Spacer
-	legendRows := s.buildTrendLegendRows()
-	for _, r := range legendRows {
-		m.AddRows(r)
-	}
-
-	// Spacer
-	m.AddRow(10, col.New(12))
-}
-
 func (s *ReportService) addTrendChartToPage(p core.Page, data *ReportData) {
 	// Section title
 	p.Add(row.New(10).Add(
@@ -1318,6 +1279,10 @@ func (s *ReportService) generateTrendChart(data *ReportData) ([]byte, error) {
 		resolvedValues = append(resolvedValues, float64(point.ResolvedCount))
 	}
 
+	// Use Catmull-Rom spline interpolation for smooth curves
+	smoothX, smoothNew := catmullRomInterpolate(xValues, newValues, 12)
+	_, smoothResolved := catmullRomInterpolate(xValues, resolvedValues, 12)
+
 	graph := chart.Chart{
 		Width:  700,
 		Height: 350,
@@ -1330,31 +1295,45 @@ func (s *ReportService) generateTrendChart(data *ReportData) ([]byte, error) {
 			},
 		},
 		YAxis: chart.YAxis{
+			Name: "New Findings",
+			NameStyle: chart.Style{
+				FontSize: 8,
+			},
+			Style: chart.Style{
+				FontSize: 8,
+			},
+		},
+		YAxisSecondary: chart.YAxis{
+			Name: "Resolved Findings",
+			NameStyle: chart.Style{
+				FontSize: 8,
+			},
 			Style: chart.Style{
 				FontSize: 8,
 			},
 		},
 		Series: []chart.Series{
 			chart.TimeSeries{
-				XValues: xValues,
-				YValues: newValues,
+				Name:    "New Findings",
+				XValues: smoothX,
+				YValues: smoothNew,
 				Style: chart.Style{
-					StrokeColor: drawing.Color{R: 220, G: 53, B: 69, A: 255}, // Red for new
+					StrokeColor: drawing.Color{R: 220, G: 53, B: 69, A: 255},
 					StrokeWidth: 2,
 				},
 			},
 			chart.TimeSeries{
-				XValues: xValues,
-				YValues: resolvedValues,
+				Name:    "Resolved Findings",
+				YAxis:   chart.YAxisSecondary,
+				XValues: smoothX,
+				YValues: smoothResolved,
 				Style: chart.Style{
-					StrokeColor: drawing.Color{R: 40, G: 167, B: 69, A: 255}, // Green for resolved
+					StrokeColor: drawing.Color{R: 40, G: 167, B: 69, A: 255},
 					StrokeWidth: 2,
 				},
 			},
 		},
 	}
-
-	// No legend on chart - will be added separately in PDF
 
 	var buf bytes.Buffer
 	if err := graph.Render(chart.PNG, &buf); err != nil {
@@ -1364,40 +1343,91 @@ func (s *ReportService) generateTrendChart(data *ReportData) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// catmullRomInterpolate generates smooth curve points using Catmull-Rom spline interpolation.
+// steps controls how many intermediate points are inserted between each pair of data points.
+func catmullRomInterpolate(xs []time.Time, ys []float64, steps int) ([]time.Time, []float64) {
+	n := len(xs)
+	if n <= 1 {
+		return xs, ys
+	}
+
+	xf := make([]float64, n)
+	for i, t := range xs {
+		xf[i] = float64(t.UnixNano())
+	}
+
+	var outX []time.Time
+	var outY []float64
+
+	for i := 0; i < n-1; i++ {
+		i0 := i - 1
+		if i0 < 0 {
+			i0 = 0
+		}
+		i3 := i + 2
+		if i3 >= n {
+			i3 = n - 1
+		}
+
+		p0x, p1x, p2x, p3x := xf[i0], xf[i], xf[i+1], xf[i3]
+		p0y, p1y, p2y, p3y := ys[i0], ys[i], ys[i+1], ys[i3]
+
+		for j := 0; j <= steps; j++ {
+			t := float64(j) / float64(steps)
+			t2 := t * t
+			t3 := t2 * t
+
+			rx := 0.5 * ((2*p1x) + (-p0x+p2x)*t + (2*p0x-5*p1x+4*p2x-p3x)*t2 + (-p0x+3*p1x-3*p2x+p3x)*t3)
+			ry := 0.5 * ((2*p1y) + (-p0y+p2y)*t + (2*p0y-5*p1y+4*p2y-p3y)*t2 + (-p0y+3*p1y-3*p2y+p3y)*t3)
+
+			outX = append(outX, time.Unix(0, int64(rx)))
+			outY = append(outY, ry)
+		}
+	}
+
+	outX = append(outX, xs[n-1])
+	outY = append(outY, ys[n-1])
+
+	return outX, outY
+}
+
 func (s *ReportService) addTopCVEsTable(m core.Maroto, data *ReportData) {
+	headerBg := &props.Color{Red: 41, Green: 82, Blue: 148}
+	headerText := &props.Color{Red: 255, Green: 255, Blue: 255}
+	zebraOdd := &props.Color{Red: 245, Green: 248, Blue: 253}
+	headerCell := &props.Cell{BackgroundColor: headerBg, BorderType: border.Full, BorderColor: headerBg}
+
 	// Spacer before section
 	m.AddRow(15, col.New(12))
 
-	// Section title
 	m.AddRow(10,
-		col.New(12).Add(
-			text.New("Top 10 Most Widespread CVEs", props.Text{
-				Size:  14,
-				Style: fontstyle.Bold,
-			}),
-		),
+		col.New(12).Add(text.New("Top 10 Most Widespread CVEs", props.Text{Size: 14, Style: fontstyle.Bold})),
 	)
 
-	// Table header
 	m.AddRow(8,
-		col.New(3).Add(text.New("CVE ID", props.Text{Size: 9, Style: fontstyle.Bold})),
-		col.New(1).Add(text.New("CVSS", props.Text{Size: 9, Style: fontstyle.Bold})),
-		col.New(2).Add(text.New("Severity", props.Text{Size: 9, Style: fontstyle.Bold})),
-		col.New(2).Add(text.New("Vendor Severity", props.Text{Size: 9, Style: fontstyle.Bold})),
-		col.New(2).Add(text.New("Servers", props.Text{Size: 9, Style: fontstyle.Bold})),
-		col.New(2).Add(text.New("Packages", props.Text{Size: 9, Style: fontstyle.Bold})),
-	)
+		col.New(3).Add(text.New("CVE ID", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+		col.New(1).Add(text.New("CVSS", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+		col.New(2).Add(text.New("Severity", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+		col.New(1).Add(text.New("Servers", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+		col.New(1).Add(text.New("Pkgs", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+		col.New(4).Add(text.New("VEX Status (Vendor)", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+	).WithStyle(headerCell)
 
-	// Table rows
-	for _, cve := range data.TopCVEs {
+	for i, cve := range data.TopCVEs {
+		rowBg := &props.Color{Red: 255, Green: 255, Blue: 255}
+		if i%2 == 1 {
+			rowBg = zebraOdd
+		}
+		rowCell := &props.Cell{BackgroundColor: rowBg, BorderType: border.Full, BorderColor: headerBg}
+		vexLabel := formatVexStatus(cve.VexStatus)
 		m.AddRow(7,
 			col.New(3).Add(text.New(cve.CVEID, props.Text{Size: 8})),
-			col.New(1).Add(text.New(fmt.Sprintf("%.1f", cve.CVSS3Score), props.Text{Size: 8})),
+			col.New(1).Add(text.New(fmt.Sprintf("%.1f", cve.CVSS3Score), props.Text{Size: 8, Align: align.Center})),
 			col.New(2).Add(text.New(cve.NVDSeverity, props.Text{Size: 8})),
-			col.New(2).Add(text.New(capitalizeFirst(cve.VendorSeverity), props.Text{Size: 8})),
-			col.New(2).Add(text.New(fmt.Sprintf("%d", cve.ServerCount), props.Text{Size: 8})),
-			col.New(2).Add(text.New(fmt.Sprintf("%d", cve.PackageCount), props.Text{Size: 8})),
-		)
+			col.New(1).Add(text.New(fmt.Sprintf("%d", cve.ServerCount), props.Text{Size: 8, Align: align.Center})),
+			col.New(1).Add(text.New(fmt.Sprintf("%d", cve.PackageCount), props.Text{Size: 8, Align: align.Center})),
+			col.New(4).Add(text.New(vexLabel, props.Text{Size: 8})),
+		).WithStyle(rowCell)
 	}
 
 	// Spacer
@@ -1405,94 +1435,55 @@ func (s *ReportService) addTopCVEsTable(m core.Maroto, data *ReportData) {
 }
 
 func (s *ReportService) addFullCVEList(m core.Maroto, data *ReportData) {
-	// Section title
+	headerBg := &props.Color{Red: 41, Green: 82, Blue: 148}
+	headerText := &props.Color{Red: 255, Green: 255, Blue: 255}
+	zebraOdd := &props.Color{Red: 245, Green: 248, Blue: 253}
+	headerCell := &props.Cell{BackgroundColor: headerBg, BorderType: border.Full, BorderColor: headerBg}
+
 	m.AddRow(10,
-		col.New(12).Add(
-			text.New(fmt.Sprintf("Complete CVE List (%d CVEs)", len(data.AllCVEs)), props.Text{
-				Size:  14,
-				Style: fontstyle.Bold,
-			}),
-		),
+		col.New(12).Add(text.New(fmt.Sprintf("Complete CVE List (%d CVEs)", len(data.AllCVEs)), props.Text{
+			Size:  14,
+			Style: fontstyle.Bold,
+		})),
 	)
 
-	// Add each CVE
-	for _, cve := range data.AllCVEs {
-		// CVE header line
-		m.AddRow(7,
-			col.New(3).Add(text.New(cve.CVEID, props.Text{Size: 9, Style: fontstyle.Bold})),
-			col.New(2).Add(text.New(fmt.Sprintf("CVSS: %.1f (%s)", cve.CVSS3Score, cve.NVDSeverity), props.Text{Size: 8})),
-			col.New(2).Add(text.New(fmt.Sprintf("Vendor: %s", capitalizeFirst(cve.VendorSeverity)), props.Text{Size: 8})),
-			col.New(2).Add(text.New(fmt.Sprintf("%d servers", cve.ServerCount), props.Text{Size: 8})),
-			col.New(3).Add(text.New(cve.FirstSeen.Format("2006-01-02"), props.Text{Size: 8})),
-		)
+	// Column header row
+	m.AddRow(7,
+		col.New(3).Add(text.New("CVE ID", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+		col.New(1).Add(text.New("CVSS", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+		col.New(2).Add(text.New("Severity", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+		col.New(1).Add(text.New("Servers", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+		col.New(2).Add(text.New("First Seen", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+		col.New(3).Add(text.New("VEX Status", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+	).WithStyle(headerCell)
 
-		// Full summary - use AutoRow for automatic height
+	for i, cve := range data.AllCVEs {
+		rowBg := &props.Color{Red: 255, Green: 255, Blue: 255}
+		if i%2 == 1 {
+			rowBg = zebraOdd
+		}
+		rowCell := &props.Cell{BackgroundColor: rowBg, BorderType: border.Full, BorderColor: headerBg}
+		vexLabel := formatVexStatus(cve.VexStatus)
+
+		m.AddRow(7,
+			col.New(3).Add(text.New(cve.CVEID, props.Text{Size: 8, Style: fontstyle.Bold})),
+			col.New(1).Add(text.New(fmt.Sprintf("%.1f", cve.CVSS3Score), props.Text{Size: 8, Align: align.Center})),
+			col.New(2).Add(text.New(cve.NVDSeverity, props.Text{Size: 8})),
+			col.New(1).Add(text.New(fmt.Sprintf("%d", cve.ServerCount), props.Text{Size: 8, Align: align.Center})),
+			col.New(2).Add(text.New(cve.FirstSeen.Format("2006-01-02"), props.Text{Size: 8})),
+			col.New(3).Add(text.New(vexLabel, props.Text{Size: 8})),
+		).WithStyle(rowCell)
+
 		if cve.Summary != "" {
+			summaryCell := &props.Cell{BackgroundColor: rowBg, BorderType: border.Full, BorderColor: headerBg}
 			m.AddAutoRow(
 				col.New(12).Add(text.New(cve.Summary, props.Text{Size: 7})),
-			)
+			).WithStyle(summaryCell)
 		}
-
-		// Small spacer between CVEs
-		m.AddRow(4, col.New(12))
 	}
 
 	// Spacer
 	m.AddRow(10, col.New(12))
-}
-
-func (s *ReportService) addFullCVEListToPage(p core.Page, data *ReportData) {
-	// Section title
-	p.Add(row.New(10).Add(
-		col.New(12).Add(
-			text.New(fmt.Sprintf("Complete CVE List (%d CVEs)", len(data.AllCVEs)), props.Text{
-				Size:  14,
-				Style: fontstyle.Bold,
-			}),
-		),
-	))
-
-	// Add each CVE
-	for _, cve := range data.AllCVEs {
-		// CVE header line
-		p.Add(row.New(7).Add(
-			col.New(3).Add(text.New(cve.CVEID, props.Text{Size: 9, Style: fontstyle.Bold})),
-			col.New(2).Add(text.New(fmt.Sprintf("CVSS: %.1f (%s)", cve.CVSS3Score, cve.NVDSeverity), props.Text{Size: 8})),
-			col.New(2).Add(text.New(fmt.Sprintf("Vendor: %s", capitalizeFirst(cve.VendorSeverity)), props.Text{Size: 8})),
-			col.New(2).Add(text.New(fmt.Sprintf("%d servers", cve.ServerCount), props.Text{Size: 8})),
-			col.New(3).Add(text.New(cve.FirstSeen.Format("2006-01-02"), props.Text{Size: 8})),
-		))
-
-		// Full summary without truncation
-		if cve.Summary != "" {
-			// Calculate approximate row height based on text length
-			lines := (len(cve.Summary) / 100) + 1
-			rowHeight := float64(lines * 4)
-			if rowHeight < 6 {
-				rowHeight = 6
-			}
-			p.Add(row.New(rowHeight).Add(
-				col.New(12).Add(text.New(cve.Summary, props.Text{Size: 7})),
-			))
-		}
-
-		// Small spacer between CVEs
-		p.Add(row.New(4).Add(col.New(12)))
-	}
-}
-
-func (s *ReportService) addFooter(m core.Maroto, data *ReportData) {
-	m.AddRow(8,
-		col.New(12).Add(
-			text.New(
-				fmt.Sprintf("Generated by VulTrack on %s", data.GeneratedAt.Format("2006-01-02 15:04:05")),
-				props.Text{
-					Size:  8,
-					Align: align.Center,
-				},
-			),
-		),
-	)
 }
 
 // Helper functions
@@ -1518,22 +1509,18 @@ func capitalizeFirst(s string) string {
 	return s
 }
 
-func splitString(s string, maxLen int) []string {
-	var result []string
-	for len(s) > maxLen {
-		// Find a good break point
-		breakPoint := maxLen
-		for i := maxLen; i > 0; i-- {
-			if s[i] == ' ' || s[i] == ',' {
-				breakPoint = i + 1
-				break
-			}
-		}
-		result = append(result, s[:breakPoint])
-		s = s[breakPoint:]
+// formatVexStatus converts a raw vex_status value to a human-readable label.
+func formatVexStatus(status string) string {
+	switch status {
+	case "not_affected":
+		return "Not Affected"
+	case "fixed":
+		return "Fixed"
+	case "affected":
+		return "Affected"
+	case "under_investigation":
+		return "Under Investigation"
+	default:
+		return "—"
 	}
-	if len(s) > 0 {
-		result = append(result, s)
-	}
-	return result
 }
