@@ -177,7 +177,7 @@ func (h *Handler) receiveAgentReportV2(c *fiber.Ctx) error {
 	// Validate JWT signature + expiry (no DB lookup)
 	claims, err := auth.ValidateAgentJWT(h.jwtSecret, token)
 	if err != nil {
-		log.Warn().Err(err).Msg("Invalid JWT on report endpoint (v2)")
+		log.Warn().Err(err).Str("client_ip", c.IP()).Str("user_agent", c.Get("User-Agent")).Msg("Invalid JWT on report endpoint (v2)")
 		return fiber.NewError(fiber.StatusUnauthorized, "Invalid or expired access token")
 	}
 
