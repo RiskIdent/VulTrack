@@ -121,9 +121,13 @@ export function VendorSeverityBadge({ severity, sourceLink, className }: { sever
   return badge;
 }
 
-// VEXBadge displays the Ubuntu VEX status
+// VEXBadge displays the Ubuntu VEX status.
+// Only shown for statuses that add information beyond what fix_state already captures:
+// - not_affected: OVAL says vulnerable, but VEX says the package isn't actually affected
+// - under_investigation: Canonical is still evaluating the impact
+// will_not_fix is intentionally excluded — it is already reflected in fix_state.
 export function VEXBadge({ status, justification }: { status?: string | null; justification?: string | null }) {
-  if (!status) return null;
+  if (!status || status === 'will_not_fix') return null;
 
   const config: Record<string, { label: string; className: string }> = {
     not_affected: {

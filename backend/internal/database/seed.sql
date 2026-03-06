@@ -34,6 +34,7 @@ INSERT INTO settings (key, value, description) VALUES
     ('triage_cvss_threshold', '7.0', 'Minimum CVSS score for findings to appear in triage queue'),
     ('triage_vendor_severities', 'critical,high', 'Comma-separated vendor severity levels for triage queue'),
     ('triage_include_unrated', 'false', 'Include findings without vendor severity in triage queue'),
+    ('triage_hide_vex_not_affected', 'true', 'Hide findings where VEX status is not_affected from the triage queue'),
     
     -- Sync intervals
     ('oval_sync_interval_hours', '24', 'Hours between OVAL feed syncs'),
@@ -44,6 +45,10 @@ INSERT INTO settings (key, value, description) VALUES
     -- VEX settings
     ('vex_download_url', 'https://security-metadata.canonical.com/vex/vex-all.tar.xz', 'Download URL for Ubuntu VEX archive'),
     
+    -- Agent v2 token TTL settings
+    ('agent_access_token_ttl_hours', '24', 'Validity of agent JWT access tokens in hours (v2 API)'),
+    ('agent_refresh_token_ttl_days', '90', 'Validity of agent refresh tokens in days (v2 API)'),
+
     -- NVD settings
     ('nvd_api_key', '', 'NVD API key for faster syncs (optional)'),
     ('nvd_initial_sync_years', '5', 'Years of CVE history to load on initial sync'),

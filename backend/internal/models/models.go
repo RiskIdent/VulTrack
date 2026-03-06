@@ -298,6 +298,54 @@ type EnrollResponse struct {
 }
 
 // ============================================================================
+// AGENT V2 API TYPES
+// ============================================================================
+
+// EnrollRequestV2 is the v2 enrollment request body.
+// The enrollment key is passed via Authorization: Bearer header.
+type EnrollRequestV2 struct {
+	Hostname       string   `json:"hostname"`
+	OSFamily       string   `json:"osFamily,omitempty"`
+	OSRelease      string   `json:"osRelease,omitempty"`
+	OSCodename     string   `json:"osCodename,omitempty"`
+	Kernel         string   `json:"kernel,omitempty"`
+	Arch           string   `json:"arch,omitempty"`
+	PackageManager string   `json:"packageManager,omitempty"`
+	IPv4Addrs      []string `json:"ipv4Addrs"`
+	// Force re-enrollment even if this hostname is already registered.
+	// The existing agent will be revoked and replaced.
+	Force bool `json:"force,omitempty"`
+}
+
+// EnrollResponseV2 is the response to a v2 enrollment request.
+type EnrollResponseV2 struct {
+	TokenType    string `json:"tokenType"`    // always "Bearer"
+	AccessToken  string `json:"accessToken"`  // short-lived JWT
+	RefreshToken string `json:"refreshToken"` // long-lived opaque token
+	ExpiresIn    int    `json:"expiresIn"`    // access token TTL in seconds
+	Status       string `json:"status"`       // "active" or "pending"
+}
+
+// TokenRefreshResponse is the response to a token-refresh request (POST /api/v2/agent/token).
+type TokenRefreshResponse struct {
+	TokenType    string `json:"tokenType"`    // always "Bearer"
+	AccessToken  string `json:"accessToken"`  // new short-lived JWT
+	RefreshToken string `json:"refreshToken"` // new rotated refresh token
+	ExpiresIn    int    `json:"expiresIn"`    // access token TTL in seconds
+}
+
+// AgentRefreshToken represents a persisted v2 refresh token record.
+type AgentRefreshToken struct {
+	ID          int64      `json:"id"`
+	AgentID     int64      `json:"agentId"`
+	TokenPrefix string     `json:"tokenPrefix"`
+	ExpiresAt   time.Time  `json:"expiresAt"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	LastUsedAt  *time.Time `json:"lastUsedAt,omitempty"`
+	RevokedAt   *time.Time `json:"revokedAt,omitempty"`
+}
+
+// ============================================================================
 // OVAL DEFINITIONS
 // ============================================================================
 

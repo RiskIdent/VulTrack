@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"net/mail"
 	"strconv"
@@ -74,6 +75,9 @@ type Handler struct {
 	oidcProvider  *oidc.Provider
 	sessionStore  *session.Store
 	userService   *services.UserService
+
+	// JWT signing secret for v2 agent API
+	jwtSecret []byte
 }
 
 // New creates a new Handler
@@ -115,6 +119,20 @@ func New(
 	sessionStore *session.Store,
 	userService *services.UserService,
 ) *Handler {
+	// Resolve the JWT signing secret.
+	// If JWT_SECRET is not configured we generate a random one and warn — tokens
+	// issued this way will be invalidated on the next restart.
+	jwtSecret := []byte(cfg.JWTSecret)
+	if len(jwtSecret) == 0 {
+		log.Warn().Msg("JWT_SECRET is not set — generating a random secret. " +
+			"Agent v2 access tokens will be invalidated on restart. " +
+			"Set JWT_SECRET in your environment for production use.")
+		jwtSecret = make([]byte, 32)
+		if _, err := rand.Read(jwtSecret); err != nil {
+			log.Fatal().Err(err).Msg("Failed to generate random JWT secret")
+		}
+	}
+
 	h := &Handler{
 		cfg:                   cfg,
 		serverService:         serverService,
@@ -142,6 +160,7 @@ func New(
 		oidcProvider:          oidcProvider,
 		sessionStore:          sessionStore,
 		userService:           userService,
+		jwtSecret:             jwtSecret,
 	}
 
 	// Create Fiber app
@@ -189,11 +208,20 @@ func New(
 	api.Get("/auth/me", h.authMe)
 
 	// ========================================================================
-	// AGENT API — registered BEFORE the protected group so that
+	// AGENT API v1 — registered BEFORE the protected group so that
 	// requireAuth middleware (empty-prefix group) does not intercept them.
 	// ========================================================================
 	api.Post("/agent/enroll", h.enrollAgent)
 	api.Post("/agent/report", h.receiveAgentReport)
+
+	// ========================================================================
+	// AGENT API v2 — standard Authorization: Bearer header, JWT access tokens,
+	// rotating refresh tokens. Old clients continue using v1 unchanged.
+	// ========================================================================
+	apiv2 := app.Group("/api/v2")
+	apiv2.Post("/agent/enroll", h.enrollAgentV2)
+	apiv2.Post("/agent/token", h.refreshAgentToken)
+	apiv2.Post("/agent/report", h.receiveAgentReportV2)
 
 	// Protected API routes (require valid session when OIDC enabled)
 	protected := api.Group("", h.requireAuth)

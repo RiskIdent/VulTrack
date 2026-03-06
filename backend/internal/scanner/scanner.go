@@ -1132,7 +1132,7 @@ func (s *Scanner) evaluateCriteriaNode(ctx context.Context, sourceID int64, node
 						*affectedPackages = append(*affectedPackages, AffectedPackageInfo{
 							Package:  pkg,
 							FixedIn:  test.EVRValue,
-							FixState: fixState, // Typically "fix_available" for version-checked tests
+							FixState: "fix_available", // A known fix version always means fix_available
 						})
 						testMatched = true
 					}

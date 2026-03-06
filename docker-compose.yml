@@ -19,6 +19,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-vultrack}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
+    # Increase /dev/shm so parallel query workers can allocate hash-join memory.
+    # The default Docker value (64 MB) is exhausted when multiple scans run concurrently.
+    shm_size: '256m'
+    command:
+      - "postgres"
+      - "-c"
+      - "max_wal_size=4GB"   # avoids frequent WAL checkpoints during large imports (VEX sync)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vultrack}"]
       interval: 5s

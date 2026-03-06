@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -370,4 +371,121 @@ func (s *AgentService) GetAgentStats(ctx context.Context) (map[string]interface{
 	}
 
 	return stats, nil
+}
+
+// ============================================================================
+// V2 REFRESH TOKEN METHODS
+// ============================================================================
+
+// CreateRefreshToken creates and persists a new refresh token for the given agent.
+// Returns the stored record and the full (unhashed) token to return to the caller once.
+func (s *AgentService) CreateRefreshToken(ctx context.Context, agentID int64, ttlDays int) (*models.AgentRefreshToken, string, error) {
+	fullToken, prefix, err := auth.GenerateRefreshToken()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate refresh token: %w", err)
+	}
+	tokenHash := auth.HashKey(fullToken)
+	expiresAt := time.Now().Add(time.Duration(ttlDays) * 24 * time.Hour)
+
+	var rt models.AgentRefreshToken
+	err = s.db.QueryRow(ctx, `
+		INSERT INTO agent_refresh_tokens (agent_id, token_hash, token_prefix, expires_at)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, agent_id, token_prefix, expires_at, created_at
+	`, agentID, tokenHash, prefix, expiresAt).Scan(
+		&rt.ID, &rt.AgentID, &rt.TokenPrefix, &rt.ExpiresAt, &rt.CreatedAt,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to persist refresh token: %w", err)
+	}
+	return &rt, fullToken, nil
+}
+
+// ValidateAndRotateRefreshToken validates the supplied token, revokes it, issues a
+// replacement, and returns the agent together with the new token string.
+// This implements refresh-token rotation: each token can only be used once.
+func (s *AgentService) ValidateAndRotateRefreshToken(ctx context.Context, token string, ttlDays int) (*models.RegisteredAgent, string, error) {
+	if !auth.ValidateRefreshToken(token) {
+		return nil, "", errors.New("invalid refresh token format")
+	}
+	tokenHash := auth.HashKey(token)
+
+	// Load the refresh token record + owning agent in one query
+	var rt models.AgentRefreshToken
+	var revokedAt *time.Time
+	var agent models.RegisteredAgent
+	err := s.db.QueryRow(ctx, `
+		SELECT rt.id, rt.agent_id, rt.expires_at, rt.revoked_at,
+		       ra.id, ra.server_id, ra.hostname, ra.status
+		FROM agent_refresh_tokens rt
+		JOIN registered_agents ra ON rt.agent_id = ra.id
+		WHERE rt.token_hash = $1
+	`, tokenHash).Scan(
+		&rt.ID, &rt.AgentID, &rt.ExpiresAt, &revokedAt,
+		&agent.ID, &agent.ServerID, &agent.Hostname, &agent.Status,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, "", errors.New("invalid refresh token")
+		}
+		return nil, "", err
+	}
+
+	if revokedAt != nil {
+		return nil, "", errors.New("refresh token has been revoked")
+	}
+	if time.Now().After(rt.ExpiresAt) {
+		return nil, "", errors.New("refresh token has expired")
+	}
+	if agent.Status != models.AgentStatusActive {
+		return nil, "", fmt.Errorf("agent status is %s, not active", agent.Status)
+	}
+
+	// Atomic rotation: revoke old token, insert new one
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		UPDATE agent_refresh_tokens
+		SET revoked_at = NOW(), last_used_at = NOW()
+		WHERE id = $1
+	`, rt.ID)
+	if err != nil {
+		return nil, "", err
+	}
+
+	newFull, newPrefix, err := auth.GenerateRefreshToken()
+	if err != nil {
+		return nil, "", err
+	}
+	newHash := auth.HashKey(newFull)
+	newExpires := time.Now().Add(time.Duration(ttlDays) * 24 * time.Hour)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO agent_refresh_tokens (agent_id, token_hash, token_prefix, expires_at)
+		VALUES ($1, $2, $3, $4)
+	`, rt.AgentID, newHash, newPrefix, newExpires)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, "", err
+	}
+
+	return &agent, newFull, nil
+}
+
+// RevokeAllRefreshTokens marks all active refresh tokens for an agent as revoked.
+// Called when an agent is revoked or forcefully re-enrolled.
+func (s *AgentService) RevokeAllRefreshTokens(ctx context.Context, agentID int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE agent_refresh_tokens
+		SET revoked_at = NOW()
+		WHERE agent_id = $1 AND revoked_at IS NULL
+	`, agentID)
+	return err
 }

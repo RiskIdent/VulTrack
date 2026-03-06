@@ -10,8 +10,10 @@ import (
 const (
 	// EnrollmentKeyPrefix is the prefix for enrollment keys
 	EnrollmentKeyPrefix = "enroll_"
-	// AgentTokenPrefix is the prefix for agent tokens
+	// AgentTokenPrefix is the prefix for agent tokens (v1)
 	AgentTokenPrefix = "at_"
+	// RefreshTokenPrefix is the prefix for v2 refresh tokens
+	RefreshTokenPrefix = "rt_"
 	// KeyLength is the length of the random part of keys (in bytes, will be hex encoded)
 	KeyLength = 32
 )
@@ -91,4 +93,21 @@ func GetEnrollmentKeyPrefix(key string) string {
 // GetAgentTokenPrefix extracts the prefix from an agent token
 func GetAgentTokenPrefix(token string) string {
 	return GetKeyPrefix(token, AgentTokenPrefix)
+}
+
+// GenerateRefreshToken generates a new v2 refresh token
+func GenerateRefreshToken() (fullToken string, prefix string, err error) {
+	randomBytes := make([]byte, KeyLength)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+	randomPart := hex.EncodeToString(randomBytes)
+	fullToken = RefreshTokenPrefix + randomPart
+	prefix = randomPart[:8]
+	return fullToken, prefix, nil
+}
+
+// ValidateRefreshToken checks if a refresh token has the correct format
+func ValidateRefreshToken(token string) bool {
+	return ValidateKeyFormat(token, RefreshTokenPrefix)
 }

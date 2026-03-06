@@ -96,6 +96,7 @@ func extractCVEIDs(v Vulnerability) []string {
 	addIfCVE := func(s string) {
 		upper := strings.ToUpper(strings.TrimSpace(s))
 		upper = trimCVEID(upper)
+		upper = normalizeCVEID(upper)
 		if strings.HasPrefix(upper, "CVE-") && !seen[upper] {
 			seen[upper] = true
 			ids = append(ids, upper)
@@ -154,5 +155,47 @@ func trimCVEID(s string) string {
 		}
 	}
 	return s
+}
+
+// normalizeCVEID reduces an extended Ubuntu CVE identifier to the standard
+// CVE-YYYY-NNNNN format by stripping any descriptive suffix after the number.
+// Example: "CVE-2016-3672-UNLIMITING-THE-STACK-NOT-LONGER-DISABLES-ASLR" → "CVE-2016-3672"
+// This ensures proper matching against findings which store standard CVE IDs.
+func normalizeCVEID(s string) string {
+	if !strings.HasPrefix(s, "CVE-") {
+		return s
+	}
+	rest := s[4:] // strip "CVE-"
+
+	dashIdx := strings.Index(rest, "-")
+	if dashIdx < 0 {
+		return s
+	}
+	year := rest[:dashIdx]
+	if len(year) != 4 || !isAllDigits(year) {
+		return s
+	}
+
+	rest = rest[dashIdx+1:]
+	numEnd := strings.Index(rest, "-")
+	var number string
+	if numEnd < 0 {
+		number = rest
+	} else {
+		number = rest[:numEnd]
+	}
+	if len(number) == 0 || !isAllDigits(number) {
+		return s
+	}
+	return "CVE-" + year + "-" + number
+}
+
+func isAllDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 

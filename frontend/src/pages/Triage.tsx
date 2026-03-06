@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play } from 'lucide-react';
 import { CVSSBadge, VendorSeverityBadge, VEXBadge } from '../components/SeverityBadge';
-import { getTriageQueue, TriageFilter } from '../api/client';
+import { getTriageQueue, getSettings, TriageFilter } from '../api/client';
 import type { Finding } from '../types';
 
 type SortField = 'cveId' | 'cvss3Score' | 'severity' | 'packageName' | 'serverName';
@@ -16,7 +16,6 @@ export default function Triage() {
   const [filter, setFilter] = useState<TriageFilter | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [hideNotAffected, setHideNotAffected] = useState(true);
 
   // Filtering, sorting, pagination
   const [searchQuery, setSearchQuery] = useState('');
@@ -28,6 +27,11 @@ export default function Triage() {
     async function fetchData() {
       setLoading(true);
       try {
+        const settingsData = await getSettings();
+        const settings: Record<string, string> = {};
+        (settingsData.settings || []).forEach((s: { key: string; value: string }) => { settings[s.key] = s.value; });
+        const hideNotAffected = settings['triage_hide_vex_not_affected'] !== 'false';
+
         const data = await getTriageQueue({ limit: 1000, hideVexNotAffected: hideNotAffected });
         setFindings(data.findings || []);
         setTotal(data.total);
@@ -39,7 +43,7 @@ export default function Triage() {
       }
     }
     fetchData();
-  }, [hideNotAffected]);
+  }, []);
 
   // Reset page when search changes
   useEffect(() => {
@@ -172,17 +176,6 @@ export default function Triage() {
               className="pl-10 pr-4 py-2 bg-[#1a2420] border border-[#2d3f36] rounded-lg text-[#e8f5e9] placeholder-[#6b7280] focus:outline-none focus:border-[#4ade80] w-64"
             />
           </div>
-
-          {/* VEX toggle */}
-          <label className="flex items-center gap-2 cursor-pointer text-sm text-[#a5d6a7]">
-            <input
-              type="checkbox"
-              className="w-4 h-4 rounded border-[#2d3f36] bg-[#0a0f0d] text-[#4ade80] focus:ring-[#4ade80]"
-              checked={hideNotAffected}
-              onChange={(e) => { setHideNotAffected(e.target.checked); setCurrentPage(1); }}
-            />
-            Hide "Not Affected"
-          </label>
 
           {/* Start Triage Button */}
           {findings.length > 0 && (

@@ -50,6 +50,10 @@ type Config struct {
 	JiraProjectKey string
 	JiraIssueType  string
 
+	// Agent JWT signing secret for v2 API (HS256).
+	// If empty, a random secret is generated on startup — tokens will be invalidated on restart.
+	JWTSecret string
+
 	// SMTP (optional; when disabled, no emails are sent)
 	SMTPEnabled  bool
 	SMTPHost     string
@@ -109,6 +113,9 @@ func Load() (*Config, error) {
 		JiraAPIToken:   getEnv("JIRA_API_TOKEN", ""),
 		JiraProjectKey: getEnv("JIRA_PROJECT_KEY", ""),
 		JiraIssueType:  getEnv("JIRA_ISSUE_TYPE", "Task"),
+
+		// Agent JWT secret
+		JWTSecret: getEnv("JWT_SECRET", ""),
 
 		// SMTP defaults (disabled)
 		SMTPEnabled:  getEnvAsBool("SMTP_ENABLED", false),

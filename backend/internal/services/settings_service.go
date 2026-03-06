@@ -120,6 +120,19 @@ func (s *SettingsService) SetMultiple(ctx context.Context, settings map[string]s
 	return nil
 }
 
+// GetIntWithDefault returns a setting as int, falling back to defaultValue on any error.
+func (s *SettingsService) GetIntWithDefault(ctx context.Context, key string, defaultValue int) int {
+	value, err := s.GetValue(ctx, key)
+	if err != nil {
+		return defaultValue
+	}
+	intVal, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultValue
+	}
+	return intVal
+}
+
 // GetTriageCVSSThreshold returns the configured CVSS threshold for triage
 func (s *SettingsService) GetTriageCVSSThreshold(ctx context.Context) (float64, error) {
 	threshold, err := s.GetFloat(ctx, "triage_cvss_threshold")

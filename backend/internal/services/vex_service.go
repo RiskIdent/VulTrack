@@ -169,6 +169,12 @@ func (s *VEXService) EnrichFindings(ctx context.Context, serverID int64, distro 
 		SET
 			vex_status        = v.status,
 			vex_justification = v.justification,
+			-- VEX will_not_fix overrides OVAL 'affected' (no fix known), but never overrides
+			-- 'fix_available' — a known fix takes precedence over Canonical's won't-fix stance.
+			fix_state         = CASE
+				WHEN v.status = 'will_not_fix' AND f.fix_state = 'affected' THEN 'will_not_fix'
+				ELSE f.fix_state
+			END,
 			updated_at        = NOW()
 		FROM (
 			SELECT DISTINCT ON (cve_id, package_name)

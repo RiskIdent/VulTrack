@@ -568,3 +568,23 @@ CREATE INDEX IF NOT EXISTS idx_vex_generation ON vex_statements (sync_generation
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS vex_status VARCHAR(30);
     -- 'not_affected' | 'will_not_fix' | 'under_investigation' | NULL
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS vex_justification TEXT;
+
+-- ============================================================================
+-- AGENT V2: refresh tokens (long-lived, rotated on use)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS agent_refresh_tokens (
+    id           SERIAL PRIMARY KEY,
+    agent_id     INTEGER NOT NULL REFERENCES registered_agents(id) ON DELETE CASCADE,
+    token_hash   VARCHAR(64) NOT NULL,   -- SHA-256 hash of the full token
+    token_prefix VARCHAR(8)  NOT NULL,   -- first 8 hex chars for identification
+    expires_at   TIMESTAMP   NOT NULL,
+    created_at   TIMESTAMP   DEFAULT NOW(),
+    last_used_at TIMESTAMP,
+    revoked_at   TIMESTAMP               -- NULL = active
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_refresh_tokens_agent_id
+    ON agent_refresh_tokens(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_refresh_tokens_expires_at
+    ON agent_refresh_tokens(expires_at);

@@ -288,7 +288,8 @@ func (s *Syncer) streamAndImport(ctx context.Context, url string, generation int
 				SourceID:      row.SourceID,
 			})
 			if len(batch) >= insertBatchSize {
-				n, err := s.vexService.BulkInsert(ctx, dedupBatch(batch), generation)
+				deduped := dedupBatch(batch)
+				n, err := s.vexService.BulkInsert(ctx, deduped, generation)
 				totalCount += n
 				if err != nil {
 					log.Warn().Err(err).Msg("VEX batch insert error")
@@ -299,7 +300,8 @@ func (s *Syncer) streamAndImport(ctx context.Context, url string, generation int
 		}
 		// Flush remainder.
 		if len(batch) > 0 {
-			n, err := s.vexService.BulkInsert(ctx, dedupBatch(batch), generation)
+			deduped := dedupBatch(batch)
+			n, err := s.vexService.BulkInsert(ctx, deduped, generation)
 			totalCount += n
 			if err != nil {
 				log.Warn().Err(err).Msg("VEX final batch insert error")

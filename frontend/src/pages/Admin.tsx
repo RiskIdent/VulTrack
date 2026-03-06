@@ -291,6 +291,22 @@ function TriageSettingsTab() {
               </div>
             </div>
           )}
+
+          {/* VEX Filter */}
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editedValues['triage_hide_vex_not_affected'] !== 'false'}
+                onChange={(e) => setEditedValues({ ...editedValues, triage_hide_vex_not_affected: e.target.checked ? 'true' : 'false' })}
+                className="w-4 h-4 rounded text-[#4ade80] bg-[#1a2420] border-[#2d3f36] focus:ring-[#4ade80]"
+              />
+              <span className="text-[#e8f5e9]">Hide "Not Affected" (VEX)</span>
+            </label>
+            <p className="text-xs text-[#6b7280] mt-1 ml-6">
+              When enabled, findings where Canonical's VEX data marks the package as not affected are excluded from the triage queue.
+            </p>
+          </div>
         </div>
 
         <div className="mt-6 pt-4 border-t border-[#2d3f36]">

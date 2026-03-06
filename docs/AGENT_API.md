@@ -1,29 +1,216 @@
 # VulTrack Agent API Specification
 
-This document describes the API that VulTrack agents must implement to register with the server and report system/package information.
+This document describes the API that VulTrack agents use to enroll with the server and submit system/package reports.
 
-## Base URL
+Two API versions are available in parallel. New agent implementations should use **v2**. Existing v1 agents continue to work without modification.
+
+---
+
+## API Versions
+
+| Version | Base URL | Auth mechanism | Token lifetime |
+|---------|----------|----------------|----------------|
+| v1 (legacy) | `/api/v1/agent` | Custom headers (`X-Enrollment-Key`, `X-Agent-Token`) | Indefinite (until manually revoked) |
+| **v2 (current)** | `/api/v2/agent` | `Authorization: Bearer` (RFC 6750) | Access token: 24 h · Refresh token: 90 days (configurable) |
+
+---
+
+## API v2 (Current)
+
+### Authentication overview
+
+v2 uses a two-token model:
+
+- **Access token** — short-lived signed JWT (HS256). Passed as `Authorization: Bearer <jwt>` on every report request. No database lookup is required on the server to validate it.
+- **Refresh token** — long-lived opaque token (`rt_…`). Used exclusively to obtain a new access token. Each use **rotates** the refresh token (old token is revoked, new one is issued atomically).
+
+### v2.1 Enrollment
+
+Agents must enroll once before they can submit reports.
+
+**`POST /api/v2/agent/enroll`**
+
+#### Headers
+
+| Header | Required | Value |
+|--------|----------|-------|
+| `Authorization` | Yes | `Bearer enroll_<enrollment-key>` |
+| `Content-Type` | Yes | `application/json` |
+
+#### Request body
+
+```json
+{
+  "hostname": "server01.example.com",
+  "force": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `hostname` | string | Yes | Fully qualified hostname of the server |
+| `osFamily` | string | No | OS family, e.g. `"ubuntu"` |
+| `osRelease` | string | No | OS version, e.g. `"24.04"` |
+| `osCodename` | string | No | Distribution codename, e.g. `"noble"` |
+| `kernel` | string | No | Kernel version from `uname -r` |
+| `arch` | string | No | System architecture, e.g. `"amd64"` |
+| `packageManager` | string | No | `"dpkg"` or `"rpm"` |
+| `ipv4Addrs` | string[] | No | IPv4 addresses of the system |
+| `force` | bool | No | Re-enroll even if this hostname is already registered. The old agent and all its refresh tokens are revoked. Default: `false` |
+
+#### Response (201 Created)
+
+```json
+{
+  "tokenType": "Bearer",
+  "accessToken": "<signed JWT>",
+  "refreshToken": "rt_abc123...",
+  "expiresIn": 86400,
+  "status": "active"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `tokenType` | Always `"Bearer"` |
+| `accessToken` | Short-lived JWT. Use as `Authorization: Bearer <accessToken>` on report requests. |
+| `refreshToken` | Long-lived opaque token. **Store securely — only returned once per enrollment.** Use to obtain new access tokens via `/api/v2/agent/token`. |
+| `expiresIn` | Access token validity in seconds (default: 86400 = 24 h) |
+| `status` | `"active"` or `"pending"` (pending requires manual admin approval before reports are accepted) |
+
+#### Error responses
+
+| Status | Description |
+|--------|-------------|
+| `400 Bad Request` | Missing `hostname` or invalid JSON |
+| `401 Unauthorized` | Missing, invalid, expired, or inactive enrollment key |
+| `409 Conflict` | Hostname already registered. Set `force: true` to re-enroll. |
+
+---
+
+### v2.2 Token refresh
+
+Obtain a new access token (JWT) using the current refresh token. The supplied refresh token is **revoked** and a fresh one is returned (rotation).
+
+**`POST /api/v2/agent/token`**
+
+#### Headers
+
+| Header | Required | Value |
+|--------|----------|-------|
+| `Authorization` | Yes | `Bearer rt_<refresh-token>` |
+
+#### Response (200 OK)
+
+```json
+{
+  "tokenType": "Bearer",
+  "accessToken": "<new signed JWT>",
+  "refreshToken": "rt_xyz789...",
+  "expiresIn": 86400
+}
+```
+
+The agent **must replace both stored tokens** after a successful refresh.
+
+#### Error responses
+
+| Status | Description |
+|--------|-------------|
+| `401 Unauthorized` | Refresh token not found, already revoked, or expired |
+
+---
+
+### v2.3 Submit report
+
+Submit a system and package report. The server upserts the server record, syncs the package list, and enqueues a vulnerability scan.
+
+**`POST /api/v2/agent/report`**
+
+#### Headers
+
+| Header | Required | Value |
+|--------|----------|-------|
+| `Authorization` | Yes | `Bearer <access-token (JWT)>` |
+| `Content-Type` | Yes | `application/json` |
+
+The JWT is validated by verifying its HMAC-SHA256 signature and expiry time only — no database lookup is performed. If the JWT has expired the agent should obtain a new one via `/api/v2/agent/token` and retry.
+
+#### Request body
+
+Identical to v1 — see [Request Body](#report-request-body) below.
+
+#### Response (200 OK)
+
+```json
+{
+  "message": "Report processed successfully",
+  "serverId": 42,
+  "packageCount": 1523,
+  "scanJobId": "a1b2c3d4-..."
+}
+```
+
+#### Error responses
+
+| Status | Description |
+|--------|-------------|
+| `400 Bad Request` | Missing required field or invalid JSON |
+| `401 Unauthorized` | Missing, invalid, or expired access token; or agent has been revoked |
+
+---
+
+### v2 Complete workflow
 
 ```
-https://<vultrack-server>/api/v1/agent
+┌─────────────────────────────────────────────────────────┐
+│ FIRST RUN                                               │
+│                                                         │
+│  POST /api/v2/agent/enroll                              │
+│  Authorization: Bearer enroll_<key>                     │
+│  → { accessToken, refreshToken, expiresIn, status }     │
+│                                                         │
+│  Store refreshToken → /etc/vultrack-agent/refresh.token │
+│  Keep accessToken in memory (or re-fetch on startup)    │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│ PERIODIC REPORT (e.g. every hour)                       │
+│                                                         │
+│  POST /api/v2/agent/report                              │
+│  Authorization: Bearer <accessToken>                    │
+│  → 200 OK                                               │
+│                                                         │
+│  If 401: access token expired →                         │
+│    POST /api/v2/agent/token                             │
+│    Authorization: Bearer <refreshToken>                 │
+│    → { accessToken, refreshToken }  (rotation!)         │
+│    Update stored refreshToken, retry report             │
+│                                                         │
+│  If 401 on token refresh: refresh token expired →       │
+│    Re-enroll using enrollment key from config           │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 1. Agent Enrollment (Registration)
+## API v1 (Legacy)
 
-Agents must register once before they can submit reports.
+> **Deprecated.** v1 remains fully functional for backward compatibility. New agent implementations should use v2.
 
-**Endpoint:** `POST /api/v1/agent/enroll`
+### v1.1 Enrollment
 
-### Headers
+**`POST /api/v1/agent/enroll`**
 
-| Header | Type | Required | Description |
-|--------|------|----------|-------------|
-| `X-Enrollment-Key` | string | Yes | Enrollment key created in Admin UI |
-| `Content-Type` | string | Yes | `application/json` |
+#### Headers
 
-### Request Body
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Enrollment-Key` | Yes | Enrollment key created in the Admin UI |
+| `Content-Type` | Yes | `application/json` |
+
+#### Request body
 
 ```json
 {
@@ -31,48 +218,35 @@ Agents must register once before they can submit reports.
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `hostname` | string | Yes | Fully qualified hostname of the server |
-
-### Response (201 Created)
+#### Response (201 Created)
 
 ```json
 {
-  "agentToken": "vt_abc123...",
+  "agentToken": "at_abc123...",
   "status": "active"
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `agentToken` | Unique token for this agent. **Store securely - only returned once!** |
-| `status` | `"active"` (auto-approved) or `"pending"` (requires manual approval) |
-
-### Error Responses
-
-| Status | Description |
-|--------|-------------|
-| `400 Bad Request` | Missing hostname or invalid JSON |
-| `401 Unauthorized` | Missing or invalid enrollment key |
-| `409 Conflict` | Agent already registered for this hostname |
+Store `agentToken` securely. It is returned only once and does not expire automatically.
 
 ---
 
-## 2. Agent Report (Data Submission)
+### v1.2 Submit report
 
-Agents should submit reports periodically (e.g., every hour via cron).
+**`POST /api/v1/agent/report`**
 
-**Endpoint:** `POST /api/v1/agent/report`
+#### Headers
 
-### Headers
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Agent-Token` | Yes | Token received from enrollment |
+| `Content-Type` | Yes | `application/json` |
 
-| Header | Type | Required | Description |
-|--------|------|----------|-------------|
-| `X-Agent-Token` | string | Yes | Token received from enrollment |
-| `Content-Type` | string | Yes | `application/json` |
+---
 
-### Request Body
+## Report Request Body
+
+The report body is identical across v1 and v2.
 
 ```json
 {
@@ -103,28 +277,28 @@ Agents should submit reports periodically (e.g., every hour via cron).
 }
 ```
 
-### Required Fields
+### Required fields
 
 | Field | Type | Description | Example |
 |-------|------|-------------|---------|
-| `hostname` | string | Server hostname | `"server01.example.com"` |
+| `hostname` | string | Fully qualified hostname | `"server01.example.com"` |
 | `osFamily` | string | OS family (lowercase) | `"ubuntu"`, `"debian"`, `"rhel"`, `"centos"`, `"rocky"`, `"alma"` |
 | `osRelease` | string | OS version | `"24.04"`, `"12"`, `"9.4"` |
 | `kernel` | string | Kernel version | `"6.8.0-45-generic"` |
-| `arch` | string | System architecture | `"amd64"`, `"arm64"`, `"i386"`, `"x86_64"` |
+| `arch` | string | System architecture | `"amd64"`, `"arm64"`, `"i386"` |
 | `ipv4Addrs` | string[] | At least one IPv4 address | `["192.168.1.10"]` |
-| `packages` | array | List of installed packages | See package object below |
+| `packages` | array | Installed packages (may be empty) | See package object below |
 
-### Optional Fields
+### Optional fields
 
 | Field | Type | Description | Example |
 |-------|------|-------------|---------|
 | `agentVersion` | string | Version of the agent software | `"1.0.0"` |
 | `osCodename` | string | Distribution codename | `"noble"`, `"bookworm"`, `"jammy"` |
 | `packageManager` | string | Package manager type | `"dpkg"`, `"rpm"` |
-| `reportedAt` | string | ISO8601 timestamp | `"2026-01-25T14:30:00Z"` |
+| `reportedAt` | string | ISO 8601 timestamp; server uses `NOW()` if omitted | `"2026-01-25T14:30:00Z"` |
 
-### Package Object
+### Package object
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -133,113 +307,113 @@ Agents should submit reports periodically (e.g., every hour via cron).
 | `arch` | string | No | Package architecture |
 | `source` | string | No | Source package name |
 
-### Response (200 OK)
-
-```json
-{
-  "message": "Report processed successfully",
-  "serverId": 42,
-  "packageCount": 1523
-}
-```
-
-### Error Responses
-
-| Status | Description |
-|--------|-------------|
-| `400 Bad Request` | Missing required field or invalid JSON |
-| `401 Unauthorized` | Missing or invalid agent token |
-| `403 Forbidden` | Agent status is `pending` or `revoked` |
-
 ---
 
 ## Data Collection Guide
 
-### System Information
+### System information
 
-The agent must collect the following system information:
-
-| Information | Linux Command | Example Output |
-|-------------|---------------|----------------|
+| Information | Source | Example |
+|-------------|--------|---------|
 | Hostname | `hostname -f` | `server01.example.com` |
-| OS Family | Parse `/etc/os-release` → `ID` | `ubuntu` |
-| OS Release | Parse `/etc/os-release` → `VERSION_ID` | `24.04` |
-| OS Codename | Parse `/etc/os-release` → `VERSION_CODENAME` | `noble` |
+| OS Family | `/etc/os-release` → `ID` | `ubuntu` |
+| OS Release | `/etc/os-release` → `VERSION_ID` | `24.04` |
+| OS Codename | `/etc/os-release` → `VERSION_CODENAME` | `noble` |
 | Kernel | `uname -r` | `6.8.0-45-generic` |
-| Architecture | `uname -m` (normalize to amd64/arm64) | `x86_64` → `amd64` |
-| IPv4 Addresses | `hostname -I` or parse `ip -4 addr` | `192.168.1.10 10.0.0.5` |
+| Architecture | `uname -m` (normalize; see below) | `x86_64` → `amd64` |
+| IPv4 Addresses | `hostname -I` or `ip -4 addr` | `192.168.1.10 10.0.0.5` |
 
-### Package List
+### Architecture normalization
 
-#### Debian/Ubuntu (dpkg)
-
-```bash
-dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\t${source:Package}\n'
-```
-
-Output format (tab-separated):
-```
-openssl    3.0.13-0ubuntu3.4    amd64    openssl
-curl       8.5.0-2ubuntu10.6    amd64    curl
-```
-
-#### RHEL/CentOS/Rocky/Alma (rpm)
-
-```bash
-rpm -qa --queryformat '%{NAME}\t%{EVR}\t%{ARCH}\t%{SOURCERPM}\n'
-```
-
-Output format (tab-separated):
-```
-openssl    1:3.0.7-27.el9    x86_64    openssl-3.0.7-27.el9.src.rpm
-curl       7.76.1-29.el9     x86_64    curl-7.76.1-29.el9.src.rpm
-```
-
----
-
-## Architecture Normalization
-
-The `arch` field should be normalized to standard values:
-
-| Raw Value | Normalized Value |
-|-----------|------------------|
+| Raw value | Normalized value |
+|-----------|-----------------|
 | `x86_64` | `amd64` |
 | `aarch64` | `arm64` |
 | `i686`, `i386` | `i386` |
 | `armv7l` | `armhf` |
 
+### Package list collection
+
+**Debian/Ubuntu (dpkg)**
+
+```bash
+dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\t${source:Package}\n'
+```
+
+**RHEL / CentOS / Rocky / Alma (rpm)**
+
+```bash
+rpm -qa --queryformat '%{NAME}\t%{EVR}\t%{ARCH}\t%{SOURCERPM}\n'
+```
+
 ---
 
-## Complete Agent Workflow Example
+## Complete v2 Agent Example (bash)
 
-### Step 1: Enrollment (one-time)
+### Step 1: Enrollment (first run only)
 
 ```bash
 #!/bin/bash
+set -euo pipefail
+
 VULTRACK_URL="https://vultrack.example.com"
-ENROLLMENT_KEY="vt_enroll_abc123..."
+ENROLLMENT_KEY="enroll_abc123..."   # from Admin UI
+REFRESH_TOKEN_FILE="/etc/vultrack-agent/refresh.token"
+ACCESS_TOKEN_FILE="/run/vultrack-agent/access.token"  # tmpfs / memory
 
-# Enroll the agent
-RESPONSE=$(curl -s -X POST "${VULTRACK_URL}/api/v1/agent/enroll" \
-  -H "X-Enrollment-Key: ${ENROLLMENT_KEY}" \
+mkdir -p "$(dirname "$REFRESH_TOKEN_FILE")" "$(dirname "$ACCESS_TOKEN_FILE")"
+
+RESPONSE=$(curl -sf -X POST "${VULTRACK_URL}/api/v2/agent/enroll" \
+  -H "Authorization: Bearer ${ENROLLMENT_KEY}" \
   -H "Content-Type: application/json" \
-  -d "{\"hostname\": \"$(hostname -f)\"}")
+  -d "{\"hostname\": \"$(hostname -f)\", \"force\": false}")
 
-# Extract and save the agent token
-AGENT_TOKEN=$(echo "$RESPONSE" | jq -r '.agentToken')
-echo "$AGENT_TOKEN" > /etc/vultrack/agent-token
+echo "$RESPONSE" | jq -r '.refreshToken' > "$REFRESH_TOKEN_FILE"
+chmod 600 "$REFRESH_TOKEN_FILE"
 
-# Check status
+echo "$RESPONSE" | jq -r '.accessToken' > "$ACCESS_TOKEN_FILE"
+chmod 600 "$ACCESS_TOKEN_FILE"
+
 STATUS=$(echo "$RESPONSE" | jq -r '.status')
 echo "Agent enrolled with status: $STATUS"
 ```
 
-### Step 2: Report Submission (scheduled via cron)
+### Step 2: Token refresh helper
 
 ```bash
 #!/bin/bash
+# refresh-token.sh — obtain a new access token; update both stored tokens
+
 VULTRACK_URL="https://vultrack.example.com"
-AGENT_TOKEN=$(cat /etc/vultrack/agent-token)
+REFRESH_TOKEN_FILE="/etc/vultrack-agent/refresh.token"
+ACCESS_TOKEN_FILE="/run/vultrack-agent/access.token"
+
+REFRESH_TOKEN=$(cat "$REFRESH_TOKEN_FILE")
+
+RESPONSE=$(curl -sf -X POST "${VULTRACK_URL}/api/v2/agent/token" \
+  -H "Authorization: Bearer ${REFRESH_TOKEN}")
+
+# Rotation: both tokens change on every refresh
+echo "$RESPONSE" | jq -r '.refreshToken' > "$REFRESH_TOKEN_FILE"
+echo "$RESPONSE" | jq -r '.accessToken'  > "$ACCESS_TOKEN_FILE"
+chmod 600 "$REFRESH_TOKEN_FILE" "$ACCESS_TOKEN_FILE"
+```
+
+### Step 3: Report submission (scheduled via cron)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+VULTRACK_URL="https://vultrack.example.com"
+ACCESS_TOKEN_FILE="/run/vultrack-agent/access.token"
+ENROLLMENT_KEY="enroll_abc123..."   # kept in config for re-enrollment
+
+# Refresh access token before every report to ensure it is valid
+bash /usr/local/lib/vultrack-agent/refresh-token.sh \
+  || bash /usr/local/lib/vultrack-agent/enroll.sh    # re-enroll if refresh fails
+
+ACCESS_TOKEN=$(cat "$ACCESS_TOKEN_FILE")
 
 # Collect system information
 HOSTNAME=$(hostname -f)
@@ -250,51 +424,70 @@ KERNEL=$(uname -r)
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 IPV4_ADDRS=$(hostname -I | tr ' ' '\n' | grep -E '^[0-9]+\.' | jq -R . | jq -s .)
 
-# Collect package list (Debian/Ubuntu)
-PACKAGES=$(dpkg-query -W -f='{"name":"${Package}","version":"${Version}","arch":"${Architecture}","source":"${source:Package}"}\n' | jq -s .)
+# Collect packages (Debian/Ubuntu)
+PACKAGES=$(dpkg-query -W -f='{"name":"${Package}","version":"${Version}","arch":"${Architecture}","source":"${source:Package}"}\n' \
+  | jq -s .)
 
-# Build and send report
-curl -s -X POST "${VULTRACK_URL}/api/v1/agent/report" \
-  -H "X-Agent-Token: ${AGENT_TOKEN}" \
+curl -sf -X POST "${VULTRACK_URL}/api/v2/agent/report" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   -H "Content-Type: application/json" \
   -d @- <<EOF
 {
-  "hostname": "${HOSTNAME}",
-  "osFamily": "${OS_FAMILY}",
-  "osRelease": "${OS_RELEASE}",
-  "osCodename": "${OS_CODENAME}",
-  "kernel": "${KERNEL}",
-  "arch": "${ARCH}",
+  "hostname":       "${HOSTNAME}",
+  "osFamily":       "${OS_FAMILY}",
+  "osRelease":      "${OS_RELEASE}",
+  "osCodename":     "${OS_CODENAME}",
+  "kernel":         "${KERNEL}",
+  "arch":           "${ARCH}",
   "packageManager": "dpkg",
-  "ipv4Addrs": ${IPV4_ADDRS},
-  "packages": ${PACKAGES}
+  "ipv4Addrs":      ${IPV4_ADDRS},
+  "packages":       ${PACKAGES}
 }
 EOF
 ```
 
-### Cron Entry
+### Cron entry
 
 ```cron
 # Report to VulTrack every hour
-0 * * * * /usr/local/bin/vultrack-report.sh >> /var/log/vultrack-agent.log 2>&1
+0 * * * * root /usr/local/bin/vultrack-report.sh >> /var/log/vultrack-agent.log 2>&1
 ```
 
 ---
 
-## Security Considerations
+## Server configuration
 
-1. **Store tokens securely**: The agent token should be stored with restricted permissions (e.g., `chmod 600`)
-2. **Use HTTPS**: Always use TLS for communication with the VulTrack server
-3. **Rotate tokens**: If a token is compromised, revoke the agent in the Admin UI and re-enroll
-4. **Firewall**: Ensure the agent can reach the VulTrack API endpoint
+### Environment variable
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JWT_SECRET` | *(random, not persisted)* | HMAC-SHA256 signing secret for JWT access tokens. **Must be set in production** — otherwise all access tokens are invalidated on server restart. Minimum 32 bytes. |
+
+### Configurable settings (Admin UI → Settings)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `agent_access_token_ttl_hours` | `24` | Access token (JWT) validity in hours |
+| `agent_refresh_token_ttl_days` | `90` | Refresh token validity in days |
 
 ---
 
-## Supported Distributions
+## Security considerations
+
+1. **Use HTTPS.** All communication must be over TLS. Never send tokens over plain HTTP.
+2. **Protect stored tokens.** Both the refresh token file and (if persisted) the access token file must have mode `0600` and be owned by the agent's service user.
+3. **Keep the enrollment key in the config.** The enrollment key must remain available so the agent can re-enroll automatically if the refresh token expires.
+4. **Token rotation.** Every call to `/api/v2/agent/token` issues a new refresh token and revokes the old one. Always persist the new refresh token before discarding the old one.
+5. **Revocation.** An admin can revoke an agent in the Admin UI. The next access token validation will return `401` (the revocation check happens on the lightweight DB read in `/api/v2/agent/report`). The agent will then attempt a token refresh, which will also fail, and finally re-enroll.
+6. **v1 tokens do not expire.** If you are migrating from v1, revoke old agent records in the Admin UI after switching to v2.
+
+---
+
+## Supported distributions
 
 VulTrack currently supports vulnerability scanning for:
 
-| Distribution | OS Family Value | Package Manager |
+| Distribution | `osFamily` value | Package manager |
 |--------------|-----------------|-----------------|
 | Ubuntu | `ubuntu` | `dpkg` |
 | Debian | `debian` | `dpkg` |
@@ -303,4 +496,4 @@ VulTrack currently supports vulnerability scanning for:
 | Rocky Linux | `rocky` | `rpm` |
 | AlmaLinux | `alma` | `rpm` |
 
-> **Note:** OVAL sources must be enabled in the Admin UI for the corresponding distribution and version before vulnerability scanning will work.
+> **Note:** OVAL sources must be enabled in the Admin UI for the relevant distribution and version before vulnerability scanning produces results.
