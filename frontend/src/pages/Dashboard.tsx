@@ -159,11 +159,11 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={topServers} layout="vertical">
                 <XAxis type="number" stroke="#6b7280" />
-                <YAxis 
-                  type="category" 
-                  dataKey="name" 
-                  stroke="#6b7280" 
-                  width={120}
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  stroke="#6b7280"
+                  width={Math.min(Math.max(...topServers.map(s => s.name.length), 0) * 7 + 8, 220)}
                   tick={{ fontSize: 12 }}
                 />
                 <Tooltip 

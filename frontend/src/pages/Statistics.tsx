@@ -183,11 +183,11 @@ export default function Statistics() {
               <BarChart data={topServers} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" stroke="#2d3f36" />
                 <XAxis type="number" stroke="#6b7280" />
-                <YAxis 
-                  type="category" 
-                  dataKey="name" 
-                  stroke="#6b7280" 
-                  width={100}
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  stroke="#6b7280"
+                  width={Math.min(Math.max(...topServers.map(s => s.name.length), 0) * 7 + 8, 220)}
                   tick={{ fontSize: 11 }}
                 />
                 <Tooltip 

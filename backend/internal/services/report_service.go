@@ -1283,11 +1283,20 @@ func (s *ReportService) generateTrendChart(data *ReportData) ([]byte, error) {
 	smoothX, smoothNew := catmullRomInterpolate(xValues, newValues, 12)
 	_, smoothResolved := catmullRomInterpolate(xValues, resolvedValues, 12)
 
+	red := drawing.Color{R: 220, G: 53, B: 69, A: 255}
+	green := drawing.Color{R: 40, G: 167, B: 69, A: 255}
+
 	graph := chart.Chart{
 		Width:  700,
 		Height: 350,
 		Background: chart.Style{
 			FillColor: drawing.ColorWhite,
+			Padding: chart.Box{
+				Top:    10,
+				Left:   20,
+				Right:  10,
+				Bottom: 10,
+			},
 		},
 		XAxis: chart.XAxis{
 			Style: chart.Style{
@@ -1297,19 +1306,23 @@ func (s *ReportService) generateTrendChart(data *ReportData) ([]byte, error) {
 		YAxis: chart.YAxis{
 			Name: "New Findings",
 			NameStyle: chart.Style{
-				FontSize: 8,
+				FontSize:  8,
+				FontColor: red,
 			},
 			Style: chart.Style{
-				FontSize: 8,
+				FontSize:  8,
+				FontColor: red,
 			},
 		},
 		YAxisSecondary: chart.YAxis{
 			Name: "Resolved Findings",
 			NameStyle: chart.Style{
-				FontSize: 8,
+				FontSize:  8,
+				FontColor: green,
 			},
 			Style: chart.Style{
-				FontSize: 8,
+				FontSize:  8,
+				FontColor: green,
 			},
 		},
 		Series: []chart.Series{
@@ -1318,7 +1331,7 @@ func (s *ReportService) generateTrendChart(data *ReportData) ([]byte, error) {
 				XValues: smoothX,
 				YValues: smoothNew,
 				Style: chart.Style{
-					StrokeColor: drawing.Color{R: 220, G: 53, B: 69, A: 255},
+					StrokeColor: red,
 					StrokeWidth: 2,
 				},
 			},
@@ -1328,7 +1341,7 @@ func (s *ReportService) generateTrendChart(data *ReportData) ([]byte, error) {
 				XValues: smoothX,
 				YValues: smoothResolved,
 				Style: chart.Style{
-					StrokeColor: drawing.Color{R: 40, G: 167, B: 69, A: 255},
+					StrokeColor: green,
 					StrokeWidth: 2,
 				},
 			},
@@ -1448,13 +1461,13 @@ func (s *ReportService) addFullCVEList(m core.Maroto, data *ReportData) {
 	)
 
 	// Column header row
-	m.AddRow(7,
-		col.New(3).Add(text.New("CVE ID", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
-		col.New(1).Add(text.New("CVSS", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
-		col.New(2).Add(text.New("Severity", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
-		col.New(1).Add(text.New("Servers", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
-		col.New(2).Add(text.New("First Seen", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
-		col.New(3).Add(text.New("VEX Status", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+	m.AddRow(8,
+		col.New(3).Add(text.New("CVE ID", props.Text{Size: 8, Style: fontstyle.Bold, Color: headerText, Top: 1.5})),
+		col.New(1).Add(text.New("CVSS", props.Text{Size: 8, Style: fontstyle.Bold, Align: align.Center, Color: headerText, Top: 1.5})),
+		col.New(2).Add(text.New("Severity", props.Text{Size: 8, Style: fontstyle.Bold, Color: headerText, Top: 1.5})),
+		col.New(1).Add(text.New("Servers", props.Text{Size: 8, Style: fontstyle.Bold, Align: align.Center, Color: headerText, Top: 1.5})),
+		col.New(2).Add(text.New("First Seen", props.Text{Size: 8, Style: fontstyle.Bold, Color: headerText, Top: 1.5})),
+		col.New(3).Add(text.New("VEX Status", props.Text{Size: 8, Style: fontstyle.Bold, Color: headerText, Top: 1.5})),
 	).WithStyle(headerCell)
 
 	for i, cve := range data.AllCVEs {
@@ -1465,19 +1478,20 @@ func (s *ReportService) addFullCVEList(m core.Maroto, data *ReportData) {
 		rowCell := &props.Cell{BackgroundColor: rowBg, BorderType: border.Full, BorderColor: headerBg}
 		vexLabel := formatVexStatus(cve.VexStatus)
 
-		m.AddRow(7,
-			col.New(3).Add(text.New(cve.CVEID, props.Text{Size: 8, Style: fontstyle.Bold})),
-			col.New(1).Add(text.New(fmt.Sprintf("%.1f", cve.CVSS3Score), props.Text{Size: 8, Align: align.Center})),
-			col.New(2).Add(text.New(cve.NVDSeverity, props.Text{Size: 8})),
-			col.New(1).Add(text.New(fmt.Sprintf("%d", cve.ServerCount), props.Text{Size: 8, Align: align.Center})),
-			col.New(2).Add(text.New(cve.FirstSeen.Format("2006-01-02"), props.Text{Size: 8})),
-			col.New(3).Add(text.New(vexLabel, props.Text{Size: 8})),
+		m.AddRow(8,
+			col.New(3).Add(text.New(cve.CVEID, props.Text{Size: 7.5, Style: fontstyle.Bold, Top: 1.5})),
+			col.New(1).Add(text.New(fmt.Sprintf("%.1f", cve.CVSS3Score), props.Text{Size: 7.5, Align: align.Center, Top: 1.5})),
+			col.New(2).Add(text.New(cve.NVDSeverity, props.Text{Size: 7.5, Top: 1.5})),
+			col.New(1).Add(text.New(fmt.Sprintf("%d", cve.ServerCount), props.Text{Size: 7.5, Align: align.Center, Top: 1.5})),
+			col.New(2).Add(text.New(cve.FirstSeen.Format("2006-01-02"), props.Text{Size: 7.5, Top: 1.5})),
+			col.New(3).Add(text.New(vexLabel, props.Text{Size: 7.5, Top: 1.5})),
 		).WithStyle(rowCell)
 
 		if cve.Summary != "" {
 			summaryCell := &props.Cell{BackgroundColor: rowBg, BorderType: border.Full, BorderColor: headerBg}
 			m.AddAutoRow(
-				col.New(12).Add(text.New(cve.Summary, props.Text{Size: 7})),
+				col.New(1),
+				col.New(11).Add(text.New(cve.Summary+"\n", props.Text{Size: 6.5, Top: 1, Left: 1})),
 			).WithStyle(summaryCell)
 		}
 	}
