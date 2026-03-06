@@ -2049,9 +2049,24 @@ function AgentsTab() {
                   </tr>
                 </thead>
                 <tbody>
-                  {paginatedAgents.map((agent) => (
+                  {paginatedAgents.map((agent) => {
+                    const hasAuthFailure = !!agent.lastAuthFailureAt &&
+                      (Date.now() - new Date(agent.lastAuthFailureAt).getTime()) < 24 * 60 * 60 * 1000;
+                    const authFailureTooltip = hasAuthFailure
+                      ? `Auth failure from ${agent.authFailureIp || 'unknown IP'} at ${new Date(agent.lastAuthFailureAt!).toLocaleString()}`
+                      : '';
+                    return (
                     <tr key={agent.id} className="table-row">
-                      <td className="py-3 px-4 text-[#e8f5e9] font-medium">{agent.hostname}</td>
+                      <td className="py-3 px-4 text-[#e8f5e9] font-medium">
+                        <div className="flex items-center gap-2">
+                          {agent.hostname}
+                          {hasAuthFailure && (
+                            <span title={authFailureTooltip}>
+                              <AlertCircle className="w-4 h-4 text-yellow-400 flex-shrink-0" />
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="py-3 px-4 text-[#6b7280] font-mono text-sm">{agent.lastIp || '-'}</td>
                       <td className="py-3 px-4">{getStatusBadge(agent.status)}</td>
                       <td className="py-3 px-4 text-[#6b7280] font-mono text-sm">{agent.agentVersion || '-'}</td>
@@ -2085,7 +2100,8 @@ function AgentsTab() {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

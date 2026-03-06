@@ -467,6 +467,8 @@ export interface RegisteredAgent {
   lastIp: string | null;
   agentVersion?: string;
   createdAt: string;
+  lastAuthFailureAt?: string | null;
+  authFailureIp?: string | null;
 }
 
 export const getRegisteredAgents = () =>

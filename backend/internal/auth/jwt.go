@@ -83,6 +83,24 @@ func ValidateAgentJWT(secret []byte, token string) (*JWTClaims, error) {
 	return &claims, nil
 }
 
+// ParseUnverifiedAgentJWT decodes the JWT payload without verifying the signature.
+// Use only for logging/diagnostics — never for authorization decisions.
+func ParseUnverifiedAgentJWT(token string) (*JWTClaims, error) {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 {
+		return nil, errors.New("invalid JWT format")
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, errors.New("invalid JWT payload encoding")
+	}
+	var claims JWTClaims
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return nil, errors.New("invalid JWT claims")
+	}
+	return &claims, nil
+}
+
 func signHS256(secret []byte, data string) []byte {
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(data))

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -177,7 +178,22 @@ func (h *Handler) receiveAgentReportV2(c *fiber.Ctx) error {
 	// Validate JWT signature + expiry (no DB lookup)
 	claims, err := auth.ValidateAgentJWT(h.jwtSecret, token)
 	if err != nil {
-		log.Warn().Err(err).Str("client_ip", c.IP()).Str("user_agent", c.Get("User-Agent")).Msg("Invalid JWT on report endpoint (v2)")
+		clientIP := c.IP()
+		log.Warn().Err(err).Str("client_ip", clientIP).Str("user_agent", c.Get("User-Agent")).Msg("Invalid JWT on report endpoint (v2)")
+
+		// Try to identify which agent sent the invalid token by parsing the payload
+		// without signature verification — safe because we only use it for diagnostics.
+		if unverified, parseErr := auth.ParseUnverifiedAgentJWT(token); parseErr == nil {
+			var failedAgentID int64
+			if _, scanErr := fmt.Sscanf(unverified.Subject, "%d", &failedAgentID); scanErr == nil {
+				// Fire-and-forget: use context.Background() because the Fiber request
+				// context is recycled after the handler returns.
+				go func(id int64, ip string) {
+					_ = h.agentService.RecordAuthFailure(context.Background(), id, ip)
+				}(failedAgentID, clientIP)
+			}
+		}
+
 		return fiber.NewError(fiber.StatusUnauthorized, "Invalid or expired access token")
 	}
 
@@ -196,6 +212,14 @@ func (h *Handler) receiveAgentReportV2(c *fiber.Ctx) error {
 	}
 	if agent == nil || agent.Status != models.AgentStatusActive {
 		return fiber.NewError(fiber.StatusUnauthorized, "Agent not found or not active")
+	}
+
+	// Successful auth: clear any previously recorded auth failure for this agent.
+	// Use context.Background() because the Fiber request context is recycled after the handler returns.
+	if agent.LastAuthFailureAt != nil {
+		go func(id int64) {
+			_ = h.agentService.ClearAuthFailure(context.Background(), id)
+		}(agentID)
 	}
 
 	// Parse the report body — reuse the same AgentReport struct as v1

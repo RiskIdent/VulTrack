@@ -163,8 +163,14 @@ CREATE TABLE IF NOT EXISTS registered_agents (
     last_seen_at TIMESTAMP,
     last_ip VARCHAR(45),
     agent_version VARCHAR(20),                -- Agent software version
+    last_auth_failure_at TIMESTAMP,           -- Last JWT auth failure timestamp
+    auth_failure_ip VARCHAR(45),              -- IP that sent the invalid token
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Add auth failure columns to existing deployments
+ALTER TABLE registered_agents ADD COLUMN IF NOT EXISTS last_auth_failure_at TIMESTAMP;
+ALTER TABLE registered_agents ADD COLUMN IF NOT EXISTS auth_failure_ip VARCHAR(45);
 
 CREATE INDEX IF NOT EXISTS idx_registered_agents_token_prefix 
     ON registered_agents(token_prefix);

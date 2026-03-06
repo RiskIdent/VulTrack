@@ -73,10 +73,11 @@ func (s *AgentService) ValidateToken(ctx context.Context, token string) (*models
 	tokenHash := auth.HashKey(token)
 
 	var agent models.RegisteredAgent
-	var lastIP, agentVersion, enrollmentKeyName *string
+	var lastIP, agentVersion, enrollmentKeyName, authFailureIP *string
 	err := s.db.QueryRow(ctx, `
-		SELECT ra.id, ra.server_id, ra.hostname, ra.token_prefix, ra.enrolled_via, ra.status, 
-		       ra.last_seen_at, ra.last_ip, ra.agent_version, ra.created_at, ek.name as enrollment_key_name
+		SELECT ra.id, ra.server_id, ra.hostname, ra.token_prefix, ra.enrolled_via, ra.status,
+		       ra.last_seen_at, ra.last_ip, ra.agent_version, ra.created_at,
+		       ra.last_auth_failure_at, ra.auth_failure_ip, ek.name as enrollment_key_name
 		FROM registered_agents ra
 		LEFT JOIN enrollment_keys ek ON ra.enrolled_via = ek.id
 		WHERE ra.token_hash = $1
@@ -91,6 +92,8 @@ func (s *AgentService) ValidateToken(ctx context.Context, token string) (*models
 		&lastIP,
 		&agentVersion,
 		&agent.CreatedAt,
+		&agent.LastAuthFailureAt,
+		&authFailureIP,
 		&enrollmentKeyName,
 	)
 	if err != nil {
@@ -105,6 +108,9 @@ func (s *AgentService) ValidateToken(ctx context.Context, token string) (*models
 	}
 	if agentVersion != nil {
 		agent.AgentVersion = *agentVersion
+	}
+	if authFailureIP != nil {
+		agent.AuthFailureIP = *authFailureIP
 	}
 	if enrollmentKeyName != nil {
 		agent.EnrollmentKeyName = *enrollmentKeyName
@@ -141,8 +147,9 @@ func (s *AgentService) LinkToServer(ctx context.Context, agentID int64, serverID
 // GetAll returns all registered agents
 func (s *AgentService) GetAll(ctx context.Context, statusFilter string) ([]models.RegisteredAgent, error) {
 	query := `
-		SELECT ra.id, ra.server_id, ra.hostname, ra.token_prefix, ra.enrolled_via, ra.status, 
-		       ra.last_seen_at, ra.last_ip, ra.agent_version, ra.created_at, ek.name as enrollment_key_name
+		SELECT ra.id, ra.server_id, ra.hostname, ra.token_prefix, ra.enrolled_via, ra.status,
+		       ra.last_seen_at, ra.last_ip, ra.agent_version, ra.created_at,
+		       ra.last_auth_failure_at, ra.auth_failure_ip, ek.name as enrollment_key_name
 		FROM registered_agents ra
 		LEFT JOIN enrollment_keys ek ON ra.enrolled_via = ek.id
 	`
@@ -162,7 +169,7 @@ func (s *AgentService) GetAll(ctx context.Context, statusFilter string) ([]model
 	var agents []models.RegisteredAgent
 	for rows.Next() {
 		var agent models.RegisteredAgent
-		var lastIP, agentVersion, enrollmentKeyName *string
+		var lastIP, agentVersion, authFailureIP, enrollmentKeyName *string
 		err := rows.Scan(
 			&agent.ID,
 			&agent.ServerID,
@@ -174,6 +181,8 @@ func (s *AgentService) GetAll(ctx context.Context, statusFilter string) ([]model
 			&lastIP,
 			&agentVersion,
 			&agent.CreatedAt,
+			&agent.LastAuthFailureAt,
+			&authFailureIP,
 			&enrollmentKeyName,
 		)
 		if err != nil {
@@ -184,6 +193,9 @@ func (s *AgentService) GetAll(ctx context.Context, statusFilter string) ([]model
 		}
 		if agentVersion != nil {
 			agent.AgentVersion = *agentVersion
+		}
+		if authFailureIP != nil {
+			agent.AuthFailureIP = *authFailureIP
 		}
 		if enrollmentKeyName != nil {
 			agent.EnrollmentKeyName = *enrollmentKeyName
@@ -197,10 +209,11 @@ func (s *AgentService) GetAll(ctx context.Context, statusFilter string) ([]model
 // GetByID returns an agent by ID
 func (s *AgentService) GetByID(ctx context.Context, id int64) (*models.RegisteredAgent, error) {
 	var agent models.RegisteredAgent
-	var lastIP, agentVersion, enrollmentKeyName *string
+	var lastIP, agentVersion, authFailureIP, enrollmentKeyName *string
 	err := s.db.QueryRow(ctx, `
-		SELECT ra.id, ra.server_id, ra.hostname, ra.token_prefix, ra.enrolled_via, ra.status, 
-		       ra.last_seen_at, ra.last_ip, ra.agent_version, ra.created_at, ek.name as enrollment_key_name
+		SELECT ra.id, ra.server_id, ra.hostname, ra.token_prefix, ra.enrolled_via, ra.status,
+		       ra.last_seen_at, ra.last_ip, ra.agent_version, ra.created_at,
+		       ra.last_auth_failure_at, ra.auth_failure_ip, ek.name as enrollment_key_name
 		FROM registered_agents ra
 		LEFT JOIN enrollment_keys ek ON ra.enrolled_via = ek.id
 		WHERE ra.id = $1
@@ -215,6 +228,8 @@ func (s *AgentService) GetByID(ctx context.Context, id int64) (*models.Registere
 		&lastIP,
 		&agentVersion,
 		&agent.CreatedAt,
+		&agent.LastAuthFailureAt,
+		&authFailureIP,
 		&enrollmentKeyName,
 	)
 	if err != nil {
@@ -229,6 +244,9 @@ func (s *AgentService) GetByID(ctx context.Context, id int64) (*models.Registere
 	}
 	if agentVersion != nil {
 		agent.AgentVersion = *agentVersion
+	}
+	if authFailureIP != nil {
+		agent.AuthFailureIP = *authFailureIP
 	}
 	if enrollmentKeyName != nil {
 		agent.EnrollmentKeyName = *enrollmentKeyName
@@ -477,6 +495,26 @@ func (s *AgentService) ValidateAndRotateRefreshToken(ctx context.Context, token 
 	}
 
 	return &agent, newFull, nil
+}
+
+// RecordAuthFailure records a JWT authentication failure for an agent identified by ID.
+func (s *AgentService) RecordAuthFailure(ctx context.Context, agentID int64, ip string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE registered_agents
+		SET last_auth_failure_at = NOW(), auth_failure_ip = $2
+		WHERE id = $1
+	`, agentID, ip)
+	return err
+}
+
+// ClearAuthFailure clears the auth failure fields after a successful authentication.
+func (s *AgentService) ClearAuthFailure(ctx context.Context, agentID int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE registered_agents
+		SET last_auth_failure_at = NULL, auth_failure_ip = NULL
+		WHERE id = $1
+	`, agentID)
+	return err
 }
 
 // RevokeAllRefreshTokens marks all active refresh tokens for an agent as revoked.

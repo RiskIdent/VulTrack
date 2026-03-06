@@ -221,6 +221,10 @@ type RegisteredAgent struct {
 	AgentVersion string     `json:"agentVersion,omitempty"`
 	CreatedAt    time.Time  `json:"createdAt"`
 
+	// Auth failure tracking
+	LastAuthFailureAt *time.Time `json:"lastAuthFailureAt,omitempty"`
+	AuthFailureIP     string     `json:"authFailureIp,omitempty"`
+
 	// Joined fields
 	EnrollmentKeyName string `json:"enrollmentKeyName,omitempty"`
 }
