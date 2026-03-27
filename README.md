@@ -44,7 +44,7 @@ The VulTrack Agent can be found in [this repository](https://github.com/RiskIden
                     │               │   └─────────────────┘
 ┌───────────┐       │   /*  → FE    │           ▲
 │           │       │  /api/* → BE  │           │
-│  Agents   │─────▶│               │───────────┘
+│  Agents   │─────▶│ /metrics → BE │───────────┘
 │           │       │               │
 └───────────┘       └───────────────┘
 ```
@@ -140,6 +140,11 @@ vultrack.example.com {
 
     # Backend API
     handle /api/* {
+        reverse_proxy backend:8080
+    }
+
+    # Backend metrics (Prometheus scrape endpoint)
+    handle /metrics {
         reverse_proxy backend:8080
     }
 }
@@ -387,6 +392,9 @@ docker compose up -d postgres
 
 ### Admin: System
 - `POST /api/v1/admin/system/reset` - Reset all application data
+
+### Monitoring
+- `GET /metrics` - Prometheus metrics endpoint (no authentication required)
 
 ## Agent Deployment
 
