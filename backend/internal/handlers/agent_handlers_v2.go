@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/vultrack/vultrack/internal/auth"
+	"github.com/vultrack/vultrack/internal/metrics"
 	"github.com/vultrack/vultrack/internal/models"
 )
 
@@ -186,6 +187,7 @@ func (h *Handler) receiveAgentReportV2(c *fiber.Ctx) error {
 		if unverified, parseErr := auth.ParseUnverifiedAgentJWT(token); parseErr == nil {
 			var failedAgentID int64
 			if _, scanErr := fmt.Sscanf(unverified.Subject, "%d", &failedAgentID); scanErr == nil {
+				metrics.AgentAuthFailuresTotal.Inc()
 				// Fire-and-forget: use context.Background() because the Fiber request
 				// context is recycled after the handler returns.
 				go func(id int64, ip string) {
@@ -290,6 +292,7 @@ func (h *Handler) receiveAgentReportV2(c *fiber.Ctx) error {
 		}
 	}
 
+	metrics.AgentReportsTotal.Inc()
 	log.Info().
 		Str("hostname", report.Hostname).
 		Int64("serverId", server.ID).

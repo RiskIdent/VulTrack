@@ -9,10 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofiber/adaptor/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 
 	"github.com/vultrack/vultrack/internal/config"
@@ -198,8 +200,9 @@ func New(
 	// API routes
 	api := app.Group("/api/v1")
 
-	// Health check (no auth)
+	// Health check and metrics (no auth)
 	api.Get("/health", h.healthCheck)
+	app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
 
 	// Auth routes (no auth middleware)
 	api.Get("/auth/login", h.authLogin)
@@ -725,59 +728,114 @@ func (h *Handler) createAssessment(c *fiber.Ctx) error {
 
 // createJiraTicketForCVE builds a Jira issue with CVE details and returns the ticket URL.
 func (h *Handler) createJiraTicketForCVE(ctx context.Context, cveID, assessmentComment string) (string, error) {
-	// Fetch affected findings for context
 	findings, err := h.findingService.GetServersByCVE(ctx, cveID)
 	if err != nil {
 		return "", fmt.Errorf("fetch findings for %s: %w", cveID, err)
 	}
 
-	// Build summary
-	summary := fmt.Sprintf("[VulTrack] %s", cveID)
+	// Build title
+	title := cveID
 	if len(findings) > 0 && findings[0].Severity != "" {
-		summary = fmt.Sprintf("[VulTrack] %s (%s)", cveID, strings.ToUpper(findings[0].Severity))
+		title = fmt.Sprintf("%s (%s)", cveID, strings.ToUpper(findings[0].Severity))
+	}
+	if len(findings) > 0 && findings[0].Summary != "" {
+		prefix := title + " \u2013 "
+		maxSummaryRunes := 120 - len([]rune(prefix))
+		s := []rune(findings[0].Summary)
+		if len(s) > maxSummaryRunes {
+			s = append(s[:maxSummaryRunes-1], '\u2026')
+		}
+		title = prefix + string(s)
+	}
+	if len([]rune(title)) > 120 {
+		r := []rune(title)
+		title = string(r[:119]) + "\u2026"
 	}
 
-	// Build description
-	var desc strings.Builder
-	desc.WriteString(fmt.Sprintf("CVE: %s\n", cveID))
+	// Build ADF description
+	var content []interface{}
 
+	// Section: CVE Details
+	content = append(content, jira.ADFHeading(2, "CVE Details"))
 	if len(findings) > 0 {
 		f := findings[0]
-		if f.CVSS3Score != nil {
-			desc.WriteString(fmt.Sprintf("CVSS 3 Score: %.1f\n", *f.CVSS3Score))
-		}
+		var detailNodes []interface{}
 		if f.Severity != "" {
-			desc.WriteString(fmt.Sprintf("Severity: %s\n", strings.ToUpper(f.Severity)))
+			detailNodes = append(detailNodes, jira.ADFBold("Severity: "), jira.ADFText(strings.ToUpper(f.Severity)))
 		}
-		if f.Summary != "" {
-			desc.WriteString(fmt.Sprintf("\nDescription:\n%s\n", f.Summary))
+		if f.CVSS3Score != nil {
+			if len(detailNodes) > 0 {
+				detailNodes = append(detailNodes, jira.ADFText("   "))
+			}
+			detailNodes = append(detailNodes, jira.ADFBold("CVSS 3: "), jira.ADFText(fmt.Sprintf("%.1f", *f.CVSS3Score)))
+		}
+		if len(detailNodes) > 0 {
+			content = append(content, jira.ADFParagraph(detailNodes...))
+		}
+		if f.CVSS3Vector != "" {
+			content = append(content, jira.ADFParagraph(jira.ADFBold("Vector: "), jira.ADFText(f.CVSS3Vector)))
+		}
+		if f.CVEPublishedAt != nil {
+			content = append(content, jira.ADFParagraph(jira.ADFBold("Published: "), jira.ADFText(f.CVEPublishedAt.Format("2006-01-02"))))
 		}
 		if f.SourceLink != "" {
-			desc.WriteString(fmt.Sprintf("\nSource: %s\n", f.SourceLink))
+			content = append(content, jira.ADFParagraph(jira.ADFBold("Source: "), jira.ADFText(f.SourceLink)))
+		}
+		if f.HasExploit {
+			exploitText := "\u26a0 Known exploit available"
+			if f.VerifiedExploit {
+				exploitText += " (verified)"
+			}
+			if f.ExploitCount > 1 {
+				exploitText += fmt.Sprintf(" \u2013 %d exploits", f.ExploitCount)
+			}
+			content = append(content, jira.ADFParagraph(jira.ADFBold(exploitText)))
 		}
 	}
 
-	// Affected servers
+	// Section: Affected Systems
 	if len(findings) > 0 {
-		desc.WriteString(fmt.Sprintf("\nAffected Servers (%d):\n", len(findings)))
+		content = append(content, jira.ADFHeading(2, fmt.Sprintf("Affected Systems (%d)", len(findings))))
+		items := make([]interface{}, 0, len(findings))
 		for _, f := range findings {
-			line := fmt.Sprintf("- %s: %s %s", f.ServerName, f.PackageName, f.PackageVersion)
+			line := fmt.Sprintf("%s: %s %s", f.ServerName, f.PackageName, f.PackageVersion)
 			if f.FixedIn != "" {
 				line += fmt.Sprintf(" (fix: %s)", f.FixedIn)
 			}
 			if f.FixState != "" {
 				line += fmt.Sprintf(" [%s]", f.FixState)
 			}
-			desc.WriteString(line + "\n")
+			items = append(items, jira.ADFListItem(line))
+		}
+		content = append(content, jira.ADFBulletList(items...))
+	}
+
+	// Section: Assessment
+	if assessmentComment != "" {
+		content = append(content, jira.ADFHeading(2, "Assessment"))
+		content = append(content, jira.ADFParagraph(jira.ADFText(assessmentComment)))
+	}
+
+	// Section: Description (full CVE description at the end)
+	fullDesc := ""
+	if len(findings) > 0 {
+		f := findings[0]
+		switch {
+		case f.Description != "":
+			fullDesc = f.Description
+		case f.NVDDescription != "":
+			fullDesc = f.NVDDescription
+		case f.Summary != "":
+			fullDesc = f.Summary
 		}
 	}
-
-	// Assessment comment
-	if assessmentComment != "" {
-		desc.WriteString(fmt.Sprintf("\nAssessment Comment:\n%s\n", assessmentComment))
+	if fullDesc != "" {
+		content = append(content, jira.ADFHeading(2, "Description"))
+		content = append(content, jira.ADFParagraph(jira.ADFText(fullDesc)))
 	}
 
-	desc.WriteString(fmt.Sprintf("\n---\nAutomatically created by VulTrack"))
+	content = append(content, jira.ADFRule())
+	content = append(content, jira.ADFParagraph(jira.ADFText("Automatically created by VulTrack")))
 
 	// Labels
 	labels := []string{"vultrack", "security"}
@@ -786,14 +844,13 @@ func (h *Handler) createJiraTicketForCVE(ctx context.Context, cveID, assessmentC
 	}
 
 	result, err := h.jiraClient.CreateIssue(ctx, jira.CreateIssueRequest{
-		Summary:     summary,
-		Description: desc.String(),
+		Summary:     title,
+		Description: jira.ADFDoc(content...),
 		Labels:      labels,
 	})
 	if err != nil {
 		return "", err
 	}
-
 	return result.URL, nil
 }
 

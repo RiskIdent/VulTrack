@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/vultrack/vultrack/internal/exploitdb"
 	"github.com/vultrack/vultrack/internal/handlers"
 	"github.com/vultrack/vultrack/internal/jira"
+	"github.com/vultrack/vultrack/internal/metrics"
 	"github.com/vultrack/vultrack/internal/nvd"
 	"github.com/vultrack/vultrack/internal/oidc"
 	"github.com/vultrack/vultrack/internal/oval"
@@ -57,6 +59,9 @@ func main() {
 	if err := database.Migrate(db); err != nil {
 		log.Fatal().Err(err).Msg("Failed to run database migrations")
 	}
+
+	// Register Prometheus DB collector
+	prometheus.MustRegister(metrics.NewDBCollector(db))
 
 	// Initialize services
 	serverService := services.NewServerService(db)

@@ -63,7 +63,7 @@ func (c *Client) Enabled() bool {
 // CreateIssueRequest holds the data needed to create a Jira issue.
 type CreateIssueRequest struct {
 	Summary     string
-	Description string // plain-text; converted to ADF internally
+	Description map[string]interface{} // ADF document; use ADFDoc() to build
 	Labels      []string
 }
 
@@ -81,9 +81,6 @@ func (c *Client) CreateIssue(ctx context.Context, req CreateIssueRequest) (*Crea
 		return nil, fmt.Errorf("jira integration is disabled")
 	}
 
-	// Build ADF (Atlassian Document Format) description
-	adfDesc := textToADF(req.Description)
-
 	payload := map[string]interface{}{
 		"fields": map[string]interface{}{
 			"project": map[string]string{
@@ -92,9 +89,9 @@ func (c *Client) CreateIssue(ctx context.Context, req CreateIssueRequest) (*Crea
 			"issuetype": map[string]string{
 				"name": c.issueType,
 			},
-			"summary": req.Summary,
-			"description": adfDesc,
-			"labels": req.Labels,
+			"summary":     req.Summary,
+			"description": req.Description,
+			"labels":      req.Labels,
 		},
 	}
 
@@ -185,38 +182,70 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body []byte
 	return respBody, nil
 }
 
-// ── ADF helper ──────────────────────────────────────────────────────────────
+// ── ADF builder helpers ─────────────────────────────────────────────────────
 
-// textToADF converts plain text into Jira Cloud's Atlassian Document Format.
-// Each line becomes a paragraph; preserves line breaks naturally.
-func textToADF(text string) map[string]interface{} {
-	lines := strings.Split(text, "\n")
-	content := make([]interface{}, 0, len(lines))
-
-	for _, line := range lines {
-		if line == "" {
-			// Empty line = empty paragraph (visual separator)
-			content = append(content, map[string]interface{}{
-				"type":    "paragraph",
-				"content": []interface{}{},
-			})
-			continue
-		}
-
-		content = append(content, map[string]interface{}{
-			"type": "paragraph",
-			"content": []interface{}{
-				map[string]interface{}{
-					"type": "text",
-					"text": line,
-				},
-			},
-		})
-	}
-
+// ADFDoc creates the top-level ADF document node.
+func ADFDoc(content ...interface{}) map[string]interface{} {
 	return map[string]interface{}{
 		"version": 1,
 		"type":    "doc",
 		"content": content,
 	}
+}
+
+// ADFHeading creates an ADF heading node (level 1–6).
+func ADFHeading(level int, text string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":    "heading",
+		"attrs":   map[string]interface{}{"level": level},
+		"content": []interface{}{map[string]interface{}{"type": "text", "text": text}},
+	}
+}
+
+// ADFParagraph creates an ADF paragraph containing the given inline nodes.
+func ADFParagraph(nodes ...interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"type":    "paragraph",
+		"content": nodes,
+	}
+}
+
+// ADFText creates a plain ADF text node.
+func ADFText(text string) map[string]interface{} {
+	return map[string]interface{}{"type": "text", "text": text}
+}
+
+// ADFBold creates a bold ADF text node.
+func ADFBold(text string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":  "text",
+		"text":  text,
+		"marks": []interface{}{map[string]interface{}{"type": "strong"}},
+	}
+}
+
+// ADFBulletList creates an ADF unordered list from the given list item nodes.
+func ADFBulletList(items ...interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"type":    "bulletList",
+		"content": items,
+	}
+}
+
+// ADFListItem creates an ADF list item containing a single paragraph of text.
+func ADFListItem(text string) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "listItem",
+		"content": []interface{}{
+			map[string]interface{}{
+				"type":    "paragraph",
+				"content": []interface{}{map[string]interface{}{"type": "text", "text": text}},
+			},
+		},
+	}
+}
+
+// ADFRule creates an ADF horizontal rule node.
+func ADFRule() map[string]interface{} {
+	return map[string]interface{}{"type": "rule"}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/vultrack/vultrack/internal/config"
+	"github.com/vultrack/vultrack/internal/metrics"
 	"github.com/vultrack/vultrack/internal/scanner"
 )
 
@@ -167,6 +168,7 @@ func (q *Queue) Enqueue(serverID int64, serverName string, trigger string) (stri
 
 // CancelJob cancels a queued or running job.
 func (q *Queue) CancelJob(jobID string) error {
+	metrics.ScanJobsTotal.WithLabelValues(StatusCancelled, TriggerManual).Inc()
 	q.updateJobStatus(jobID, StatusCancelled, "cancelled by user", nil)
 
 	// Remove from active tracking
@@ -259,6 +261,9 @@ func (q *Queue) processJob(workerID int, job *ScanJob) {
 	job.TotalChecks = &result.TotalChecks
 	job.DurationMs = &durationMs
 
+	metrics.ScanJobsTotal.WithLabelValues(StatusCompleted, job.TriggerType).Inc()
+	metrics.ScanDurationSeconds.WithLabelValues(job.TriggerType).Observe(result.Duration.Seconds())
+
 	q.updateJobCompleted(job.ID, finished, result)
 
 	// Remove from active tracking
@@ -321,6 +326,7 @@ func (q *Queue) handleScanError(workerID int, job *ScanJob, err error) {
 	} else {
 		// Max retries exceeded
 		job.Status = StatusFailed
+		metrics.ScanJobsTotal.WithLabelValues(StatusFailed, job.TriggerType).Inc()
 		q.updateJobStatus(job.ID, StatusFailed, err.Error(), job.FinishedAt)
 
 		q.mu.Lock()
