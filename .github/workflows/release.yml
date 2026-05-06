@@ -76,6 +76,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Sync package.json version from tag
+        run: |
+          cd frontend
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v6
