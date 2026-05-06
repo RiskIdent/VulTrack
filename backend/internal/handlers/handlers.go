@@ -486,6 +486,20 @@ func (h *Handler) getFindings(c *fiber.Ctx) error {
 	}
 
 	ctx := c.Context()
+
+	if c.QueryBool("grouped", false) {
+		groups, total, err := h.findingService.GetAllGrouped(ctx, filter)
+		if err != nil {
+			return err
+		}
+		return c.JSON(fiber.Map{
+			"groups": groups,
+			"total":  total,
+			"limit":  filter.Limit,
+			"offset": filter.Offset,
+		})
+	}
+
 	findings, total, err := h.findingService.GetAll(ctx, filter)
 	if err != nil {
 		return err

@@ -1,18 +1,23 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, Fragment } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, X, ExternalLink, AlertTriangle } from 'lucide-react';
 import { CVSSBadge, VendorSeverityBadge, FixStateBadge, VEXBadge } from '../components/SeverityBadge';
-import { getFindings, getFinding } from '../api/client';
-import type { Finding } from '../types';
+import { getFindings, getFinding, getFindingsGrouped } from '../api/client';
+import type { Finding, GroupedFinding } from '../types';
 
 type SortField = 'cveId' | 'serverName' | 'packageName' | 'cvss3Score' | 'severity' | 'fixState' | 'fixedIn' | 'firstSeenAt';
 type SortDirection = 'asc' | 'desc';
 
 const ITEMS_PER_PAGE = 15;
+const GROUP_BY_CVE_STORAGE_KEY = 'vultrack.findings.groupByCve';
+
+// Sort fields that don't make sense in grouped mode (multi-value per group).
+const GROUPED_DISABLED_SORT_FIELDS: SortField[] = ['packageName', 'fixState', 'fixedIn'];
 
 export default function Findings() {
   const [searchParams] = useSearchParams();
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [groups, setGroups] = useState<GroupedFinding[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -22,6 +27,14 @@ export default function Findings() {
   const [minCvss, setMinCvss] = useState(0);
   const [includeResolved, setIncludeResolved] = useState(false);
   const [vexStatusFilter, setVexStatusFilter] = useState('');
+
+  // View mode: group rows by (server, CVE) — default ON, persisted in localStorage.
+  const [groupByCve, setGroupByCve] = useState<boolean>(() => {
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem(GROUP_BY_CVE_STORAGE_KEY) : null;
+    return stored === null ? true : stored === 'true';
+  });
+  // Expanded group keys ("serverId:cveId") — UI state only.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // Search (server-side with debounce)
   const [searchQuery, setSearchQuery] = useState(searchParams.get('search') || '');
@@ -37,6 +50,21 @@ export default function Findings() {
   // Finding detail modal
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // Persist groupByCve toggle and reset paging when it flips.
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(GROUP_BY_CVE_STORAGE_KEY, String(groupByCve));
+    }
+    setCurrentPage(1);
+    setExpandedGroups(new Set());
+    // If currently sorting by a package-level field while switching INTO grouped mode,
+    // fall back to CVSS — those fields don't have a single value per group.
+    if (groupByCve && GROUPED_DISABLED_SORT_FIELDS.includes(sortField)) {
+      setSortField('cvss3Score');
+      setSortDirection('desc');
+    }
+  }, [groupByCve]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Debounce search input
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -66,7 +94,7 @@ export default function Findings() {
     setLoading(true);
     setError(null);
     try {
-      const data = await getFindings({
+      const params = {
         severity: severity || undefined,
         minCvss: minCvss || undefined,
         includeResolved,
@@ -76,15 +104,24 @@ export default function Findings() {
         limit: ITEMS_PER_PAGE,
         offset: (currentPage - 1) * ITEMS_PER_PAGE,
         vexStatus: vexStatusFilter || undefined,
-      });
-      setFindings(data.findings || []);
-      setTotal(data.total);
+      };
+      if (groupByCve) {
+        const data = await getFindingsGrouped(params);
+        setGroups(data.groups || []);
+        setFindings([]);
+        setTotal(data.total);
+      } else {
+        const data = await getFindings(params);
+        setFindings(data.findings || []);
+        setGroups([]);
+        setTotal(data.total);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load findings');
     } finally {
       setLoading(false);
     }
-  }, [severity, minCvss, includeResolved, debouncedSearch, sortField, sortDirection, currentPage, vexStatusFilter]);
+  }, [severity, minCvss, includeResolved, debouncedSearch, sortField, sortDirection, currentPage, vexStatusFilter, groupByCve]);
 
   useEffect(() => {
     fetchData();
@@ -93,6 +130,9 @@ export default function Findings() {
   const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
 
   const handleSort = (field: SortField) => {
+    if (groupByCve && GROUPED_DISABLED_SORT_FIELDS.includes(field)) {
+      return; // package-level fields have no single value per group
+    }
     if (sortField === field) {
       setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
     } else {
@@ -115,21 +155,76 @@ export default function Findings() {
     }
   };
 
-  const SortHeader = ({ field, children }: { field: SortField; children: React.ReactNode }) => (
-    <th 
-      className="table-header text-left py-3 px-4 cursor-pointer hover:bg-[#1a2420] select-none"
-      onClick={() => handleSort(field)}
-    >
-      <div className="flex items-center gap-1">
-        {children}
-        {sortField === field && (
-          sortDirection === 'asc' 
-            ? <ChevronUp className="w-4 h-4" />
-            : <ChevronDown className="w-4 h-4" />
-        )}
+  // Open the detail modal for a package row inside a group. We only have the
+  // finding ID at this point; the GET /findings/:id endpoint enriches it fully.
+  const handlePackageClick = async (findingId: number) => {
+    setDetailLoading(true);
+    setSelectedFinding({ id: findingId } as Finding); // placeholder
+    try {
+      const full = await getFinding(findingId);
+      setSelectedFinding(full);
+    } catch {
+      setSelectedFinding(null);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const toggleGroupExpansion = (key: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const SortHeader = ({ field, children, disabled }: { field: SortField; children: React.ReactNode; disabled?: boolean }) => {
+    if (disabled) {
+      return (
+        <th className="table-header text-left py-3 px-4 select-none text-[#6b7280]">
+          <div className="flex items-center gap-1">{children}</div>
+        </th>
+      );
+    }
+    return (
+      <th
+        className="table-header text-left py-3 px-4 cursor-pointer hover:bg-[#1a2420] select-none"
+        onClick={() => handleSort(field)}
+      >
+        <div className="flex items-center gap-1">
+          {children}
+          {sortField === field && (
+            sortDirection === 'asc'
+              ? <ChevronUp className="w-4 h-4" />
+              : <ChevronDown className="w-4 h-4" />
+          )}
+        </div>
+      </th>
+    );
+  };
+
+  // Render a "fix state" cell for a group: show one badge if all packages share a state,
+  // or a "mixed" indicator listing the distinct states.
+  const renderGroupFixState = (group: GroupedFinding) => {
+    if (group.fixStates.length === 0) {
+      return <span className="text-[#6b7280]">-</span>;
+    }
+    if (group.fixStates.length === 1) {
+      return <FixStateBadge fixState={group.fixStates[0]} />;
+    }
+    return (
+      <div className="flex flex-col gap-1" title={group.fixStates.join(', ')}>
+        <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-600/20 text-amber-400 inline-block w-fit">
+          mixed
+        </span>
+        <span className="text-xs text-[#6b7280]">{group.fixStates.length} states</span>
       </div>
-    </th>
-  );
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -206,6 +301,17 @@ export default function Findings() {
               <span className="text-sm text-[#a5d6a7]">Include resolved</span>
             </label>
           </div>
+          <div className="flex items-end ml-auto">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                className="w-4 h-4 rounded border-[#2d3f36] bg-[#0a0f0d] text-[#4ade80] focus:ring-[#4ade80]"
+                checked={groupByCve}
+                onChange={(e) => setGroupByCve(e.target.checked)}
+              />
+              <span className="text-sm text-[#a5d6a7]">Group by CVE</span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -229,19 +335,22 @@ export default function Findings() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[#2d3f36]">
+                  {groupByCve && <th className="w-8 py-3 px-2"></th>}
                   <SortHeader field="cveId">CVE ID</SortHeader>
                   <SortHeader field="serverName">Server</SortHeader>
-                  <SortHeader field="packageName">Package</SortHeader>
-                  <th className="table-header text-left py-3 px-4">Version</th>
-                  <SortHeader field="fixedIn">Fixed In</SortHeader>
-                  <SortHeader field="fixState">Fix State</SortHeader>
+                  <SortHeader field="packageName" disabled={groupByCve}>
+                    {groupByCve ? 'Packages' : 'Package'}
+                  </SortHeader>
+                  {!groupByCve && <th className="table-header text-left py-3 px-4">Version</th>}
+                  <SortHeader field="fixedIn" disabled={groupByCve}>Fixed In</SortHeader>
+                  <SortHeader field="fixState" disabled={groupByCve}>Fix State</SortHeader>
                   <SortHeader field="cvss3Score">CVSS</SortHeader>
                   <SortHeader field="severity">Vendor</SortHeader>
                   <th className="table-header text-left py-3 px-4">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {findings.map((finding) => (
+                {!groupByCve && findings.map((finding) => (
                   <tr
                     key={finding.id}
                     className="table-row cursor-pointer hover:bg-[#1a2420]"
@@ -251,7 +360,7 @@ export default function Findings() {
                       {finding.cveId}
                     </td>
                     <td className="py-3 px-4">
-                      <Link 
+                      <Link
                         to={`/servers/${finding.serverId}`}
                         className="text-[#4ade80] hover:underline"
                         onClick={(e) => e.stopPropagation()}
@@ -293,9 +402,114 @@ export default function Findings() {
                     </td>
                   </tr>
                 ))}
-                {findings.length === 0 && (
+                {groupByCve && groups.map((group) => {
+                  const groupKey = `${group.serverId}:${group.cveId}`;
+                  const isExpanded = expandedGroups.has(groupKey);
+                  const sharedVexStatus = group.vexStatuses.length === 1 ? group.vexStatuses[0] : null;
+                  return (
+                    <Fragment key={groupKey}>
+                      <tr
+                        className="table-row cursor-pointer hover:bg-[#1a2420]"
+                        onClick={() => toggleGroupExpansion(groupKey)}
+                      >
+                        <td className="py-3 px-2 text-[#6b7280]">
+                          {isExpanded
+                            ? <ChevronDown className="w-4 h-4" />
+                            : <ChevronRight className="w-4 h-4" />}
+                        </td>
+                        <td className="py-3 px-4 font-mono text-[#4ade80]">
+                          {group.cveId}
+                        </td>
+                        <td className="py-3 px-4">
+                          <Link
+                            to={`/servers/${group.serverId}`}
+                            className="text-[#4ade80] hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {group.serverName}
+                          </Link>
+                        </td>
+                        <td className="py-3 px-4 text-sm text-[#a5d6a7]">
+                          {group.packageCount} package{group.packageCount !== 1 ? 's' : ''}
+                          {group.activeCount !== group.packageCount && (
+                            <span className="text-xs text-[#6b7280] ml-1">
+                              ({group.activeCount} active)
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-xs text-[#6b7280]">—</td>
+                        <td className="py-3 px-4">{renderGroupFixState(group)}</td>
+                        <td className="py-3 px-4">
+                          <CVSSBadge score={group.nvdCvss3Score ?? group.cvss3Score} cveId={group.cveId} />
+                        </td>
+                        <td className="py-3 px-4">
+                          <VendorSeverityBadge severity={group.severity} sourceLink={group.sourceLink} />
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="flex flex-wrap gap-1">
+                            {group.allResolved ? (
+                              <span className="px-2 py-1 rounded text-xs font-medium bg-green-600/20 text-green-400">
+                                Resolved
+                              </span>
+                            ) : (
+                              <span className="px-2 py-1 rounded text-xs font-medium bg-red-600/20 text-red-400">
+                                Active
+                              </span>
+                            )}
+                            {sharedVexStatus && <VEXBadge status={sharedVexStatus} />}
+                            {group.vexStatuses.length > 1 && (
+                              <span className="px-2 py-1 rounded text-xs font-medium bg-amber-600/20 text-amber-400" title={group.vexStatuses.join(', ')}>
+                                VEX: mixed
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && group.packages.map((pkg) => (
+                        <tr
+                          key={pkg.id}
+                          className="bg-[#0a0f0d] hover:bg-[#1a2420] cursor-pointer border-b border-[#1a2420]"
+                          onClick={() => handlePackageClick(pkg.id)}
+                        >
+                          <td></td>
+                          <td className="py-2 px-4"></td>
+                          <td className="py-2 px-4"></td>
+                          <td className="py-2 px-4 font-mono text-sm text-[#a5d6a7] pl-8">
+                            <span className="text-[#6b7280]">↳ </span>{pkg.name}
+                          </td>
+                          <td className="py-2 px-4 font-mono text-xs text-[#6b7280]">
+                            {pkg.version || '-'}
+                          </td>
+                          <td className="py-2 px-4 font-mono text-xs text-[#4ade80]">
+                            {pkg.fixedIn || '-'}
+                          </td>
+                          <td className="py-2 px-4">
+                            <FixStateBadge fixState={pkg.fixState} />
+                          </td>
+                          <td className="py-2 px-4"></td>
+                          <td className="py-2 px-4"></td>
+                          <td className="py-2 px-4">
+                            <div className="flex flex-wrap gap-1">
+                              {pkg.resolvedAt ? (
+                                <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-400">
+                                  Resolved
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-600/20 text-red-400">
+                                  Active
+                                </span>
+                              )}
+                              <VEXBadge status={pkg.vexStatus} justification={pkg.vexJustification} />
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </Fragment>
+                  );
+                })}
+                {((groupByCve && groups.length === 0) || (!groupByCve && findings.length === 0)) && (
                   <tr>
-                    <td colSpan={9} className="py-8 text-center text-[#6b7280]">
+                    <td colSpan={groupByCve ? 10 : 9} className="py-8 text-center text-[#6b7280]">
                       {debouncedSearch ? 'No findings match your search' : 'No findings match your filters'}
                     </td>
                   </tr>

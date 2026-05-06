@@ -153,6 +153,41 @@ export const getFindings = (params?: {
   }>(`/findings?${searchParams}`);
 };
 
+// Findings grouped by (server, CVE). Each group bundles the package-level rows
+// for the same CVE on the same server. Pagination is over groups, not packages.
+export const getFindingsGrouped = (params?: {
+  cveId?: string;
+  severity?: string;
+  minCvss?: number;
+  includeResolved?: boolean;
+  search?: string;
+  sortBy?: string;
+  sortOrder?: string;
+  limit?: number;
+  offset?: number;
+  vexStatus?: string;
+}) => {
+  const searchParams = new URLSearchParams();
+  searchParams.set('grouped', 'true');
+  if (params?.cveId) searchParams.set('cveId', params.cveId);
+  if (params?.severity) searchParams.set('severity', params.severity);
+  if (params?.minCvss) searchParams.set('minCvss', params.minCvss.toString());
+  if (params?.includeResolved) searchParams.set('includeResolved', 'true');
+  if (params?.search) searchParams.set('search', params.search);
+  if (params?.sortBy) searchParams.set('sortBy', params.sortBy);
+  if (params?.sortOrder) searchParams.set('sortOrder', params.sortOrder);
+  if (params?.limit) searchParams.set('limit', params.limit.toString());
+  if (params?.offset != null) searchParams.set('offset', params.offset.toString());
+  if (params?.vexStatus) searchParams.set('vexStatus', params.vexStatus);
+
+  return fetchAPI<{
+    groups: import('../types').GroupedFinding[];
+    total: number;
+    limit: number;
+    offset: number;
+  }>(`/findings?${searchParams}`);
+};
+
 export interface TriageFilter {
   mode: 'cvss' | 'vendor_severity';
   threshold?: number;

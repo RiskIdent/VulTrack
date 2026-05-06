@@ -70,6 +70,39 @@ export interface Finding {
   vexJustification?: string | null;
 }
 
+// Grouped Finding types — used by GET /findings?grouped=true on the Findings page.
+export interface PackageFinding {
+  id: number;
+  name: string;
+  version: string;
+  fixedIn: string;
+  fixState: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  resolvedAt: string | null;
+  vexStatus: string | null;
+  vexJustification: string | null;
+}
+
+export interface GroupedFinding {
+  serverId: number;
+  serverName: string;
+  cveId: string;
+  severity: string;
+  cvss3Score: number | null;
+  nvdCvss3Score: number | null;
+  sourceLink?: string;
+  sourceType?: string;
+  packages: PackageFinding[];
+  packageCount: number;
+  activeCount: number;
+  allResolved: boolean;
+  fixStates: string[];
+  vexStatuses: string[];
+  earliestFirstSeen: string;
+  latestLastSeen: string;
+}
+
 // Assessment types
 export type AssessmentStatus = 'pending' | 'relevant' | 'not_relevant' | 'accepted_risk';
 

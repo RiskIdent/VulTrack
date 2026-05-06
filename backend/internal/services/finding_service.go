@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -142,6 +143,181 @@ func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]mo
 	}
 
 	return findings, total, nil
+}
+
+// GetAllGrouped returns findings aggregated by (server_id, cve_id). Each row contains
+// the per-package details as a JSON array. Pagination is over groups, not raw findings.
+//
+// Sorting in grouped mode supports cveId, serverName, cvss3Score, severity, firstSeenAt.
+// Package-level sort fields (packageName, fixState, fixedIn) fall back to cvss3Score —
+// they have no meaning at the group level.
+func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter) ([]models.GroupedFinding, int, error) {
+	baseWhere := ` WHERE 1=1`
+	args := []interface{}{}
+	argIndex := 1
+
+	if filter.ServerID != nil {
+		baseWhere += ` AND f.server_id = $` + strconv.Itoa(argIndex)
+		args = append(args, *filter.ServerID)
+		argIndex++
+	}
+	if filter.CVEID != nil {
+		baseWhere += ` AND f.cve_id = $` + strconv.Itoa(argIndex)
+		args = append(args, *filter.CVEID)
+		argIndex++
+	}
+	if filter.Severity != nil {
+		baseWhere += ` AND f.severity = $` + strconv.Itoa(argIndex)
+		args = append(args, *filter.Severity)
+		argIndex++
+	}
+	if filter.MinCVSS != nil {
+		baseWhere += ` AND COALESCE(cve.cvss3_score, f.cvss3_score) >= $` + strconv.Itoa(argIndex)
+		args = append(args, *filter.MinCVSS)
+		argIndex++
+	}
+	if !filter.IncludeResolved {
+		baseWhere += ` AND f.resolved_at IS NULL`
+	}
+	if filter.VexStatus != nil {
+		baseWhere += ` AND f.vex_status = $` + strconv.Itoa(argIndex)
+		args = append(args, *filter.VexStatus)
+		argIndex++
+	}
+	if filter.Search != "" {
+		searchPattern := "%" + filter.Search + "%"
+		baseWhere += ` AND (f.cve_id ILIKE $` + strconv.Itoa(argIndex) +
+			` OR f.package_name ILIKE $` + strconv.Itoa(argIndex) +
+			` OR srv.name ILIKE $` + strconv.Itoa(argIndex) +
+			` OR COALESCE(f.severity, '') ILIKE $` + strconv.Itoa(argIndex) +
+			` OR COALESCE(f.fix_state, '') ILIKE $` + strconv.Itoa(argIndex) +
+			` OR COALESCE(f.fixed_in, '') ILIKE $` + strconv.Itoa(argIndex) + `)`
+		args = append(args, searchPattern)
+		argIndex++
+	}
+
+	from := `FROM findings f
+		JOIN servers srv ON f.server_id = srv.id
+		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id`
+
+	// COUNT distinct (server, CVE) pairs — that's the number of groups.
+	var total int
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(DISTINCT (f.server_id, f.cve_id)) `+from+baseWhere, args...,
+	).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	orderBy := groupedFindingsOrderBy(filter.SortBy, filter.SortOrder)
+
+	selectQuery := `
+		SELECT
+			f.server_id,
+			srv.name AS server_name,
+			f.cve_id,
+			COALESCE(MAX(f.severity), '') AS severity,
+			MAX(f.cvss3_score) AS finding_cvss,
+			MAX(cve.cvss3_score) AS nvd_cvss,
+			COALESCE(MAX(f.source_link), '') AS source_link,
+			COALESCE(MAX(f.source_type), '') AS source_type,
+			COUNT(*)::int AS package_count,
+			SUM(CASE WHEN f.resolved_at IS NULL THEN 1 ELSE 0 END)::int AS active_count,
+			BOOL_AND(f.resolved_at IS NOT NULL) AS all_resolved,
+			MIN(f.first_seen_at) AS earliest_first_seen,
+			MAX(f.last_seen_at) AS latest_last_seen,
+			COALESCE(
+				ARRAY_AGG(DISTINCT f.fix_state) FILTER (WHERE f.fix_state IS NOT NULL AND f.fix_state != ''),
+				'{}'
+			) AS fix_states,
+			COALESCE(
+				ARRAY_AGG(DISTINCT f.vex_status) FILTER (WHERE f.vex_status IS NOT NULL),
+				'{}'
+			) AS vex_statuses,
+			JSONB_AGG(JSONB_BUILD_OBJECT(
+				'id', f.id,
+				'name', f.package_name,
+				'version', COALESCE(f.package_version, ''),
+				'fixedIn', COALESCE(f.fixed_in, ''),
+				'fixState', COALESCE(f.fix_state, ''),
+				'firstSeenAt', f.first_seen_at,
+				'lastSeenAt', f.last_seen_at,
+				'resolvedAt', f.resolved_at,
+				'vexStatus', f.vex_status,
+				'vexJustification', f.vex_justification
+			) ORDER BY f.package_name) AS packages
+	` + from + baseWhere + `
+		GROUP BY f.server_id, srv.name, f.cve_id
+	` + orderBy
+
+	if filter.Limit > 0 {
+		selectQuery += ` LIMIT $` + strconv.Itoa(argIndex)
+		args = append(args, filter.Limit)
+		argIndex++
+
+		selectQuery += ` OFFSET $` + strconv.Itoa(argIndex)
+		args = append(args, filter.Offset)
+	}
+
+	rows, err := s.db.Query(ctx, selectQuery, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var groups []models.GroupedFinding
+	for rows.Next() {
+		var g models.GroupedFinding
+		var packagesJSON []byte
+		err := rows.Scan(
+			&g.ServerID, &g.ServerName, &g.CVEID,
+			&g.Severity,
+			&g.CVSS3Score, &g.NVDCvss3Score,
+			&g.SourceLink, &g.SourceType,
+			&g.PackageCount, &g.ActiveCount, &g.AllResolved,
+			&g.EarliestFirstSeen, &g.LatestLastSeen,
+			&g.FixStates, &g.VexStatuses,
+			&packagesJSON,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scan grouped finding: %w", err)
+		}
+		if len(packagesJSON) > 0 {
+			if err := json.Unmarshal(packagesJSON, &g.Packages); err != nil {
+				return nil, 0, fmt.Errorf("unmarshal packages: %w", err)
+			}
+		}
+		groups = append(groups, g)
+	}
+
+	return groups, total, nil
+}
+
+// groupedFindingsOrderBy returns an ORDER BY clause for the grouped findings query.
+// Package-level sort fields fall back to CVSS — they don't have a single value per group.
+func groupedFindingsOrderBy(sortBy, sortOrder string) string {
+	dir := "DESC"
+	if sortOrder == "asc" {
+		dir = "ASC"
+	}
+	nulls := "NULLS LAST"
+	if dir == "ASC" {
+		nulls = "NULLS FIRST"
+	}
+
+	col := "MAX(COALESCE(cve.cvss3_score, f.cvss3_score))"
+	switch sortBy {
+	case "cveId":
+		col = "f.cve_id"
+	case "serverName":
+		col = "srv.name"
+	case "severity":
+		col = "MAX(f.severity)"
+	case "firstSeenAt":
+		col = "MIN(f.first_seen_at)"
+	}
+
+	return fmt.Sprintf(` ORDER BY %s %s %s, f.cve_id ASC, srv.name ASC`, col, dir, nulls)
 }
 
 // findingsOrderBy returns a safe ORDER BY clause for the findings list.

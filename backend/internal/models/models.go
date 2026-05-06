@@ -71,6 +71,41 @@ type Finding struct {
 	VexJustification *string `json:"vexJustification,omitempty"`
 }
 
+// PackageFinding represents a single package-level entry inside a GroupedFinding.
+type PackageFinding struct {
+	ID               int64      `json:"id"`
+	Name             string     `json:"name"`
+	Version          string     `json:"version"`
+	FixedIn          string     `json:"fixedIn"`
+	FixState         string     `json:"fixState"`
+	FirstSeenAt      time.Time  `json:"firstSeenAt"`
+	LastSeenAt       time.Time  `json:"lastSeenAt"`
+	ResolvedAt       *time.Time `json:"resolvedAt,omitempty"`
+	VexStatus        *string    `json:"vexStatus,omitempty"`
+	VexJustification *string    `json:"vexJustification,omitempty"`
+}
+
+// GroupedFinding aggregates findings by (server, CVE) for the grouped Findings view.
+// All packages on the same server affected by the same CVE are collapsed into one entry.
+type GroupedFinding struct {
+	ServerID          int64            `json:"serverId"`
+	ServerName        string           `json:"serverName"`
+	CVEID             string           `json:"cveId"`
+	Severity          string           `json:"severity"`
+	CVSS3Score        *float64         `json:"cvss3Score,omitempty"`
+	NVDCvss3Score     *float64         `json:"nvdCvss3Score,omitempty"`
+	SourceLink        string           `json:"sourceLink,omitempty"`
+	SourceType        string           `json:"sourceType,omitempty"`
+	Packages          []PackageFinding `json:"packages"`
+	PackageCount      int              `json:"packageCount"`
+	ActiveCount       int              `json:"activeCount"`
+	AllResolved       bool             `json:"allResolved"`
+	FixStates         []string         `json:"fixStates"`
+	VexStatuses       []string         `json:"vexStatuses"`
+	EarliestFirstSeen time.Time        `json:"earliestFirstSeen"`
+	LatestLastSeen    time.Time        `json:"latestLastSeen"`
+}
+
 // Assessment represents a user's evaluation of a CVE
 type Assessment struct {
 	ID         int64     `json:"id"`
