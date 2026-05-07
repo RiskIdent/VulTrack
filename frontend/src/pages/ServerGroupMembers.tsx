@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams, useNavigate, useBlocker } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Search, Save } from 'lucide-react';
 import { getServerGroup, getServerGroupMembers, getServers, setServerGroupMembers } from '../api/client';
 import type { Server as ServerType, ServerGroup } from '../types';
@@ -67,16 +67,11 @@ export default function ServerGroupMembers() {
     return false;
   }, [initialMemberIds, memberIds]);
 
-  // Warn before navigating away with unsaved changes.
-  const blocker = useBlocker(dirty && !saving);
-  useEffect(() => {
-    if (blocker.state === 'blocked') {
-      const proceed = window.confirm('You have unsaved changes. Leave this page anyway?');
-      if (proceed) blocker.proceed();
-      else blocker.reset();
-    }
-  }, [blocker]);
-  // Browser-level beforeunload (closing tab / reloading).
+  // Warn at the browser level (closing tab / reload) when there are unsaved
+  // changes. We deliberately don't intercept in-app navigation: react-router-
+  // dom v7's useBlocker only works inside a data router, and the rest of the
+  // app uses BrowserRouter. The disabled Save button + "Unsaved changes" hint
+  // are the in-app signal; explicit Cancel is always one click away.
   useEffect(() => {
     if (!dirty) return;
     const handler = (e: BeforeUnloadEvent) => {
