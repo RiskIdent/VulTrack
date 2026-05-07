@@ -471,14 +471,16 @@ export default function Findings() {
                           className="bg-[#0a0f0d] hover:bg-[#1a2420] cursor-pointer border-b border-[#1a2420]"
                           onClick={() => handlePackageClick(pkg.id)}
                         >
+                          {/* 9 cells, matching the grouped-mode header (no "Version" column).
+                              Package name + version share one cell under the "Packages" header. */}
                           <td></td>
                           <td className="py-2 px-4"></td>
                           <td className="py-2 px-4"></td>
                           <td className="py-2 px-4 font-mono text-sm text-[#a5d6a7] pl-8">
                             <span className="text-[#6b7280]">↳ </span>{pkg.name}
-                          </td>
-                          <td className="py-2 px-4 font-mono text-xs text-[#6b7280]">
-                            {pkg.version || '-'}
+                            {pkg.version && (
+                              <span className="text-xs text-[#6b7280] ml-2">{pkg.version}</span>
+                            )}
                           </td>
                           <td className="py-2 px-4 font-mono text-xs text-[#4ade80]">
                             {pkg.fixedIn || '-'}
