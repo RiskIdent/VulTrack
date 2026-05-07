@@ -240,9 +240,13 @@ func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter
 				'version', COALESCE(f.package_version, ''),
 				'fixedIn', COALESCE(f.fixed_in, ''),
 				'fixState', COALESCE(f.fix_state, ''),
-				'firstSeenAt', f.first_seen_at,
-				'lastSeenAt', f.last_seen_at,
-				'resolvedAt', f.resolved_at,
+				-- Cast naive timestamps to timestamptz so JSON gets a proper RFC 3339
+				-- offset suffix. Without this, Go's time.Time JSON unmarshal fails on
+				-- the offset-less form Postgres emits for "timestamp without time zone".
+				-- pgx writes/reads these columns as UTC by convention, so 'UTC' matches.
+				'firstSeenAt', f.first_seen_at AT TIME ZONE 'UTC',
+				'lastSeenAt', f.last_seen_at AT TIME ZONE 'UTC',
+				'resolvedAt', f.resolved_at AT TIME ZONE 'UTC',
 				'vexStatus', f.vex_status,
 				'vexJustification', f.vex_justification
 			) ORDER BY f.package_name) AS packages
