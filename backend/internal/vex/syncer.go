@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -205,28 +206,96 @@ func (s *Syncer) Sync(ctx context.Context) error {
 	return nil
 }
 
-// streamAndImport streams the .tar.xz from url, parses each VEX JSON file in
-// parallel, and bulk-inserts rows into vex_statements with the given generation.
+// streamAndImport downloads the .tar.xz to a tempfile and then parses it
+// locally. We used to stream HTTP → xz → tar → parser → DB in one pipeline,
+// but that couples the HTTP body's read rate to the database insert rate.
+// Under load (many concurrent scans hammering the same DB), inserts queue up,
+// the tar reader stalls waiting for backpressure to clear, and the upstream
+// server's idle timeout kills the connection — surfacing as a confusing
+// "tar read error: unexpected EOF" partway through. Buffering to disk first
+// decouples the two phases so DB load can never break the download.
 func (s *Syncer) streamAndImport(ctx context.Context, url string, generation int) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	archive, err := s.downloadArchive(ctx, url)
 	if err != nil {
 		return 0, err
+	}
+	defer func() {
+		path := archive.Name()
+		archive.Close()
+		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Warn().Err(rmErr).Str("path", path).Msg("Failed to remove VEX tempfile")
+		}
+	}()
+
+	return s.importArchive(ctx, archive, generation)
+}
+
+// downloadArchive fetches url to a tempfile, verifies the byte count against
+// Content-Length when the server provides one, and rewinds the file for reading.
+// A truncated transfer fails fast here rather than later during tar parsing.
+func (s *Syncer) downloadArchive(ctx context.Context, url string) (*os.File, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("User-Agent", "VulTrack/1.0")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	log.Info().Str("url", url).Msg("Streaming VEX archive")
+	tmp, err := os.CreateTemp("", "vultrack-vex-*.tar.xz")
+	if err != nil {
+		return nil, fmt.Errorf("create tempfile: %w", err)
+	}
+	cleanup := func() {
+		path := tmp.Name()
+		tmp.Close()
+		os.Remove(path)
+	}
 
-	xzReader, err := xz.NewReader(resp.Body)
+	log.Info().
+		Str("url", url).
+		Str("path", tmp.Name()).
+		Int64("expectedBytes", resp.ContentLength).
+		Msg("Downloading VEX archive to tempfile")
+
+	startTime := time.Now()
+	n, err := io.Copy(tmp, resp.Body)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("download to tempfile: %w", err)
+	}
+
+	if resp.ContentLength > 0 && n != resp.ContentLength {
+		cleanup()
+		return nil, fmt.Errorf("truncated download: got %d bytes, expected %d", n, resp.ContentLength)
+	}
+
+	log.Info().
+		Int64("bytes", n).
+		Dur("duration", time.Since(startTime)).
+		Msg("VEX archive downloaded")
+
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("rewind tempfile: %w", err)
+	}
+
+	return tmp, nil
+}
+
+// importArchive reads a local .tar.xz, parses each VEX JSON file in parallel,
+// and bulk-inserts rows into vex_statements with the given generation. This
+// phase can take arbitrarily long under DB load without any external risk.
+func (s *Syncer) importArchive(ctx context.Context, src io.Reader, generation int) (int, error) {
+	xzReader, err := xz.NewReader(src)
 	if err != nil {
 		return 0, fmt.Errorf("xz decompress init failed: %w", err)
 	}
@@ -330,8 +399,12 @@ func (s *Syncer) streamAndImport(ctx context.Context, url string, generation int
 
 		data, err := io.ReadAll(io.LimitReader(tarReader, 10*1024*1024))
 		if err != nil {
-			log.Warn().Err(err).Str("file", header.Name).Msg("Failed to read tar entry")
-			continue
+			// The tar reader is stateful: once a body read fails, no further
+			// headers can be read cleanly. Bail out instead of silently
+			// skipping — continuing here used to mask truncated streams as a
+			// single warning followed by an EOF in the next Next() call.
+			close(fileCh)
+			return totalCount, fmt.Errorf("read tar entry %q: %w", header.Name, err)
 		}
 
 		fileCh <- fileEntry{name: header.Name, data: data}
