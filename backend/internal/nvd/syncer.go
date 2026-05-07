@@ -249,17 +249,20 @@ func (s *Syncer) syncFromDate(ctx context.Context, apiKey string, since time.Tim
 	return totalProcessed, nil
 }
 
-// saveChunkProgress saves the progress after each chunk for resumability
+// saveChunkProgress saves the progress after each chunk for resumability.
+// The status is also bumped back to 'syncing' so a previous 'failed' state
+// from the prior run reflects reality once we're actively making progress.
 func (s *Syncer) saveChunkProgress(ctx context.Context, syncedUntil time.Time, recordsProcessed int) {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO sync_status (source_type, source_name, status, last_sync_at, records_processed, updated_at)
 		VALUES ('nvd', 'nvd', 'syncing', $1, $2, NOW())
 		ON CONFLICT (source_type, source_name) DO UPDATE SET
+			status = 'syncing',
 			last_sync_at = $1,
 			records_processed = $2,
 			updated_at = NOW()
 	`, syncedUntil, recordsProcessed)
-	
+
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to save NVD sync progress")
 	}
@@ -529,18 +532,23 @@ func (s *Syncer) getInitialSyncYears(ctx context.Context) int {
 	return 5
 }
 
-// getLastSyncTime returns the last NVD sync time (success or in-progress for resumability)
+// getLastSyncTime returns the resume point for the next NVD sync.
+//
+// last_sync_at is advanced by saveChunkProgress on each completed chunk and by
+// updateSyncStatus on success — it represents how far we've actually progressed,
+// independent of the final outcome. We deliberately do NOT filter by status:
+// a previous sync that ended in 'failed' (e.g. an NVD API timeout) still has
+// a valid resume point in last_sync_at. Filtering 'failed' out here was the
+// reason a single transient failure caused the next start to fall back to a
+// full multi-year initial sync.
 func (s *Syncer) getLastSyncTime(ctx context.Context) (*time.Time, error) {
 	var lastSync *time.Time
-	// Check for any sync (success or syncing) - allows resuming interrupted syncs
 	err := s.db.QueryRow(ctx, `
-		SELECT last_sync_at FROM sync_status 
-		WHERE source_type = 'nvd' AND source_name = 'nvd' 
-		  AND status IN ('success', 'syncing')
+		SELECT last_sync_at FROM sync_status
+		WHERE source_type = 'nvd' AND source_name = 'nvd'
 		  AND last_sync_at IS NOT NULL
-		ORDER BY last_sync_at DESC LIMIT 1
 	`).Scan(&lastSync)
-	
+
 	if err != nil && err.Error() != "no rows in result set" {
 		return nil, err
 	}
@@ -561,19 +569,28 @@ func (s *Syncer) isResumingSync(ctx context.Context) bool {
 	return status == "syncing"
 }
 
-// updateSyncStatus updates the sync status in the database
+// updateSyncStatus updates the sync status in the database.
+//
+// On 'success' we advance last_sync_at to NOW (the moment the sync finished).
+// On 'failed' we deliberately preserve the existing last_sync_at — that value
+// reflects the latest chunk we actually completed (written by saveChunkProgress).
+// Overwriting it with NOW() on failure used to throw away the resume point and
+// turn the next run into a fresh multi-year initial sync.
 func (s *Syncer) updateSyncStatus(ctx context.Context, status, errorMsg string, recordsProcessed int) {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO sync_status (source_type, source_name, status, last_sync_at, error_message, records_processed, updated_at)
-		VALUES ('nvd', 'nvd', $1, NOW(), $2, $3, NOW())
+		VALUES ('nvd', 'nvd', $1, CASE WHEN $1 = 'success' THEN NOW() END, $2, $3, NOW())
 		ON CONFLICT (source_type, source_name) DO UPDATE SET
 			status = EXCLUDED.status,
-			last_sync_at = EXCLUDED.last_sync_at,
+			last_sync_at = CASE
+				WHEN EXCLUDED.status = 'success' THEN NOW()
+				ELSE sync_status.last_sync_at
+			END,
 			error_message = EXCLUDED.error_message,
 			records_processed = EXCLUDED.records_processed,
 			updated_at = NOW()
 	`, status, errorMsg, recordsProcessed)
-	
+
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to update NVD sync status")
 	}
