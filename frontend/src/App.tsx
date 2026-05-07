@@ -15,6 +15,7 @@ import Reports from './pages/Reports';
 import Admin from './pages/Admin';
 import OVALDatabase from './pages/OVALDatabase';
 import Scans from './pages/Scans';
+import ServerGroupMembers from './pages/ServerGroupMembers';
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { user, authEnabled } = useAuth();
@@ -50,6 +51,10 @@ export default function App() {
           <Route path="reports" element={<Reports />} />
           <Route path="oval-database" element={<OVALDatabase />} />
           <Route path="admin" element={<AdminRoute><Admin /></AdminRoute>} />
+          <Route
+            path="admin/server-groups/:id/members"
+            element={<AdminRoute><ServerGroupMembers /></AdminRoute>}
+          />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

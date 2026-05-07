@@ -276,6 +276,7 @@ func New(
 	admin.Put("/server-groups/:id", h.updateServerGroup)
 	admin.Delete("/server-groups/:id", h.deleteServerGroup)
 	admin.Get("/server-groups/:id/members", h.getServerGroupMembers)
+	admin.Put("/server-groups/:id/members", h.setServerGroupMembers)
 	admin.Post("/server-groups/:id/members", h.addServerGroupMember)
 	admin.Delete("/server-groups/:id/members/:serverId", h.removeServerGroupMember)
 
@@ -1236,6 +1237,33 @@ func (h *Handler) addServerGroupMember(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message": "Server added to group",
+	})
+}
+
+func (h *Handler) setServerGroupMembers(c *fiber.Ctx) error {
+	groupID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid group ID")
+	}
+
+	var input struct {
+		ServerIDs []int64 `json:"serverIds"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+	}
+	if input.ServerIDs == nil {
+		input.ServerIDs = []int64{}
+	}
+
+	ctx := c.Context()
+	if err := h.serverGroupService.SetMembers(ctx, groupID, input.ServerIDs); err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{
+		"message":     "Group members updated",
+		"memberCount": len(input.ServerIDs),
 	})
 }
 

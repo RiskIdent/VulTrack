@@ -207,6 +207,31 @@ func (s *ServerGroupService) RemoveMember(ctx context.Context, groupID, serverID
 	return err
 }
 
+// SetMembers replaces the entire member list of a group atomically.
+// Pass an empty slice to remove all members.
+func (s *ServerGroupService) SetMembers(ctx context.Context, groupID int64, serverIDs []int64) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM server_group_members WHERE group_id = $1`, groupID); err != nil {
+		return err
+	}
+
+	for _, serverID := range serverIDs {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO server_group_members (group_id, server_id) VALUES ($1, $2)`,
+			groupID, serverID,
+		); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 // SetServerGroups replaces all group memberships for a server
 func (s *ServerGroupService) SetServerGroups(ctx context.Context, serverID int64, groupIDs []int64) error {
 	// Start transaction

@@ -441,6 +441,13 @@ export const addServerGroupMember = (groupId: number, serverId: number) =>
 export const removeServerGroupMember = (groupId: number, serverId: number) =>
   fetchAPI<void>(`/admin/server-groups/${groupId}/members/${serverId}`, { method: 'DELETE' });
 
+// Replace the entire member list of a group atomically.
+export const setServerGroupMembers = (groupId: number, serverIds: number[]) =>
+  fetchAPI<{ message: string; memberCount: number }>(`/admin/server-groups/${groupId}/members`, {
+    method: 'PUT',
+    body: JSON.stringify({ serverIds }),
+  });
+
 // Server group membership
 export const getServerGroupsForServer = (serverId: number) =>
   fetchAPI<{ groups: import('../types').ServerGroup[] }>(`/servers/${serverId}/groups`);

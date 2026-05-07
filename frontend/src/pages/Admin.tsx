@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw } from 'lucide-react';
 import { ConfirmModal } from '../components/ConfirmModal';
 import {
@@ -12,9 +13,6 @@ import {
   createServerGroup,
   updateServerGroup,
   deleteServerGroup,
-  getServerGroupMembers,
-  addServerGroupMember,
-  removeServerGroupMember,
   getServers,
   deleteServer,
   // New imports for agent-based architecture
@@ -591,7 +589,6 @@ function ReasonTemplatesTab() {
 // Server Groups Tab
 function ServerGroupsTab() {
   const [groups, setGroups] = useState<ServerGroup[]>([]);
-  const [allServers, setAllServers] = useState<ServerType[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showNewForm, setShowNewForm] = useState(false);
@@ -599,12 +596,6 @@ function ServerGroupsTab() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ name: '', description: '', color: '#4ade80' });
   const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; group: ServerGroup | null }>({ isOpen: false, group: null });
-  
-  // Member management modal
-  const [managingGroup, setManagingGroup] = useState<ServerGroup | null>(null);
-  const [groupMembers, setGroupMembers] = useState<ServerType[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [loadingMembers, setLoadingMembers] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -612,14 +603,10 @@ function ServerGroupsTab() {
 
   async function fetchData() {
     try {
-      const [groupsData, serversData] = await Promise.all([
-        getServerGroups(),
-        getServers(),
-      ]);
+      const groupsData = await getServerGroups();
       setGroups(groupsData.groups || []);
-      setAllServers(serversData.servers || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load data');
+      setError(err instanceof Error ? err.message : 'Failed to load groups');
     } finally {
       setLoading(false);
     }
@@ -670,58 +657,6 @@ function ServerGroupsTab() {
       color: group.color,
     });
   }
-
-  async function openMemberManagement(group: ServerGroup) {
-    setManagingGroup(group);
-    setSearchQuery('');
-    setLoadingMembers(true);
-    try {
-      const data = await getServerGroupMembers(group.id);
-      setGroupMembers(data.servers || []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load group members');
-    } finally {
-      setLoadingMembers(false);
-    }
-  }
-
-  async function handleAddServer(serverId: number) {
-    if (!managingGroup) return;
-    try {
-      await addServerGroupMember(managingGroup.id, serverId);
-      // Refresh members
-      const data = await getServerGroupMembers(managingGroup.id);
-      setGroupMembers(data.servers || []);
-      fetchData(); // Refresh group counts
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add server to group');
-    }
-  }
-
-  async function handleRemoveServer(serverId: number) {
-    if (!managingGroup) return;
-    try {
-      await removeServerGroupMember(managingGroup.id, serverId);
-      setGroupMembers(groupMembers.filter(s => s.id !== serverId));
-      fetchData(); // Refresh group counts
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to remove server from group');
-    }
-  }
-
-  // Fuzzy search filter for servers not already in the group
-  const memberIds = new Set(groupMembers.map(s => s.id));
-  const availableServers = allServers.filter(s => !memberIds.has(s.id));
-  const filteredServers = searchQuery.trim()
-    ? availableServers.filter(s => {
-        const query = searchQuery.toLowerCase();
-        return (
-          s.name.toLowerCase().includes(query) ||
-          s.osFamily?.toLowerCase().includes(query) ||
-          s.ipv4Addrs?.some(ip => ip.includes(query))
-        );
-      })
-    : [];
 
   if (loading) {
     return <div className="text-[#a5d6a7]">Loading server groups...</div>;
@@ -861,21 +796,21 @@ function ServerGroupsTab() {
                       <td className="py-3 px-4 text-[#e8f5e9] font-medium">{group.name}</td>
                       <td className="py-3 px-4 text-[#a5d6a7]">{group.description || '-'}</td>
                       <td className="py-3 px-4">
-                        <button
-                          onClick={() => openMemberManagement(group)}
+                        <Link
+                          to={`/admin/server-groups/${group.id}/members`}
                           className="text-[#4ade80] hover:underline"
                         >
                           {group.serverCount ?? 0} servers
-                        </button>
+                        </Link>
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <button
-                          onClick={() => openMemberManagement(group)}
-                          className="p-1 text-[#6b7280] hover:text-[#4ade80]"
+                        <Link
+                          to={`/admin/server-groups/${group.id}/members`}
+                          className="inline-block p-1 text-[#6b7280] hover:text-[#4ade80]"
                           title="Manage members"
                         >
                           <Server className="w-4 h-4" />
-                        </button>
+                        </Link>
                         <button onClick={() => startEdit(group)} className="p-1 text-[#6b7280] hover:text-[#4ade80] ml-1">
                           <Pencil className="w-4 h-4" />
                         </button>
@@ -898,134 +833,6 @@ function ServerGroupsTab() {
           </table>
         </div>
       </div>
-
-      {/* Member Management Modal */}
-      {managingGroup && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-[#0a0f0d] border border-[#2d3f36] rounded-xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between p-4 border-b border-[#2d3f36]">
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-4 h-4 rounded"
-                  style={{ backgroundColor: managingGroup.color }}
-                />
-                <h3 className="text-lg font-semibold text-[#e8f5e9]">
-                  Manage Members: {managingGroup.name}
-                </h3>
-              </div>
-              <button
-                onClick={() => setManagingGroup(null)}
-                className="p-1 text-[#6b7280] hover:text-[#e8f5e9]"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Modal Content */}
-            <div className="flex-1 overflow-auto p-4 space-y-4">
-              {/* Add Server Search */}
-              <div>
-                <label className="block text-sm font-medium text-[#a5d6a7] mb-2">
-                  Add Server
-                </label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6b7280]" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search servers by name, OS, or IP..."
-                    className="w-full pl-10 pr-4 py-2 bg-[#1a2420] border border-[#2d3f36] rounded-lg text-[#e8f5e9] placeholder-[#6b7280] focus:outline-none focus:border-[#4ade80]"
-                  />
-                </div>
-                
-                {/* Search Results */}
-                {searchQuery.trim() && (
-                  <div className="mt-2 border border-[#2d3f36] rounded-lg max-h-48 overflow-y-auto">
-                    {filteredServers.length > 0 ? (
-                      filteredServers.slice(0, 10).map((server) => (
-                        <button
-                          key={server.id}
-                          onClick={() => {
-                            handleAddServer(server.id);
-                            setSearchQuery('');
-                          }}
-                          className="w-full flex items-center justify-between px-4 py-2 hover:bg-[#1a2420] text-left border-b border-[#2d3f36] last:border-b-0"
-                        >
-                          <div>
-                            <div className="text-[#e8f5e9] font-medium">{server.name}</div>
-                            <div className="text-xs text-[#6b7280]">
-                              {server.osFamily} {server.osRelease} • {server.ipv4Addrs?.[0] || 'No IP'}
-                            </div>
-                          </div>
-                          <Plus className="w-4 h-4 text-[#4ade80]" />
-                        </button>
-                      ))
-                    ) : (
-                      <div className="px-4 py-3 text-[#6b7280] text-sm">
-                        No servers found matching "{searchQuery}"
-                      </div>
-                    )}
-                    {filteredServers.length > 10 && (
-                      <div className="px-4 py-2 text-[#6b7280] text-xs bg-[#1a2420]">
-                        Showing 10 of {filteredServers.length} results. Refine your search.
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Current Members */}
-              <div>
-                <label className="block text-sm font-medium text-[#a5d6a7] mb-2">
-                  Current Members ({groupMembers.length})
-                </label>
-                {loadingMembers ? (
-                  <div className="text-[#6b7280]">Loading...</div>
-                ) : groupMembers.length > 0 ? (
-                  <div className="border border-[#2d3f36] rounded-lg divide-y divide-[#2d3f36]">
-                    {groupMembers.map((server) => (
-                      <div
-                        key={server.id}
-                        className="flex items-center justify-between px-4 py-2"
-                      >
-                        <div>
-                          <div className="text-[#e8f5e9] font-medium">{server.name}</div>
-                          <div className="text-xs text-[#6b7280]">
-                            {server.osFamily} {server.osRelease} • {server.ipv4Addrs?.[0] || 'No IP'}
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleRemoveServer(server.id)}
-                          className="p-1 text-[#6b7280] hover:text-red-400"
-                          title="Remove from group"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-[#6b7280] text-sm py-4 text-center border border-[#2d3f36] rounded-lg">
-                    No servers in this group yet. Use the search above to add servers.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="p-4 border-t border-[#2d3f36]">
-              <button
-                onClick={() => setManagingGroup(null)}
-                className="btn btn-secondary w-full"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Delete Confirmation Modal */}
       <ConfirmModal
