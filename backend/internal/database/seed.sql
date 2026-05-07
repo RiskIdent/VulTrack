@@ -14,7 +14,8 @@ INSERT INTO oval_distributions (name, display_name, url_template, url_template_c
  '[
    {"version": "20.04", "codename": "focal", "lts": true},
    {"version": "22.04", "codename": "jammy", "lts": true},
-   {"version": "24.04", "codename": "noble", "lts": true}
+   {"version": "24.04", "codename": "noble", "lts": true},
+   {"version": "26.04", "codename": "resolute", "lts": true}
  ]'::jsonb)
 
 ON CONFLICT (name) DO UPDATE SET

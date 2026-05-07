@@ -24,6 +24,7 @@ import {
   revokeAgent,
   deleteAgent,
   getOVALSources,
+  getOVALDistributions,
   enableOVALSource,
   deleteOVALSource,
   triggerOVALSync,
@@ -856,15 +857,14 @@ function ServerGroupsTab() {
 // OVAL Sources Tab (Ubuntu only)
 // ============================================================================
 
-const UBUNTU_VERSIONS = [
-  { version: '20.04', label: '20.04 LTS (focal)', canEnable: true },
-  { version: '22.04', label: '22.04 LTS (jammy)', canEnable: true },
-  { version: '24.04', label: '24.04 LTS (noble)', canEnable: true },
-  { version: '26.04', label: '26.04 (Placeholder)', canEnable: false },
-] as const;
+interface UbuntuVersion {
+  version: string;
+  label: string;
+}
 
 function OVALSourcesTab() {
   const [sources, setSources] = useState<OVALSource[]>([]);
+  const [ubuntuVersions, setUbuntuVersions] = useState<UbuntuVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<number | null>(null);
@@ -888,9 +888,30 @@ function OVALSourcesTab() {
 
   async function fetchData(silent = false) {
     try {
-      const srcData = await getOVALSources();
+      // On the first (non-silent) load we also pull the distribution catalog so
+      // the version chips reflect whatever the backend's seed.sql offers — adding
+      // a new Ubuntu release becomes a one-line seed change, no UI rebuild.
+      const requests: Promise<unknown>[] = [getOVALSources()];
+      if (!silent && ubuntuVersions.length === 0) {
+        requests.push(getOVALDistributions());
+      }
+      const results = await Promise.all(requests);
+      const srcData = results[0] as Awaited<ReturnType<typeof getOVALSources>>;
       const newSources = srcData.sources || [];
       setSources(newSources);
+
+      if (results.length > 1) {
+        const distData = results[1] as Awaited<ReturnType<typeof getOVALDistributions>>;
+        const ubuntu = (distData.distributions || []).find(d => d.name === 'ubuntu');
+        if (ubuntu) {
+          setUbuntuVersions(
+            ubuntu.versions.map(v => ({
+              version: v.version,
+              label: `${v.version}${v.lts ? ' LTS' : ''}${v.codename ? ` (${v.codename})` : ''}`,
+            })),
+          );
+        }
+      }
 
       // Remove source IDs from pending when that source has a recent lastSyncAt (sync just finished)
       const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
@@ -1062,21 +1083,20 @@ function OVALSourcesTab() {
         </p>
 
         <div className="flex flex-wrap gap-2">
-          {UBUNTU_VERSIONS.map((v) => {
+          {ubuntuVersions.length === 0 ? (
+            <p className="text-sm text-[#6b7280]">No Ubuntu versions available.</p>
+          ) : ubuntuVersions.map((v) => {
             const isEnabled = sourcesByDist['ubuntu']?.some(s => s.version === v.version);
             const ubuntuSourcesForVersion = sourcesByDist['ubuntu']?.filter(s => s.version === v.version) ?? [];
             const isSyncing = ubuntuSourcesForVersion.some(s => pendingSyncs.has(s.id));
-            const isPlaceholder = !v.canEnable;
-            const disabled = isPlaceholder || isEnabled || isSyncing;
+            const disabled = isEnabled || isSyncing;
             return (
               <button
                 key={v.version}
-                onClick={() => v.canEnable && !isEnabled && !isSyncing && handleEnable('ubuntu', v.version)}
+                onClick={() => !isEnabled && !isSyncing && handleEnable('ubuntu', v.version)}
                 disabled={disabled}
                 className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                  isPlaceholder
-                    ? 'bg-[#1a2420] text-[#6b7280] cursor-not-allowed opacity-60'
-                    : isEnabled
+                  isEnabled
                     ? 'bg-[#4ade80]/20 text-[#4ade80] cursor-default'
                     : isSyncing
                     ? 'bg-yellow-600/20 text-yellow-400 cursor-wait'
