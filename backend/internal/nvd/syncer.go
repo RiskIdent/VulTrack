@@ -250,15 +250,16 @@ func (s *Syncer) syncFromDate(ctx context.Context, apiKey string, since time.Tim
 }
 
 // saveChunkProgress saves the progress after each chunk for resumability.
-// The status is also bumped back to 'syncing' so a previous 'failed' state
-// from the prior run reflects reality once we're actively making progress.
+// The status is bumped to 'syncing' and the resume cursor (synced_until) advances —
+// last_sync_at is left untouched so that it always reflects the last *successful*
+// sync (consumed by the Prometheus metric and the status API).
 func (s *Syncer) saveChunkProgress(ctx context.Context, syncedUntil time.Time, recordsProcessed int) {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO sync_status (source_type, source_name, status, last_sync_at, records_processed, updated_at)
+		INSERT INTO sync_status (source_type, source_name, status, synced_until, records_processed, updated_at)
 		VALUES ('nvd', 'nvd', 'syncing', $1, $2, NOW())
 		ON CONFLICT (source_type, source_name) DO UPDATE SET
 			status = 'syncing',
-			last_sync_at = $1,
+			synced_until = $1,
 			records_processed = $2,
 			updated_at = NOW()
 	`, syncedUntil, recordsProcessed)
@@ -538,15 +539,18 @@ func (s *Syncer) getInitialSyncYears(ctx context.Context) int {
 // updateSyncStatus on success — it represents how far we've actually progressed,
 // independent of the final outcome. We deliberately do NOT filter by status:
 // a previous sync that ended in 'failed' (e.g. an NVD API timeout) still has
-// a valid resume point in last_sync_at. Filtering 'failed' out here was the
+// a valid resume point in synced_until. Filtering 'failed' out here was the
 // reason a single transient failure caused the next start to fall back to a
 // full multi-year initial sync.
+//
+// Reads from synced_until (the resume cursor) — last_sync_at is reserved for
+// the timestamp of the last *successful* sync.
 func (s *Syncer) getLastSyncTime(ctx context.Context) (*time.Time, error) {
 	var lastSync *time.Time
 	err := s.db.QueryRow(ctx, `
-		SELECT last_sync_at FROM sync_status
+		SELECT synced_until FROM sync_status
 		WHERE source_type = 'nvd' AND source_name = 'nvd'
-		  AND last_sync_at IS NOT NULL
+		  AND synced_until IS NOT NULL
 	`).Scan(&lastSync)
 
 	if err != nil && err.Error() != "no rows in result set" {
@@ -571,20 +575,30 @@ func (s *Syncer) isResumingSync(ctx context.Context) bool {
 
 // updateSyncStatus updates the sync status in the database.
 //
-// On 'success' we advance last_sync_at to NOW (the moment the sync finished).
-// On 'failed' we deliberately preserve the existing last_sync_at — that value
-// reflects the latest chunk we actually completed (written by saveChunkProgress).
-// Overwriting it with NOW() on failure used to throw away the resume point and
-// turn the next run into a fresh multi-year initial sync.
+// On 'success' we advance both last_sync_at and synced_until to NOW (the moment
+// the sync finished) — last_sync_at is the public success timestamp consumed by
+// the Prometheus metric and the status API; synced_until is the resume cursor.
+// On 'failed' we deliberately preserve both columns — synced_until reflects the
+// latest chunk we actually completed (written by saveChunkProgress) so the next
+// run resumes from there, and last_sync_at remains the prior success.
 func (s *Syncer) updateSyncStatus(ctx context.Context, status, errorMsg string, recordsProcessed int) {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO sync_status (source_type, source_name, status, last_sync_at, error_message, records_processed, updated_at)
-		VALUES ('nvd', 'nvd', $1, CASE WHEN $1 = 'success' THEN NOW() END, $2, $3, NOW())
+		INSERT INTO sync_status (source_type, source_name, status, last_sync_at, synced_until, error_message, records_processed, updated_at)
+		VALUES (
+			'nvd', 'nvd', $1,
+			CASE WHEN $1 = 'success' THEN NOW() END,
+			CASE WHEN $1 = 'success' THEN NOW() END,
+			$2, $3, NOW()
+		)
 		ON CONFLICT (source_type, source_name) DO UPDATE SET
 			status = EXCLUDED.status,
 			last_sync_at = CASE
 				WHEN EXCLUDED.status = 'success' THEN NOW()
 				ELSE sync_status.last_sync_at
+			END,
+			synced_until = CASE
+				WHEN EXCLUDED.status = 'success' THEN NOW()
+				ELSE sync_status.synced_until
 			END,
 			error_message = EXCLUDED.error_message,
 			records_processed = EXCLUDED.records_processed,

@@ -350,12 +350,16 @@ CREATE INDEX IF NOT EXISTS idx_exploits_cve_ids
 -- SYNC STATUS (NEW)
 -- ============================================================================
 
--- Tracking for all sync jobs
+-- Tracking for all sync jobs.
+-- last_sync_at: timestamp of the last *successful* sync (used by Prometheus and the UI status APIs).
+-- synced_until: resume cursor for chunked/incremental syncers (NVD). Updated continuously during a
+--               sync and on success advanced to NOW(); always >= last_sync_at.
 CREATE TABLE IF NOT EXISTS sync_status (
     id SERIAL PRIMARY KEY,
     source_type VARCHAR(50) NOT NULL,         -- 'oval', 'nvd', 'exploitdb'
     source_name VARCHAR(100),                 -- e.g., 'ubuntu-24.04', 'nvd', 'exploitdb'
     last_sync_at TIMESTAMP,
+    synced_until TIMESTAMP,
     next_sync_at TIMESTAMP,
     status VARCHAR(20),                       -- 'idle', 'syncing', 'success', 'error'
     error_message TEXT,
@@ -364,6 +368,14 @@ CREATE TABLE IF NOT EXISTS sync_status (
     updated_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(source_type, source_name)
 );
+
+-- Add synced_until on existing deployments and seed it from last_sync_at so the
+-- next NVD run resumes from where it left off (the old code stored the resume
+-- point in last_sync_at).
+ALTER TABLE sync_status ADD COLUMN IF NOT EXISTS synced_until TIMESTAMP;
+UPDATE sync_status
+   SET synced_until = last_sync_at
+ WHERE source_type = 'nvd' AND synced_until IS NULL;
 
 -- ============================================================================
 -- INDEXES FOR EXISTING TABLES

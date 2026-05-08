@@ -110,13 +110,21 @@ func (s *VEXService) GetLastSyncTime(ctx context.Context) (*time.Time, error) {
 }
 
 // UpdateSyncStatus upserts the VEX sync status record.
+//
+// last_sync_at advances to NOW() only when status = 'success' so it always
+// reflects the timestamp of the last *successful* sync — this is what the
+// Prometheus metric and admin UI consume. On 'syncing' / 'failed' the previous
+// success timestamp is preserved.
 func (s *VEXService) UpdateSyncStatus(ctx context.Context, status, errorMsg string, recordsProcessed int) {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO sync_status (source_type, source_name, status, last_sync_at, error_message, records_processed, updated_at)
-		VALUES ('vex', 'vex', $1, NOW(), $2, $3, NOW())
+		VALUES ('vex', 'vex', $1, CASE WHEN $1 = 'success' THEN NOW() END, $2, $3, NOW())
 		ON CONFLICT (source_type, source_name) DO UPDATE SET
 			status            = EXCLUDED.status,
-			last_sync_at      = EXCLUDED.last_sync_at,
+			last_sync_at      = CASE
+				WHEN EXCLUDED.status = 'success' THEN NOW()
+				ELSE sync_status.last_sync_at
+			END,
 			error_message     = EXCLUDED.error_message,
 			records_processed = EXCLUDED.records_processed,
 			updated_at        = NOW()

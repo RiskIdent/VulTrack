@@ -45,6 +45,23 @@ type DBCollector struct {
 	scanJobsWaiting *prometheus.Desc
 	scanJobsRunning *prometheus.Desc
 	syncLastSuccess *prometheus.Desc
+
+	// pgxpool client-side stats
+	dbPoolTotal              *prometheus.Desc
+	dbPoolIdle               *prometheus.Desc
+	dbPoolAcquired           *prometheus.Desc
+	dbPoolMax                *prometheus.Desc
+	dbPoolAcquireCount       *prometheus.Desc
+	dbPoolEmptyAcquireCount  *prometheus.Desc
+	dbPoolCanceledAcquireCnt *prometheus.Desc
+	dbPoolNewConnsCount      *prometheus.Desc
+
+	// PostgreSQL server-side stats (pg_stat_database for current DB)
+	dbSizeBytes      *prometheus.Desc
+	dbConnections    *prometheus.Desc
+	dbTransactions   *prometheus.Desc
+	dbBlocks         *prometheus.Desc
+	dbDeadlocksTotal *prometheus.Desc
 }
 
 func NewDBCollector(db *pgxpool.Pool) *DBCollector {
@@ -85,6 +102,73 @@ func NewDBCollector(db *pgxpool.Pool) *DBCollector {
 			"Unix timestamp of the last successful data sync by source.",
 			[]string{"source"}, nil,
 		),
+
+		dbPoolTotal: prometheus.NewDesc(
+			"vultrack_db_pool_conns_total",
+			"Total connections currently held by the pgx connection pool.",
+			nil, nil,
+		),
+		dbPoolIdle: prometheus.NewDesc(
+			"vultrack_db_pool_conns_idle",
+			"Idle connections in the pgx connection pool.",
+			nil, nil,
+		),
+		dbPoolAcquired: prometheus.NewDesc(
+			"vultrack_db_pool_conns_acquired",
+			"Connections currently acquired (in use) from the pgx connection pool.",
+			nil, nil,
+		),
+		dbPoolMax: prometheus.NewDesc(
+			"vultrack_db_pool_conns_max",
+			"Configured maximum connections of the pgx connection pool.",
+			nil, nil,
+		),
+		dbPoolAcquireCount: prometheus.NewDesc(
+			"vultrack_db_pool_acquire_total",
+			"Cumulative successful connection acquires from the pgx pool.",
+			nil, nil,
+		),
+		dbPoolEmptyAcquireCount: prometheus.NewDesc(
+			"vultrack_db_pool_empty_acquire_total",
+			"Cumulative acquires that had to wait because the pool was empty (saturation indicator).",
+			nil, nil,
+		),
+		dbPoolCanceledAcquireCnt: prometheus.NewDesc(
+			"vultrack_db_pool_canceled_acquire_total",
+			"Cumulative acquires cancelled before completion (e.g. context deadline).",
+			nil, nil,
+		),
+		dbPoolNewConnsCount: prometheus.NewDesc(
+			"vultrack_db_pool_new_conns_total",
+			"Cumulative new physical connections opened by the pgx pool.",
+			nil, nil,
+		),
+
+		dbSizeBytes: prometheus.NewDesc(
+			"vultrack_db_size_bytes",
+			"On-disk size of the application database in bytes.",
+			nil, nil,
+		),
+		dbConnections: prometheus.NewDesc(
+			"vultrack_db_backends",
+			"Number of backends currently connected to the application database (pg_stat_database.numbackends).",
+			nil, nil,
+		),
+		dbTransactions: prometheus.NewDesc(
+			"vultrack_db_transactions_total",
+			"Cumulative transactions on the application database, by result (commit/rollback).",
+			[]string{"result"}, nil,
+		),
+		dbBlocks: prometheus.NewDesc(
+			"vultrack_db_blocks_total",
+			"Cumulative disk blocks accessed on the application database, by source (read=from disk, hit=from cache).",
+			[]string{"type"}, nil,
+		),
+		dbDeadlocksTotal: prometheus.NewDesc(
+			"vultrack_db_deadlocks_total",
+			"Cumulative deadlocks detected on the application database.",
+			nil, nil,
+		),
 	}
 }
 
@@ -96,6 +180,19 @@ func (c *DBCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scanJobsWaiting
 	ch <- c.scanJobsRunning
 	ch <- c.syncLastSuccess
+	ch <- c.dbPoolTotal
+	ch <- c.dbPoolIdle
+	ch <- c.dbPoolAcquired
+	ch <- c.dbPoolMax
+	ch <- c.dbPoolAcquireCount
+	ch <- c.dbPoolEmptyAcquireCount
+	ch <- c.dbPoolCanceledAcquireCnt
+	ch <- c.dbPoolNewConnsCount
+	ch <- c.dbSizeBytes
+	ch <- c.dbConnections
+	ch <- c.dbTransactions
+	ch <- c.dbBlocks
+	ch <- c.dbDeadlocksTotal
 }
 
 func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
@@ -108,6 +205,8 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectAgents(ctx, ch)
 	c.collectScanJobs(ctx, ch)
 	c.collectSyncTimestamps(ctx, ch)
+	c.collectPoolStats(ch)
+	c.collectPostgresStats(ctx, ch)
 }
 
 func (c *DBCollector) collectFindings(ctx context.Context, ch chan<- prometheus.Metric) {
@@ -202,11 +301,11 @@ func (c *DBCollector) collectScanJobs(ctx context.Context, ch chan<- prometheus.
 }
 
 func (c *DBCollector) collectSyncTimestamps(ctx context.Context, ch chan<- prometheus.Metric) {
-	// NVD and ExploitDB from the shared sync_status table
+	// NVD, ExploitDB and VEX from the shared sync_status table
 	rows, err := c.db.Query(ctx, `
 		SELECT source_type, last_sync_at
 		FROM sync_status
-		WHERE status = 'success' AND source_type IN ('nvd', 'exploitdb')
+		WHERE status = 'success' AND source_type IN ('nvd', 'exploitdb', 'vex')
 	`)
 	if err == nil {
 		defer rows.Close()
@@ -226,4 +325,51 @@ func (c *DBCollector) collectSyncTimestamps(ctx context.Context, ch chan<- prome
 	`).Scan(&ovalT) == nil && ovalT != nil {
 		ch <- prometheus.MustNewConstMetric(c.syncLastSuccess, prometheus.GaugeValue, float64(ovalT.Unix()), "oval")
 	}
+}
+
+// collectPoolStats reports pgxpool client-side counters and gauges. No DB query.
+func (c *DBCollector) collectPoolStats(ch chan<- prometheus.Metric) {
+	s := c.db.Stat()
+	ch <- prometheus.MustNewConstMetric(c.dbPoolTotal, prometheus.GaugeValue, float64(s.TotalConns()))
+	ch <- prometheus.MustNewConstMetric(c.dbPoolIdle, prometheus.GaugeValue, float64(s.IdleConns()))
+	ch <- prometheus.MustNewConstMetric(c.dbPoolAcquired, prometheus.GaugeValue, float64(s.AcquiredConns()))
+	ch <- prometheus.MustNewConstMetric(c.dbPoolMax, prometheus.GaugeValue, float64(s.MaxConns()))
+	ch <- prometheus.MustNewConstMetric(c.dbPoolAcquireCount, prometheus.CounterValue, float64(s.AcquireCount()))
+	ch <- prometheus.MustNewConstMetric(c.dbPoolEmptyAcquireCount, prometheus.CounterValue, float64(s.EmptyAcquireCount()))
+	ch <- prometheus.MustNewConstMetric(c.dbPoolCanceledAcquireCnt, prometheus.CounterValue, float64(s.CanceledAcquireCount()))
+	ch <- prometheus.MustNewConstMetric(c.dbPoolNewConnsCount, prometheus.CounterValue, float64(s.NewConnsCount()))
+}
+
+// collectPostgresStats reports server-side stats for the current database from pg_stat_database.
+func (c *DBCollector) collectPostgresStats(ctx context.Context, ch chan<- prometheus.Metric) {
+	var (
+		numbackends                    int64
+		xactCommit, xactRollback       int64
+		blksRead, blksHit              int64
+		deadlocks                      int64
+		dbSize                         int64
+	)
+	err := c.db.QueryRow(ctx, `
+		SELECT
+		    numbackends,
+		    xact_commit,
+		    xact_rollback,
+		    blks_read,
+		    blks_hit,
+		    deadlocks,
+		    pg_database_size(datname)
+		FROM pg_stat_database
+		WHERE datname = current_database()
+	`).Scan(&numbackends, &xactCommit, &xactRollback, &blksRead, &blksHit, &deadlocks, &dbSize)
+	if err != nil {
+		return
+	}
+
+	ch <- prometheus.MustNewConstMetric(c.dbSizeBytes, prometheus.GaugeValue, float64(dbSize))
+	ch <- prometheus.MustNewConstMetric(c.dbConnections, prometheus.GaugeValue, float64(numbackends))
+	ch <- prometheus.MustNewConstMetric(c.dbTransactions, prometheus.CounterValue, float64(xactCommit), "commit")
+	ch <- prometheus.MustNewConstMetric(c.dbTransactions, prometheus.CounterValue, float64(xactRollback), "rollback")
+	ch <- prometheus.MustNewConstMetric(c.dbBlocks, prometheus.CounterValue, float64(blksRead), "read")
+	ch <- prometheus.MustNewConstMetric(c.dbBlocks, prometheus.CounterValue, float64(blksHit), "hit")
+	ch <- prometheus.MustNewConstMetric(c.dbDeadlocksTotal, prometheus.CounterValue, float64(deadlocks))
 }
