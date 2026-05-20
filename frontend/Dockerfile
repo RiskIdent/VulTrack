@@ -29,7 +29,7 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 # Runtime stage - minimal static file server
 # -----------------------------------------------------------------------------
-FROM nginxinc/nginx-unprivileged:1.29-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 
 LABEL org.opencontainers.image.title="VulTrack Frontend"
 LABEL org.opencontainers.image.description="Vulnerability management system frontend - static files"
