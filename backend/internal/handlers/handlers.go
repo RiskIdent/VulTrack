@@ -78,6 +78,9 @@ type Handler struct {
 	sessionStore  *session.Store
 	userService   *services.UserService
 
+	// API tokens for the MCP interface
+	apiTokenService *services.APITokenService
+
 	// JWT signing secret for v2 agent API
 	jwtSecret []byte
 }
@@ -120,6 +123,8 @@ func New(
 	oidcProvider *oidc.Provider,
 	sessionStore *session.Store,
 	userService *services.UserService,
+	// API tokens for the MCP interface
+	apiTokenService *services.APITokenService,
 ) *Handler {
 	// Resolve the JWT signing secret.
 	// If JWT_SECRET is not configured we generate a random one and warn — tokens
@@ -162,6 +167,7 @@ func New(
 		oidcProvider:          oidcProvider,
 		sessionStore:          sessionStore,
 		userService:           userService,
+		apiTokenService:       apiTokenService,
 		jwtSecret:             jwtSecret,
 	}
 
@@ -226,6 +232,14 @@ func New(
 	apiv2.Post("/agent/token", h.refreshAgentToken)
 	apiv2.Post("/agent/report", h.receiveAgentReportV2)
 
+	// ========================================================================
+	// MCP API — Model Context Protocol interface for AI agents.
+	// Authenticated by an API token (always required, regardless of OIDC).
+	// A read-only token is routed to a server exposing only query tools; a
+	// read-write token additionally gets the mutating tools.
+	// ========================================================================
+	h.registerMCPRoutes(app)
+
 	// Protected API routes (require valid session when OIDC enabled)
 	protected := api.Group("", h.requireAuth)
 
@@ -268,6 +282,11 @@ func New(
 	// Admin - Users
 	admin.Get("/users", h.getAdminUsers)
 	admin.Patch("/users/:id", h.patchAdminUser)
+
+	// Admin - API Tokens (MCP interface)
+	admin.Get("/api-tokens", h.getAPITokens)
+	admin.Post("/api-tokens", h.createAPIToken)
+	admin.Delete("/api-tokens/:id", h.deleteAPIToken)
 
 	// Admin - Server Groups
 	admin.Get("/server-groups", h.getServerGroups)

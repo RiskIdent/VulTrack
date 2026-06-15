@@ -236,6 +236,22 @@ type EnrollmentKey struct {
 	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
 }
 
+// APIToken represents a machine credential for the MCP interface.
+// Created and managed by admins in the UI. The full token is shown only once
+// at creation time; only its SHA-256 hash and prefix are stored.
+type APIToken struct {
+	ID          int64      `json:"id"`
+	Description string     `json:"description"`
+	TokenHash   string     `json:"-"`           // Never expose hash
+	TokenPrefix string     `json:"tokenPrefix"` // First 8 chars for identification
+	IsReadOnly  bool       `json:"isReadOnly"`
+	IsActive    bool       `json:"isActive"`
+	CreatedBy   *int64     `json:"createdBy,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	LastUsedAt  *time.Time `json:"lastUsedAt,omitempty"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+}
+
 // EnrollmentKeyStatus constants
 const (
 	EnrollmentKeyActive   = true

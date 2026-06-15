@@ -606,3 +606,25 @@ CREATE INDEX IF NOT EXISTS idx_agent_refresh_tokens_agent_id
     ON agent_refresh_tokens(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_refresh_tokens_expires_at
     ON agent_refresh_tokens(expires_at);
+
+-- ============================================================================
+-- API TOKENS: machine credentials for the MCP interface (admin-managed)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id           SERIAL PRIMARY KEY,
+    description  VARCHAR(255) NOT NULL,     -- what the token is used for
+    token_hash   VARCHAR(64)  NOT NULL,     -- SHA-256 hash of the full token
+    token_prefix VARCHAR(8)   NOT NULL,     -- first 8 hex chars for identification
+    is_read_only BOOLEAN      DEFAULT false,
+    is_active    BOOLEAN      DEFAULT true,
+    created_by   INTEGER      REFERENCES users(id) ON DELETE SET NULL,
+    created_at   TIMESTAMP    DEFAULT NOW(),
+    last_used_at TIMESTAMP,
+    expires_at   TIMESTAMP                  -- NULL = never expires
+);
+
+-- token_hash is the authentication lookup key; enforce uniqueness so a hash can
+-- never map to two tokens and duplicate inserts are rejected at the DB layer.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_token_hash
+    ON api_tokens(token_hash);

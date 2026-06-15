@@ -14,6 +14,8 @@ const (
 	AgentTokenPrefix = "at_"
 	// RefreshTokenPrefix is the prefix for v2 refresh tokens
 	RefreshTokenPrefix = "rt_"
+	// APITokenPrefix is the prefix for API tokens (MCP interface)
+	APITokenPrefix = "vt_"
 	// KeyLength is the length of the random part of keys (in bytes, will be hex encoded)
 	KeyLength = 32
 )
@@ -110,4 +112,22 @@ func GenerateRefreshToken() (fullToken string, prefix string, err error) {
 // ValidateRefreshToken checks if a refresh token has the correct format
 func ValidateRefreshToken(token string) bool {
 	return ValidateKeyFormat(token, RefreshTokenPrefix)
+}
+
+// GenerateAPIToken generates a new API token for the MCP interface.
+// Returns the full token (to show once to the user) and the prefix (for identification).
+func GenerateAPIToken() (fullToken string, prefix string, err error) {
+	randomBytes := make([]byte, KeyLength)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+	randomPart := hex.EncodeToString(randomBytes)
+	fullToken = APITokenPrefix + randomPart
+	prefix = randomPart[:8]
+	return fullToken, prefix, nil
+}
+
+// ValidateAPIToken checks if an API token has the correct format
+func ValidateAPIToken(token string) bool {
+	return ValidateKeyFormat(token, APITokenPrefix)
 }

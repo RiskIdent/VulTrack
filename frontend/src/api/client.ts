@@ -494,6 +494,34 @@ export const deleteEnrollmentKey = (id: number) =>
   fetchAPI<void>(`/admin/enrollment-keys/${id}`, { method: 'DELETE' });
 
 // ============================================================================
+// ADMIN: API Tokens (MCP interface)
+// ============================================================================
+
+export interface APIToken {
+  id: number;
+  description: string;
+  tokenPrefix: string;
+  isReadOnly: boolean;
+  isActive: boolean;
+  createdBy?: number;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+}
+
+export const getAPITokens = () =>
+  fetchAPI<{ tokens: APIToken[] }>('/admin/api-tokens');
+
+export const createAPIToken = (data: { description: string; isReadOnly: boolean; expiresAt?: string }) =>
+  fetchAPI<{ token: APIToken; fullToken: string }>('/admin/api-tokens', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const deleteAPIToken = (id: number) =>
+  fetchAPI<void>(`/admin/api-tokens/${id}`, { method: 'DELETE' });
+
+// ============================================================================
 // ADMIN: Registered Agents
 // ============================================================================
 

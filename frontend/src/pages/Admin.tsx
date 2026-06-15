@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw } from 'lucide-react';
+import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, KeyRound, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw } from 'lucide-react';
 import { ConfirmModal } from '../components/ConfirmModal';
 import {
   getSettings,
@@ -36,12 +36,15 @@ import {
   triggerVEXSync,
   getAdminUsers,
   updateUserAdmin,
+  getAPITokens,
+  createAPIToken,
+  deleteAPIToken,
 } from '../api/client';
 import type { AdminUser } from '../api/client';
 import type { Setting, ReasonTemplate, ServerGroup, Server as ServerType } from '../types';
-import type { EnrollmentKey, RegisteredAgent, OVALSource } from '../api/client';
+import type { EnrollmentKey, RegisteredAgent, OVALSource, APIToken } from '../api/client';
 
-type TabType = 'triage' | 'templates' | 'groups' | 'oval' | 'agents' | 'keys' | 'datasources' | 'users' | 'reset' | 'servers';
+type TabType = 'triage' | 'templates' | 'groups' | 'oval' | 'agents' | 'keys' | 'apitokens' | 'datasources' | 'users' | 'reset' | 'servers';
 
 export default function Admin() {
   const [activeTab, setActiveTab] = useState<TabType>('triage');
@@ -52,6 +55,7 @@ export default function Admin() {
     { id: 'datasources' as TabType, label: 'Data Sources', icon: Database },
     { id: 'agents' as TabType, label: 'Agents', icon: Server },
     { id: 'keys' as TabType, label: 'Enrollment Keys', icon: Key },
+    { id: 'apitokens' as TabType, label: 'API Tokens', icon: KeyRound },
     { id: 'groups' as TabType, label: 'Server Groups', icon: Server },
     { id: 'servers' as TabType, label: 'Servers', icon: Server },
     { id: 'templates' as TabType, label: 'Templates', icon: FileText },
@@ -99,6 +103,7 @@ export default function Admin() {
         {activeTab === 'datasources' && <DataSourcesTab />}
         {activeTab === 'agents' && <AgentsTab />}
         {activeTab === 'keys' && <EnrollmentKeysTab />}
+        {activeTab === 'apitokens' && <ApiTokensTab />}
         {activeTab === 'groups' && <ServerGroupsTab />}
         {activeTab === 'servers' && <ServerManagementTab />}
         {activeTab === 'templates' && <ReasonTemplatesTab />}
@@ -2009,6 +2014,271 @@ function AgentsTab() {
 // ============================================================================
 // Enrollment Keys Tab
 // ============================================================================
+
+function ApiTokensTab() {
+  const [tokens, setTokens] = useState<APIToken[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [newForm, setNewForm] = useState({ description: '', isReadOnly: false, expiresAt: '' });
+  const [newTokenResult, setNewTokenResult] = useState<{ token: APIToken; fullToken: string } | null>(null);
+  const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; token: APIToken | null }>({ isOpen: false, token: null });
+
+  useEffect(() => {
+    fetchTokens();
+  }, []);
+
+  async function fetchTokens() {
+    try {
+      const data = await getAPITokens();
+      setTokens(data.tokens || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load API tokens');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleCreate() {
+    try {
+      const result = await createAPIToken({
+        description: newForm.description,
+        isReadOnly: newForm.isReadOnly,
+        // Convert the local datetime-local value to RFC3339 so the Go backend can parse it.
+        expiresAt: newForm.expiresAt ? new Date(newForm.expiresAt).toISOString() : undefined,
+      });
+      setNewTokenResult(result);
+      setShowNewForm(false);
+      setNewForm({ description: '', isReadOnly: false, expiresAt: '' });
+      fetchTokens();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create token');
+    }
+  }
+
+  function openDeleteModal(token: APIToken) {
+    setDeleteModal({ isOpen: true, token });
+  }
+
+  async function confirmDelete() {
+    if (!deleteModal.token) return;
+    const tokenId = deleteModal.token.id;
+    setDeleteModal({ isOpen: false, token: null });
+    try {
+      await deleteAPIToken(tokenId);
+      fetchTokens();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete token');
+    }
+  }
+
+  function formatDate(dateStr: string | null) {
+    if (!dateStr) return 'Never';
+    return new Date(dateStr).toLocaleString();
+  }
+
+  if (loading) {
+    return <div className="text-[#a5d6a7]">Loading API tokens...</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      {error && (
+        <div className="p-3 bg-red-600/10 border border-red-600/50 rounded-lg text-red-400">
+          {error}
+          <button onClick={() => setError(null)} className="ml-2 underline">Dismiss</button>
+        </div>
+      )}
+
+      {/* New Token Result */}
+      {newTokenResult && (
+        <div className="card border-green-600/50 bg-green-600/5">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 className="w-6 h-6 text-green-400 mt-1" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-green-400">API Token Created</h3>
+              <p className="text-sm text-[#a5d6a7] mt-1">
+                Copy this token now - it will only be shown once!
+              </p>
+              <div className="mt-3 p-3 bg-[#0a0f0d] rounded-lg font-mono text-sm text-[#e8f5e9] break-all">
+                {newTokenResult.fullToken}
+              </div>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(newTokenResult.fullToken);
+                }}
+                className="btn btn-secondary mt-3 text-sm"
+              >
+                Copy to Clipboard
+              </button>
+              <button
+                onClick={() => setNewTokenResult(null)}
+                className="btn btn-secondary mt-3 ml-2 text-sm"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-[#e8f5e9]">API Tokens</h2>
+          <button
+            onClick={() => setShowNewForm(true)}
+            className="btn btn-primary flex items-center gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            Create Token
+          </button>
+        </div>
+
+        <p className="text-sm text-[#6b7280] mb-4">
+          API tokens authenticate AI agents against the MCP interface. Use a read-only token
+          for agents that should only query data, and a read-write token to allow changes
+          (assessments, scans, server groups).
+        </p>
+
+        {/* New Token Form */}
+        {showNewForm && (
+          <div className="mb-4 p-4 bg-[#1a2420] border border-[#2d3f36] rounded-lg">
+            <div>
+              <label className="block text-sm font-medium text-[#a5d6a7] mb-1">Description</label>
+              <input
+                type="text"
+                value={newForm.description}
+                onChange={(e) => setNewForm({ ...newForm, description: e.target.value })}
+                className="w-full px-3 py-2 bg-[#0a0f0d] border border-[#2d3f36] rounded-lg text-[#e8f5e9] focus:outline-none focus:border-[#4ade80]"
+                placeholder="e.g., Claude triage agent"
+              />
+            </div>
+
+            {/* Expiry (optional) */}
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-[#a5d6a7] mb-1">Expires at (optional)</label>
+              <input
+                type="datetime-local"
+                value={newForm.expiresAt}
+                onChange={(e) => setNewForm({ ...newForm, expiresAt: e.target.value })}
+                className="w-full px-3 py-2 bg-[#0a0f0d] border border-[#2d3f36] rounded-lg text-[#e8f5e9] focus:outline-none focus:border-[#4ade80]"
+              />
+              <p className="text-xs text-[#6b7280] mt-1">
+                Leave empty for a token that never expires.
+              </p>
+            </div>
+
+            {/* Read-only Toggle */}
+            <div className="mt-4">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    checked={newForm.isReadOnly}
+                    onChange={(e) => setNewForm({ ...newForm, isReadOnly: e.target.checked })}
+                    className="sr-only peer"
+                  />
+                  <div className="w-10 h-6 bg-[#2d3f36] rounded-full peer peer-checked:bg-[#4ade80] transition-colors"></div>
+                  <div className="absolute left-1 top-1 w-4 h-4 bg-[#6b7280] rounded-full peer-checked:translate-x-4 peer-checked:bg-white transition-all"></div>
+                </div>
+                <div>
+                  <span className="text-sm font-medium text-[#e8f5e9]">Read-only</span>
+                  <p className="text-xs text-[#6b7280]">
+                    When enabled, this token can only read data. Write operations are rejected.
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setShowNewForm(false)} className="btn btn-secondary">
+                Cancel
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={!newForm.description.trim()}
+                className="btn btn-primary"
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Tokens Table */}
+        {tokens.length === 0 ? (
+          <p className="text-[#6b7280]">No API tokens created yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-[#2d3f36]">
+                  <th className="table-header text-left py-3 px-4">Description</th>
+                  <th className="table-header text-left py-3 px-4">Token Prefix</th>
+                  <th className="table-header text-left py-3 px-4">Mode</th>
+                  <th className="table-header text-left py-3 px-4">Status</th>
+                  <th className="table-header text-left py-3 px-4">Last Used</th>
+                  <th className="table-header text-left py-3 px-4">Created</th>
+                  <th className="table-header text-left py-3 px-4">Expires</th>
+                  <th className="table-header text-right py-3 px-4">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tokens.map((token) => (
+                  <tr key={token.id} className="table-row">
+                    <td className="py-3 px-4 text-[#e8f5e9] font-medium">{token.description}</td>
+                    <td className="py-3 px-4 font-mono text-sm text-[#6b7280]">{token.tokenPrefix}...</td>
+                    <td className="py-3 px-4">
+                      {token.isReadOnly ? (
+                        <span className="px-2 py-1 rounded text-xs font-medium bg-blue-600/20 text-blue-400">Read-only</span>
+                      ) : (
+                        <span className="px-2 py-1 rounded text-xs font-medium bg-amber-600/20 text-amber-400">Read-write</span>
+                      )}
+                    </td>
+                    <td className="py-3 px-4">
+                      {token.isActive ? (
+                        <span className="px-2 py-1 rounded text-xs font-medium bg-green-600/20 text-green-400">Active</span>
+                      ) : (
+                        <span className="px-2 py-1 rounded text-xs font-medium bg-gray-600/20 text-gray-400">Inactive</span>
+                      )}
+                    </td>
+                    <td className="py-3 px-4 text-[#6b7280] text-sm">{formatDate(token.lastUsedAt)}</td>
+                    <td className="py-3 px-4 text-[#6b7280] text-sm">{formatDate(token.createdAt)}</td>
+                    <td className="py-3 px-4 text-[#6b7280] text-sm">{formatDate(token.expiresAt)}</td>
+                    <td className="py-3 px-4 text-right">
+                      <button
+                        onClick={() => openDeleteModal(token)}
+                        className="p-1 text-[#6b7280] hover:text-red-400"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={deleteModal.isOpen}
+        title="Delete API Token"
+        message={deleteModal.token
+          ? `Are you sure you want to delete the API token "${deleteModal.token.description}"? Any agent using this token will immediately lose access.`
+          : ''
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteModal({ isOpen: false, token: null })}
+      />
+    </div>
+  );
+}
 
 function EnrollmentKeysTab() {
   const [keys, setKeys] = useState<EnrollmentKey[]>([]);

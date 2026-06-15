@@ -202,7 +202,10 @@ func (s *AssessmentService) Upsert(ctx context.Context, a *models.Assessment) (*
 		DO UPDATE SET
 			status = EXCLUDED.status,
 			comment = EXCLUDED.comment,
-			ticket_url = EXCLUDED.ticket_url,
+			-- Preserve an existing Jira ticket link when the caller doesn't supply
+			-- one (e.g. updates via the MCP interface or the REST update path),
+			-- instead of wiping it with an empty value.
+			ticket_url = COALESCE(NULLIF(EXCLUDED.ticket_url, ''), assessments.ticket_url),
 			assessed_by = EXCLUDED.assessed_by,
 			assessed_at = NOW(),
 			updated_at = NOW()

@@ -366,6 +366,11 @@ docker compose up -d postgres
 - `PUT /api/v1/admin/enrollment-keys/:id` - Update enrollment key
 - `DELETE /api/v1/admin/enrollment-keys/:id` - Delete enrollment key
 
+### Admin: API Tokens
+- `GET /api/v1/admin/api-tokens` - List API tokens (for the MCP interface)
+- `POST /api/v1/admin/api-tokens` - Create an API token (the full token is returned once)
+- `DELETE /api/v1/admin/api-tokens/:id` - Delete (revoke) an API token
+
 ### Admin: Agents
 - `GET /api/v1/admin/agents` - List registered agents
 - `PUT /api/v1/admin/agents/:id/approve` - Approve pending agent
@@ -395,6 +400,60 @@ docker compose up -d postgres
 
 ### Monitoring
 - `GET /metrics` - Prometheus metrics endpoint (no authentication required)
+
+## MCP Interface (AI Agents)
+
+VulTrack exposes a [Model Context Protocol](https://modelcontextprotocol.io) server so that AI agents can query the vulnerability landscape and perform triage actions. It is built into the backend and served at:
+
+```
+POST /api/mcp
+```
+
+The transport is **Streamable HTTP** in stateless / JSON-response mode (plain request/response, no long-lived SSE stream).
+
+### Authentication
+
+The MCP endpoint **always** requires an API token, regardless of whether OIDC is enabled — it is a machine interface and is never exposed unauthenticated. Tokens are created by admins under **Admin → API Tokens** in the UI:
+
+- Each token has a **description** (so it is clear what it is used for).
+- A token can optionally be marked **read-only** — it is then routed to a server that exposes only the query tools; the mutating tools are not visible to it at all.
+- A token can optionally be given an **expiry date**.
+
+The full token (prefixed `vt_`) is shown only once at creation time; only its hash is stored. Present it as a bearer token:
+
+```
+Authorization: Bearer vt_<token>
+```
+
+Deleting a token revokes it immediately. All write actions are logged with the acting token's prefix and description for auditing.
+
+### Tools
+
+**Read tools** (available to every token):
+`list_servers`, `get_server`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `list_triage_queue`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
+
+**Write tools** (only available to non-read-only tokens):
+`upsert_assessment`, `delete_assessment`, `trigger_server_scan`, `create_server_group`, `update_server_group`, `delete_server_group`, `set_server_group_members`
+
+> Note: creating an assessment with status `relevant` via MCP does **not** open a Jira ticket (unlike the UI); the MCP interface only writes the assessment itself.
+
+### Example client configuration
+
+For an MCP client that supports Streamable HTTP servers (e.g. Claude Code / Claude Desktop):
+
+```json
+{
+  "mcpServers": {
+    "vultrack": {
+      "type": "http",
+      "url": "https://vultrack.example.com/api/mcp",
+      "headers": {
+        "Authorization": "Bearer vt_your_token_here"
+      }
+    }
+  }
+}
+```
 
 ## Agent Deployment
 

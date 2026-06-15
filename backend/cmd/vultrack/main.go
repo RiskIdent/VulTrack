@@ -116,6 +116,9 @@ func main() {
 	sessionStore := session.NewStore(db, 0) // 0 = use default 24h
 	userService := services.NewUserService(db)
 
+	// API token service (machine credentials for the MCP interface)
+	apiTokenService := services.NewAPITokenService(db)
+
 	// Jira client (safe no-op when disabled)
 	jiraClient := jira.New(cfg)
 
@@ -168,6 +171,7 @@ func main() {
 		oidcProvider,
 		sessionStore,
 		userService,
+		apiTokenService,
 	)
 
 	// Start server
