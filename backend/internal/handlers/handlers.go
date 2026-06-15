@@ -536,53 +536,24 @@ func (h *Handler) getFindings(c *fiber.Ctx) error {
 func (h *Handler) getTriageQueue(c *fiber.Ctx) error {
 	ctx := c.Context()
 
-	// Get filter mode from settings
-	filterMode, _ := h.settingsService.GetValue(ctx, "triage_filter_mode")
-	if filterMode == "" {
-		filterMode = "cvss"
-	}
+	// Resolve the configured triage filter (shared with the MCP interface).
+	opts, _ := h.settingsService.BuildTriageOptions(ctx)
 
-	limit := c.QueryInt("limit", 50)
-	offset := c.QueryInt("offset", 0)
-
-	hideNotAffected := c.QueryBool("hideVexNotAffected", true)
-
-	opts := services.TriageFilterOptions{
-		Mode:               filterMode,
-		HideVexNotAffected: hideNotAffected,
-		Limit:              limit,
-		Offset:             offset,
-	}
+	// Apply request overrides on top of the configured defaults.
+	opts.Limit = c.QueryInt("limit", 50)
+	opts.Offset = c.QueryInt("offset", 0)
+	opts.HideVexNotAffected = c.QueryBool("hideVexNotAffected", true)
 
 	// Build response info
 	filterInfo := make(map[string]interface{})
-	filterInfo["mode"] = filterMode
+	filterInfo["mode"] = opts.Mode
 
-	if filterMode == "vendor_severity" {
-		// Get vendor severity settings
-		severitiesStr, _ := h.settingsService.GetValue(ctx, "triage_vendor_severities")
-		if severitiesStr == "" {
-			severitiesStr = "critical,high"
-		}
-		severities := strings.Split(severitiesStr, ",")
-		for i := range severities {
-			severities[i] = strings.TrimSpace(strings.ToLower(severities[i]))
-		}
-		opts.VendorSeverities = severities
-
-		includeUnrated, _ := h.settingsService.GetValue(ctx, "triage_include_unrated")
-		opts.IncludeUnrated = includeUnrated == "true"
-
-		filterInfo["severities"] = severities
+	if opts.Mode == "vendor_severity" {
+		filterInfo["severities"] = opts.VendorSeverities
 		filterInfo["includeUnrated"] = opts.IncludeUnrated
 	} else {
-		// CVSS mode
-		threshold, err := h.settingsService.GetTriageCVSSThreshold(ctx)
-		if err != nil {
-			threshold = h.cfg.TriageCVSSThreshold
-		}
-		// Allow override via query parameter
-		opts.CVSSThreshold = c.QueryFloat("minCvss", threshold)
+		// Allow CVSS threshold override via query parameter.
+		opts.CVSSThreshold = c.QueryFloat("minCvss", opts.CVSSThreshold)
 		filterInfo["threshold"] = opts.CVSSThreshold
 	}
 
@@ -594,8 +565,8 @@ func (h *Handler) getTriageQueue(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"findings": findings,
 		"total":    total,
-		"limit":    limit,
-		"offset":   offset,
+		"limit":    opts.Limit,
+		"offset":   opts.Offset,
 		"filter":   filterInfo,
 	})
 }
@@ -711,48 +682,55 @@ type assessmentRequest struct {
 	AssessedBy string `json:"assessedBy"`
 }
 
-func (h *Handler) createAssessment(c *fiber.Ctx) error {
-	var req assessmentRequest
-	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
-	}
+// validAssessmentStatuses is the set of accepted assessment status values.
+var validAssessmentStatuses = map[string]bool{
+	models.AssessmentStatusPending:      true,
+	models.AssessmentStatusRelevant:     true,
+	models.AssessmentStatusNotRelevant:  true,
+	models.AssessmentStatusAcceptedRisk: true,
+}
 
-	if req.CVEID == "" || req.Status == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "cveId and status are required")
+// upsertAssessment validates the input, creates a Jira ticket when the status
+// becomes "relevant" and Jira is enabled, and upserts the assessment. It is the
+// single source of truth shared by the REST API and the MCP interface so both
+// behave identically. Validation failures are returned as *fiber.Error so the
+// REST error handler maps them to 4xx; the MCP layer surfaces the message.
+func (h *Handler) upsertAssessment(ctx context.Context, cveID, status, comment, assessedBy string) (*models.Assessment, error) {
+	if cveID == "" || status == "" {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "cveId and status are required")
 	}
-
-	// Validate status
-	validStatuses := map[string]bool{
-		models.AssessmentStatusPending:      true,
-		models.AssessmentStatusRelevant:     true,
-		models.AssessmentStatusNotRelevant:  true,
-		models.AssessmentStatusAcceptedRisk: true,
-	}
-	if !validStatuses[req.Status] {
-		return fiber.NewError(fiber.StatusBadRequest, "Invalid status")
+	if !validAssessmentStatuses[status] {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "Invalid status")
 	}
 
 	assessment := &models.Assessment{
-		CVEID:      req.CVEID,
-		Status:     req.Status,
-		Comment:    req.Comment,
-		AssessedBy: req.AssessedBy,
+		CVEID:      cveID,
+		Status:     status,
+		Comment:    comment,
+		AssessedBy: assessedBy,
 	}
 
-	ctx := c.Context()
-
 	// Create Jira ticket when status is "relevant" and Jira is enabled
-	if req.Status == models.AssessmentStatusRelevant && h.jiraClient != nil && h.jiraClient.Enabled() {
-		ticketURL, err := h.createJiraTicketForCVE(ctx, req.CVEID, req.Comment)
+	if status == models.AssessmentStatusRelevant && h.jiraClient != nil && h.jiraClient.Enabled() {
+		ticketURL, err := h.createJiraTicketForCVE(ctx, cveID, comment)
 		if err != nil {
-			log.Error().Err(err).Str("cveId", req.CVEID).Msg("Failed to create Jira ticket")
+			log.Error().Err(err).Str("cveId", cveID).Msg("Failed to create Jira ticket")
 			// Don't fail the assessment — log the error and continue without ticket
 		} else {
 			assessment.TicketURL = ticketURL
 		}
 	}
 
-	result, err := h.assessmentService.Upsert(ctx, assessment)
+	return h.assessmentService.Upsert(ctx, assessment)
+}
+
+func (h *Handler) createAssessment(c *fiber.Ctx) error {
+	var req assessmentRequest
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+	}
+
+	result, err := h.upsertAssessment(c.Context(), req.CVEID, req.Status, req.Comment, req.AssessedBy)
 	if err != nil {
 		return err
 	}

@@ -435,7 +435,9 @@ Deleting a token revokes it immediately. All write actions are logged with the a
 **Write tools** (only available to non-read-only tokens):
 `upsert_assessment`, `delete_assessment`, `trigger_server_scan`, `create_server_group`, `update_server_group`, `delete_server_group`, `set_server_group_members`
 
-> Note: creating an assessment with status `relevant` via MCP does **not** open a Jira ticket (unlike the UI); the MCP interface only writes the assessment itself.
+All MCP tools share the same logic as the REST API / UI, including admin-configured settings. In particular, `list_triage_queue` honours the configured triage filter (vendor severities or CVSS threshold) and returns the same findings as the UI, and `upsert_assessment` creates a Jira ticket when the status is set to `relevant` and Jira is enabled — just like the UI.
+
+The list tools (`list_findings`, `list_triage_queue`, `list_assessments`) are paginated: each call returns at most `limit` items (and the full `total`) along with a `hasMore` flag. To retrieve every entry, the agent repeats the call with `offset` increased by `limit` while `hasMore` is true.
 
 ### Example client configuration
 

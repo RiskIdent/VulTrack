@@ -33,7 +33,9 @@ func (h *Handler) registerMCPRoutes(app *fiber.App) {
 		AssessmentService:  h.assessmentService,
 		StatsService:       h.statsService,
 		ServerGroupService: h.serverGroupService,
+		SettingsService:    h.settingsService,
 		ScanQueue:          h.scanQueue,
+		UpsertAssessment:   h.upsertAssessment,
 	})
 
 	opts := &mcpsdk.StreamableHTTPOptions{

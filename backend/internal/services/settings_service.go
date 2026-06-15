@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -140,6 +141,40 @@ func (s *SettingsService) GetTriageCVSSThreshold(ctx context.Context) (float64, 
 		return 7.0, nil // Default value
 	}
 	return threshold, nil
+}
+
+// BuildTriageOptions assembles the triage-queue filter from the configured
+// settings (filter mode, vendor severities / CVSS threshold, include-unrated).
+// It is the single source of truth shared by the REST API and the MCP interface
+// so both produce exactly the same triage queue. HideVexNotAffected defaults to
+// true (matching the UI); Limit/Offset are left zero for the caller to set.
+func (s *SettingsService) BuildTriageOptions(ctx context.Context) (TriageFilterOptions, error) {
+	mode, _ := s.GetValue(ctx, "triage_filter_mode")
+	if mode == "" {
+		mode = "cvss"
+	}
+
+	opts := TriageFilterOptions{Mode: mode, HideVexNotAffected: true}
+
+	if mode == "vendor_severity" {
+		severitiesStr, _ := s.GetValue(ctx, "triage_vendor_severities")
+		if severitiesStr == "" {
+			severitiesStr = "critical,high"
+		}
+		severities := strings.Split(severitiesStr, ",")
+		for i := range severities {
+			severities[i] = strings.TrimSpace(strings.ToLower(severities[i]))
+		}
+		opts.VendorSeverities = severities
+
+		includeUnrated, _ := s.GetValue(ctx, "triage_include_unrated")
+		opts.IncludeUnrated = includeUnrated == "true"
+	} else {
+		threshold, _ := s.GetTriageCVSSThreshold(ctx)
+		opts.CVSSThreshold = threshold
+	}
+
+	return opts, nil
 }
 
 // ResetResult contains the counts of deleted records

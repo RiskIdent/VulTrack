@@ -28,15 +28,24 @@ const (
 	serverVersion = "1.0.0"
 )
 
-// Deps holds the services the MCP tools delegate to. These are the same service
-// objects the REST handlers use, so behaviour stays consistent.
+// Deps holds the services and shared logic the MCP tools delegate to. These are
+// the same service objects (and, where settings or side-effects are involved,
+// the same code paths) the REST handlers use, so the MCP interface behaves
+// identically to the UI — including admin-configured triage settings and Jira
+// ticket creation.
 type Deps struct {
 	ServerService      *services.ServerService
 	FindingService     *services.FindingService
 	AssessmentService  *services.AssessmentService
 	StatsService       *services.StatsService
 	ServerGroupService *services.ServerGroupService
+	SettingsService    *services.SettingsService
 	ScanQueue          *scanqueue.Queue
+
+	// UpsertAssessment performs the same create-or-update assessment logic as the
+	// REST API — status validation plus Jira ticket creation when relevant. It is
+	// injected by the handler layer so the MCP write path shares that behaviour.
+	UpsertAssessment func(ctx context.Context, cveID, status, comment, assessedBy string) (*models.Assessment, error)
 }
 
 // BuildServers constructs the read-only and read-write MCP servers.
@@ -60,6 +69,23 @@ func jsonResult(v any) (*mcpsdk.CallToolResult, any, error) {
 	return &mcpsdk.CallToolResult{
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(b)}},
 	}, nil, nil
+}
+
+// paginatedResult wraps a page of items with pagination metadata so the agent
+// knows whether more results exist. To retrieve everything, the agent repeats
+// the call with offset += limit while hasMore is true. total is always the full
+// count, independent of limit.
+func paginatedResult(extra map[string]any, total, limit, offset int) (*mcpsdk.CallToolResult, any, error) {
+	m := map[string]any{
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
+		"hasMore": offset+limit < total,
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return jsonResult(m)
 }
 
 // emptyInput is the input type for tools that take no arguments.
@@ -92,8 +118,8 @@ type listFindingsInput struct {
 	VexStatus       string  `json:"vexStatus,omitempty" jsonschema:"filter by VEX status: not_affected, will_not_fix, under_investigation"`
 	Search          string  `json:"search,omitempty" jsonschema:"free-text search across CVE, package and server name"`
 	IncludeResolved bool    `json:"includeResolved,omitempty" jsonschema:"include resolved findings (default false)"`
-	Limit           int     `json:"limit,omitempty" jsonschema:"max results to return (default 50, max 500)"`
-	Offset          int     `json:"offset,omitempty" jsonschema:"number of results to skip for pagination"`
+	Limit           int     `json:"limit,omitempty" jsonschema:"max results per call (default 50, max 500)"`
+	Offset          int     `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
 }
 
 type getFindingInput struct {
@@ -105,10 +131,8 @@ type cveInput struct {
 }
 
 type listTriageInput struct {
-	Mode          string  `json:"mode,omitempty" jsonschema:"triage mode: cvss or vendor_severity (default cvss)"`
-	CVSSThreshold float64 `json:"cvssThreshold,omitempty" jsonschema:"minimum CVSS score when mode is cvss (default 7.0)"`
-	Limit         int     `json:"limit,omitempty" jsonschema:"max results to return (default 50, max 500)"`
-	Offset        int     `json:"offset,omitempty" jsonschema:"number of results to skip for pagination"`
+	Limit  int `json:"limit,omitempty" jsonschema:"max results per call (default 50, max 500)"`
+	Offset int `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
 }
 
 type listAssessmentsInput struct {
@@ -116,8 +140,8 @@ type listAssessmentsInput struct {
 	Status   string  `json:"status,omitempty" jsonschema:"filter by status: relevant, not_relevant, accepted_risk"`
 	MinCVSS  float64 `json:"minCvss,omitempty" jsonschema:"only assessments with CVSS score >= this value"`
 	Severity string  `json:"severity,omitempty" jsonschema:"filter by vendor severity, e.g. critical"`
-	Limit    int     `json:"limit,omitempty" jsonschema:"max results to return (default 50, max 500)"`
-	Offset   int     `json:"offset,omitempty" jsonschema:"number of results to skip for pagination"`
+	Limit    int     `json:"limit,omitempty" jsonschema:"max results per call (default 50, max 200)"`
+	Offset   int     `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
 }
 
 type daysInput struct {
@@ -159,12 +183,16 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "list_findings",
-		Description: "Search and filter vulnerability findings across all servers.",
+		Name: "list_findings",
+		Description: "Search and filter vulnerability findings across all servers. " +
+			"Paginated: returns at most `limit` findings per call (default 50, max 500) plus the full `total`. " +
+			"When the response field `hasMore` is true, call again with `offset` increased by `limit` to fetch all results.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in listFindingsInput) (*mcpsdk.CallToolResult, any, error) {
 		filter := services.FindingFilter{
 			Search:          in.Search,
 			IncludeResolved: in.IncludeResolved,
+			SortBy:          "cvss3Score", // same defaults as the REST API / UI
+			SortOrder:       "desc",
 			Limit:           clampLimit(in.Limit, 50, 500),
 			Offset:          in.Offset,
 		}
@@ -187,7 +215,7 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return jsonResult(map[string]any{"findings": findings, "total": total})
+		return paginatedResult(map[string]any{"findings": findings}, total, filter.Limit, filter.Offset)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -236,45 +264,49 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "list_triage_queue",
-		Description: "List the triage queue of high-severity findings awaiting assessment.",
+		Name: "list_triage_queue",
+		Description: "List the triage queue exactly as configured in VulTrack's admin settings " +
+			"(filter mode, vendor severities or CVSS threshold). Returns the same findings as the UI. " +
+			"Paginated: returns at most `limit` findings per call (default 50, max 500) plus the full `total`. " +
+			"When `hasMore` is true, call again with `offset` increased by `limit` to fetch all results.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in listTriageInput) (*mcpsdk.CallToolResult, any, error) {
-		opts := services.TriageFilterOptions{
-			Mode:          in.Mode,
-			CVSSThreshold: in.CVSSThreshold,
-			Limit:         clampLimit(in.Limit, 50, 500),
-			Offset:        in.Offset,
+		// Build the filter from the configured triage settings — same source of
+		// truth as the REST API, so the result matches the UI's triage queue.
+		opts, err := d.SettingsService.BuildTriageOptions(ctx)
+		if err != nil {
+			return nil, nil, err
 		}
-		if opts.Mode == "" {
-			opts.Mode = "cvss"
-		}
-		if opts.Mode == "cvss" && opts.CVSSThreshold == 0 {
-			opts.CVSSThreshold = 7.0
-		}
+		opts.Limit = clampLimit(in.Limit, 50, 500)
+		opts.Offset = in.Offset
+
 		findings, total, err := d.FindingService.GetTriageQueue(ctx, opts)
 		if err != nil {
 			return nil, nil, err
 		}
-		return jsonResult(map[string]any{"findings": findings, "total": total})
+		return paginatedResult(map[string]any{"findings": findings, "mode": opts.Mode}, total, opts.Limit, opts.Offset)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "list_assessments",
-		Description: "List CVE assessments (triage decisions) with optional filters.",
+		Name: "list_assessments",
+		Description: "List CVE assessments (triage decisions) with optional filters. " +
+			"Paginated: returns at most `limit` assessments per call (default 50, max 200) plus the full `total`. " +
+			"When `hasMore` is true, call again with `offset` increased by `limit` to fetch all results.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in listAssessmentsInput) (*mcpsdk.CallToolResult, any, error) {
 		filter := services.AssessmentFilter{
-			Search:   in.Search,
-			Status:   in.Status,
-			MinCVSS:  in.MinCVSS,
-			Severity: in.Severity,
-			Limit:    clampLimit(in.Limit, 50, 500),
-			Offset:   in.Offset,
+			Search:    in.Search,
+			Status:    in.Status,
+			MinCVSS:   in.MinCVSS,
+			Severity:  in.Severity,
+			SortBy:    "assessedAt", // same defaults as the REST API / UI
+			SortOrder: "desc",
+			Limit:     clampLimit(in.Limit, 50, 200),
+			Offset:    in.Offset,
 		}
 		assessments, total, err := d.AssessmentService.GetAll(ctx, filter)
 		if err != nil {
 			return nil, nil, err
 		}
-		return jsonResult(map[string]any{"assessments": assessments, "total": total})
+		return paginatedResult(map[string]any{"assessments": assessments}, total, filter.Limit, filter.Offset)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -422,29 +454,13 @@ type setGroupMembersInput struct {
 }
 
 func registerWriteTools(s *mcpsdk.Server, d Deps) {
-	validStatuses := map[string]bool{
-		models.AssessmentStatusPending:      true,
-		models.AssessmentStatusRelevant:     true,
-		models.AssessmentStatusNotRelevant:  true,
-		models.AssessmentStatusAcceptedRisk: true,
-	}
-
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "upsert_assessment",
-		Description: "Create or update the triage assessment for a CVE. Sets the relevance status and rationale.",
+		Name: "upsert_assessment",
+		Description: "Create or update the triage assessment for a CVE (relevance status and rationale). " +
+			"When the status is set to \"relevant\" and Jira is enabled, a Jira ticket is created — exactly as in the UI.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in upsertAssessmentInput) (*mcpsdk.CallToolResult, any, error) {
-		if in.CVEID == "" || in.Status == "" {
-			return nil, nil, fmt.Errorf("cveId and status are required")
-		}
-		if !validStatuses[in.Status] {
-			return nil, nil, fmt.Errorf("invalid status %q; must be one of pending, relevant, not_relevant, accepted_risk", in.Status)
-		}
-		result, err := d.AssessmentService.Upsert(ctx, &models.Assessment{
-			CVEID:      in.CVEID,
-			Status:     in.Status,
-			Comment:    in.Comment,
-			AssessedBy: in.AssessedBy,
-		})
+		// Delegate to the shared handler logic (validation + Jira ticket creation).
+		result, err := d.UpsertAssessment(ctx, in.CVEID, in.Status, in.Comment, in.AssessedBy)
 		if err != nil {
 			return nil, nil, err
 		}
