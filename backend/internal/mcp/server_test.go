@@ -83,6 +83,7 @@ func TestReadOnlyServerExcludesWriteTools(t *testing.T) {
 		"get_dashboard_stats", "get_severity_stats", "get_trend_stats",
 		"get_top_servers", "get_top_cves", "get_assessments_by_severity",
 		"list_server_groups", "get_server_group", "get_server_group_members",
+		"get_triage_config",
 	}
 	for _, name := range readTools {
 		if !roTools[name] {

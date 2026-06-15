@@ -430,7 +430,7 @@ Deleting a token revokes it immediately. All write actions are logged with the a
 ### Tools
 
 **Read tools** (available to every token):
-`list_servers`, `get_server`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `list_triage_queue`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
+`list_servers`, `get_server`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `list_triage_queue`, `get_triage_config`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
 
 **Write tools** (only available to non-read-only tokens):
 `upsert_assessment`, `delete_assessment`, `trigger_server_scan`, `create_server_group`, `update_server_group`, `delete_server_group`, `set_server_group_members`
@@ -438,6 +438,8 @@ Deleting a token revokes it immediately. All write actions are logged with the a
 All MCP tools share the same logic as the REST API / UI, including admin-configured settings. In particular, `list_triage_queue` honours the configured triage filter (vendor severities or CVSS threshold) and returns the same findings as the UI, and `upsert_assessment` creates a Jira ticket when the status is set to `relevant` and Jira is enabled — just like the UI.
 
 The list tools (`list_findings`, `list_triage_queue`, `list_assessments`) are paginated: each call returns at most `limit` items (and the full `total`) along with a `hasMore` flag. To retrieve every entry, the agent repeats the call with `offset` increased by `limit` while `hasMore` is true.
+
+To make results self-describing, the responses also report which filter produced them: `list_triage_queue` returns a `filter` object with the admin-configured settings (mode, vendor severities or CVSS threshold, include-unrated, hide-VEX-not-affected), and `list_findings` / `list_assessments` echo the effective filter (including defaults like `includeResolved` and sort order) in `appliedFilter`. The `get_triage_config` tool exposes the same triage settings directly.
 
 ### Example client configuration
 

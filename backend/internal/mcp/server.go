@@ -102,6 +102,23 @@ func clampLimit(limit, def, max int) int {
 	return limit
 }
 
+// triageFilterInfo describes the effective triage configuration (the admin
+// settings that determine which findings appear in the triage queue) so the
+// agent can explain the result and reconcile it with the UI.
+func triageFilterInfo(opts services.TriageFilterOptions) map[string]any {
+	info := map[string]any{
+		"mode":               opts.Mode,
+		"hideVexNotAffected": opts.HideVexNotAffected,
+	}
+	if opts.Mode == "vendor_severity" {
+		info["vendorSeverities"] = opts.VendorSeverities
+		info["includeUnrated"] = opts.IncludeUnrated
+	} else {
+		info["cvssThreshold"] = opts.CVSSThreshold
+	}
+	return info
+}
+
 // ----------------------------------------------------------------------------
 // Read tools (registered on both the read-only and read-write servers)
 // ----------------------------------------------------------------------------
@@ -185,6 +202,9 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "list_findings",
 		Description: "Search and filter vulnerability findings across all servers. " +
+			"`severity` is the vendor severity (from the OVAL/distro source); `cvss3Score` is the NVD CVSS score — they can differ. " +
+			"By default only unresolved findings are returned (set includeResolved=true to include fixed ones), sorted by CVSS descending. " +
+			"The response echoes the effective filter (including defaults) in `appliedFilter`. " +
 			"Paginated: returns at most `limit` findings per call (default 50, max 500) plus the full `total`. " +
 			"When the response field `hasMore` is true, call again with `offset` increased by `limit` to fetch all results.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in listFindingsInput) (*mcpsdk.CallToolResult, any, error) {
@@ -215,7 +235,30 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return paginatedResult(map[string]any{"findings": findings}, total, filter.Limit, filter.Offset)
+		applied := map[string]any{
+			"includeResolved": filter.IncludeResolved,
+			"sortBy":          filter.SortBy,
+			"sortOrder":       filter.SortOrder,
+		}
+		if filter.ServerID != nil {
+			applied["serverId"] = *filter.ServerID
+		}
+		if filter.CVEID != nil {
+			applied["cveId"] = *filter.CVEID
+		}
+		if filter.Severity != nil {
+			applied["severity"] = *filter.Severity
+		}
+		if filter.MinCVSS != nil {
+			applied["minCvss"] = *filter.MinCVSS
+		}
+		if filter.VexStatus != nil {
+			applied["vexStatus"] = *filter.VexStatus
+		}
+		if filter.Search != "" {
+			applied["search"] = filter.Search
+		}
+		return paginatedResult(map[string]any{"findings": findings, "appliedFilter": applied}, total, filter.Limit, filter.Offset)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -265,8 +308,11 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "list_triage_queue",
-		Description: "List the triage queue exactly as configured in VulTrack's admin settings " +
-			"(filter mode, vendor severities or CVSS threshold). Returns the same findings as the UI. " +
+		Description: "List the triage queue exactly as configured in VulTrack's admin settings. " +
+			"The queue composition is admin-controlled: filter mode (vendor severities or CVSS threshold), " +
+			"whether unrated findings are included, and whether VEX 'not affected' findings are hidden. " +
+			"The response `filter` object reports the exact settings that produced the result, so the count " +
+			"can be reconciled with the UI. Returns the same findings as the UI. " +
 			"Paginated: returns at most `limit` findings per call (default 50, max 500) plus the full `total`. " +
 			"When `hasMore` is true, call again with `offset` increased by `limit` to fetch all results.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in listTriageInput) (*mcpsdk.CallToolResult, any, error) {
@@ -283,7 +329,7 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return paginatedResult(map[string]any{"findings": findings, "mode": opts.Mode}, total, opts.Limit, opts.Offset)
+		return paginatedResult(map[string]any{"findings": findings, "filter": triageFilterInfo(opts)}, total, opts.Limit, opts.Offset)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -306,7 +352,37 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return paginatedResult(map[string]any{"assessments": assessments}, total, filter.Limit, filter.Offset)
+		applied := map[string]any{
+			"sortBy":    filter.SortBy,
+			"sortOrder": filter.SortOrder,
+		}
+		if filter.Search != "" {
+			applied["search"] = filter.Search
+		}
+		if filter.Status != "" {
+			applied["status"] = filter.Status
+		}
+		if filter.Severity != "" {
+			applied["severity"] = filter.Severity
+		}
+		if filter.MinCVSS > 0 {
+			applied["minCvss"] = filter.MinCVSS
+		}
+		return paginatedResult(map[string]any{"assessments": assessments, "appliedFilter": applied}, total, filter.Limit, filter.Offset)
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "get_triage_config",
+		Description: "Get the admin-configured triage settings that determine which findings appear in the " +
+			"triage queue: filter mode (cvss or vendor_severity), vendor severities or CVSS threshold, whether " +
+			"unrated findings are included, and whether VEX 'not affected' findings are hidden. Useful for " +
+			"explaining or reconciling the triage queue count with the UI.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ emptyInput) (*mcpsdk.CallToolResult, any, error) {
+		opts, err := d.SettingsService.BuildTriageOptions(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return jsonResult(triageFilterInfo(opts))
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
