@@ -542,7 +542,7 @@ func (h *Handler) getTriageQueue(c *fiber.Ctx) error {
 	// Apply request overrides on top of the configured defaults.
 	opts.Limit = c.QueryInt("limit", 50)
 	opts.Offset = c.QueryInt("offset", 0)
-	opts.HideVexNotAffected = c.QueryBool("hideVexNotAffected", true)
+	opts.HideVexNotAffected = c.QueryBool("hideVexNotAffected", opts.HideVexNotAffected)
 
 	// Build response info
 	filterInfo := make(map[string]interface{})
