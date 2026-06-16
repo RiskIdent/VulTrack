@@ -59,9 +59,12 @@ func (s *APITokenService) Create(ctx context.Context, description string, isRead
 // GetAll returns all API tokens (without hashes).
 func (s *APITokenService) GetAll(ctx context.Context) ([]models.APIToken, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, description, token_prefix, is_read_only, is_active, created_by, created_at, last_used_at, expires_at
-		FROM api_tokens
-		ORDER BY created_at DESC
+		SELECT t.id, t.description, t.token_prefix, t.is_read_only, t.is_active,
+		       t.created_by, t.created_at, t.last_used_at, t.expires_at,
+		       COALESCE(NULLIF(u.name, ''), u.email, '') AS created_by_name
+		FROM api_tokens t
+		LEFT JOIN users u ON u.id = t.created_by
+		ORDER BY t.created_at DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -81,6 +84,7 @@ func (s *APITokenService) GetAll(ctx context.Context) ([]models.APIToken, error)
 			&t.CreatedAt,
 			&t.LastUsedAt,
 			&t.ExpiresAt,
+			&t.CreatedByName,
 		); err != nil {
 			return nil, err
 		}

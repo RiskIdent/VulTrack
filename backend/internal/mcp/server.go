@@ -46,6 +46,13 @@ type Deps struct {
 	// REST API — status validation plus Jira ticket creation when relevant. It is
 	// injected by the handler layer so the MCP write path shares that behaviour.
 	UpsertAssessment func(ctx context.Context, cveID, status, comment, assessedBy string) (*models.Assessment, error)
+
+	// AssessorFromContext resolves the assessor string for an MCP-initiated
+	// assessment from the acting API token in ctx — the user that created the
+	// token, formatted exactly like the UI (name || email). The MCP write path
+	// sets the assessor itself rather than trusting client input, so a triage
+	// action over MCP is attributed to a real user just like one made in the UI.
+	AssessorFromContext func(ctx context.Context) string
 }
 
 // BuildServers constructs the read-only and read-write MCP servers.
@@ -497,10 +504,12 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 // ----------------------------------------------------------------------------
 
 type upsertAssessmentInput struct {
-	CVEID      string `json:"cveId" jsonschema:"the CVE ID to assess, e.g. CVE-2024-1234"`
-	Status     string `json:"status" jsonschema:"assessment status: pending, relevant, not_relevant or accepted_risk"`
-	Comment    string `json:"comment,omitempty" jsonschema:"rationale for the assessment"`
-	AssessedBy string `json:"assessedBy,omitempty" jsonschema:"who performed the assessment (e.g. the agent name)"`
+	CVEID   string `json:"cveId" jsonschema:"the CVE ID to assess, e.g. CVE-2024-1234"`
+	Status  string `json:"status" jsonschema:"assessment status: pending, relevant, not_relevant or accepted_risk"`
+	Comment string `json:"comment,omitempty" jsonschema:"rationale for the assessment"`
+	// The assessor is NOT a tool input: it is derived server-side from the user
+	// that owns the acting API token, so the agent cannot attribute an assessment
+	// to an arbitrary identity.
 }
 
 type deleteAssessmentInput struct {
@@ -535,14 +544,21 @@ func registerWriteTools(s *mcpsdk.Server, d Deps) {
 		Description: "Create or update the triage assessment for a CVE (relevance status and rationale). " +
 			"When the status is set to \"relevant\" and Jira is enabled, a Jira ticket is created — exactly as in the UI.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in upsertAssessmentInput) (*mcpsdk.CallToolResult, any, error) {
+		// Attribute the assessment to the token's owning user (resolved server-side)
+		// rather than to a client-supplied string, so MCP triage actions are tied to
+		// a real user exactly like UI actions.
+		assessedBy := ""
+		if d.AssessorFromContext != nil {
+			assessedBy = d.AssessorFromContext(ctx)
+		}
 		// Delegate to the shared handler logic (validation + Jira ticket creation).
-		result, err := d.UpsertAssessment(ctx, in.CVEID, in.Status, in.Comment, in.AssessedBy)
+		result, err := d.UpsertAssessment(ctx, in.CVEID, in.Status, in.Comment, assessedBy)
 		if err != nil {
 			return nil, nil, err
 		}
 		prefix, desc := tokenAudit(ctx)
 		log.Info().Str("source", "mcp").Str("tokenPrefix", prefix).Str("tokenDescription", desc).
-			Str("cveId", in.CVEID).Str("status", in.Status).Msg("MCP: assessment upserted")
+			Str("cveId", in.CVEID).Str("status", in.Status).Str("assessedBy", assessedBy).Msg("MCP: assessment upserted")
 		return jsonResult(result)
 	})
 

@@ -219,6 +219,17 @@ type User struct {
 	OIDCIssuer  string `json:"-"`
 }
 
+// DisplayName returns the human-facing identifier for the user: the name when
+// set, otherwise the email. This mirrors how the UI derives the assessor string
+// (see TriageDetail.tsx) so assessments attributed server-side look identical to
+// ones the user made in the UI.
+func (u *User) DisplayName() string {
+	if u.Name != "" {
+		return u.Name
+	}
+	return u.Email
+}
+
 // ============================================================================
 // AGENT AUTHENTICATION
 // ============================================================================
@@ -250,6 +261,11 @@ type APIToken struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	LastUsedAt  *time.Time `json:"lastUsedAt,omitempty"`
 	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+
+	// CreatedByName is the display name (name || email) of the creating user,
+	// resolved via a join. Empty when the token has no owner (legacy token) or
+	// the user was deleted. Not stored in the api_tokens table.
+	CreatedByName string `json:"createdByName,omitempty"`
 }
 
 // EnrollmentKeyStatus constants
@@ -538,16 +554,16 @@ type CVEReference struct {
 
 // ReportSchedule represents a recurring report generation plan.
 type ReportSchedule struct {
-	ID            int64      `json:"id"`
-	Name          string     `json:"name"`
-	ScheduleType  string     `json:"scheduleType"`  // "weekly", "monthly_dom", "monthly_dow"
-	IntervalValue int        `json:"intervalValue"`  // every N weeks/months
-	DayOfWeek     *int       `json:"dayOfWeek"`      // 0=Sun..6=Sat
-	WeekOfMonth   *int       `json:"weekOfMonth"`    // 1-5 (for monthly_dow)
-	DayOfMonth    *int       `json:"dayOfMonth"`     // 1-31 (for monthly_dom)
-	TimeHour      int        `json:"timeHour"`
-	TimeMinute    int        `json:"timeMinute"`
-	Timezone      string     `json:"timezone"`
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	ScheduleType  string `json:"scheduleType"`  // "weekly", "monthly_dom", "monthly_dow"
+	IntervalValue int    `json:"intervalValue"` // every N weeks/months
+	DayOfWeek     *int   `json:"dayOfWeek"`     // 0=Sun..6=Sat
+	WeekOfMonth   *int   `json:"weekOfMonth"`   // 1-5 (for monthly_dow)
+	DayOfMonth    *int   `json:"dayOfMonth"`    // 1-31 (for monthly_dom)
+	TimeHour      int    `json:"timeHour"`
+	TimeMinute    int    `json:"timeMinute"`
+	Timezone      string `json:"timezone"`
 
 	ServerIDs []int64 `json:"serverIds"`
 	GroupIDs  []int64 `json:"groupIds"`

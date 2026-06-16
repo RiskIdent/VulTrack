@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/gofiber/adaptor/v2"
 	"github.com/gofiber/fiber/v2"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rs/zerolog/log"
 
 	vtmcp "github.com/vultrack/vultrack/internal/mcp"
 	"github.com/vultrack/vultrack/internal/models"
@@ -28,14 +31,15 @@ import (
 // for this check anyway.
 func (h *Handler) registerMCPRoutes(app *fiber.App) {
 	roServer, rwServer := vtmcp.BuildServers(vtmcp.Deps{
-		ServerService:      h.serverService,
-		FindingService:     h.findingService,
-		AssessmentService:  h.assessmentService,
-		StatsService:       h.statsService,
-		ServerGroupService: h.serverGroupService,
-		SettingsService:    h.settingsService,
-		ScanQueue:          h.scanQueue,
-		UpsertAssessment:   h.upsertAssessment,
+		ServerService:       h.serverService,
+		FindingService:      h.findingService,
+		AssessmentService:   h.assessmentService,
+		StatsService:        h.statsService,
+		ServerGroupService:  h.serverGroupService,
+		SettingsService:     h.settingsService,
+		ScanQueue:           h.scanQueue,
+		UpsertAssessment:    h.upsertAssessment,
+		AssessorFromContext: h.mcpAssessor,
 	})
 
 	opts := &mcpsdk.StreamableHTTPOptions{
@@ -60,4 +64,27 @@ func (h *Handler) registerMCPRoutes(app *fiber.App) {
 		}
 		return rwHandler(c)
 	})
+}
+
+// mcpAssessor resolves the assessor string for an MCP-initiated assessment. It
+// reads the acting API token from ctx (set by requireMCPAuth) and returns its
+// owning user formatted exactly like the UI (name || email), so the assessment
+// is attributed to a real user instead of a client-supplied identity. When the
+// token has no owner (legacy token, or the user was deleted) it falls back to a
+// labelled token identifier so the assessment is never left unattributed.
+func (h *Handler) mcpAssessor(ctx context.Context) string {
+	token, _ := ctx.Value(vtmcp.TokenContextKey).(*models.APIToken)
+	if token == nil {
+		return ""
+	}
+	if token.CreatedBy != nil {
+		user, err := h.userService.GetByID(ctx, *token.CreatedBy)
+		if err != nil {
+			log.Error().Err(err).Int64("userId", *token.CreatedBy).
+				Msg("MCP: failed to resolve token owner for assessment attribution")
+		} else if user != nil {
+			return user.DisplayName()
+		}
+	}
+	return fmt.Sprintf("MCP token: %s", token.Description)
 }

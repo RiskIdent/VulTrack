@@ -2218,6 +2218,7 @@ function ApiTokensTab() {
                   <th className="table-header text-left py-3 px-4">Mode</th>
                   <th className="table-header text-left py-3 px-4">Status</th>
                   <th className="table-header text-left py-3 px-4">Last Used</th>
+                  <th className="table-header text-left py-3 px-4">Created By</th>
                   <th className="table-header text-left py-3 px-4">Created</th>
                   <th className="table-header text-left py-3 px-4">Expires</th>
                   <th className="table-header text-right py-3 px-4">Actions</th>
@@ -2243,6 +2244,7 @@ function ApiTokensTab() {
                       )}
                     </td>
                     <td className="py-3 px-4 text-[#6b7280] text-sm">{formatDate(token.lastUsedAt)}</td>
+                    <td className="py-3 px-4 text-[#6b7280] text-sm">{token.createdByName || '—'}</td>
                     <td className="py-3 px-4 text-[#6b7280] text-sm">{formatDate(token.createdAt)}</td>
                     <td className="py-3 px-4 text-[#6b7280] text-sm">{formatDate(token.expiresAt)}</td>
                     <td className="py-3 px-4 text-right">

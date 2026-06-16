@@ -504,6 +504,7 @@ export interface APIToken {
   isReadOnly: boolean;
   isActive: boolean;
   createdBy?: number;
+  createdByName?: string;
   createdAt: string;
   lastUsedAt: string | null;
   expiresAt: string | null;
