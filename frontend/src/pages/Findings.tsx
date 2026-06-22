@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef, Fragment } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, X, ExternalLink, AlertTriangle } from 'lucide-react';
 import { CVSSBadge, VendorSeverityBadge, FixStateBadge, VEXBadge } from '../components/SeverityBadge';
+import { AIAssessmentCard } from '../components/AIAssessmentCard';
 import { getFindings, getFinding, getFindingsGrouped } from '../api/client';
 import type { Finding, GroupedFinding } from '../types';
 
@@ -723,6 +724,11 @@ export default function Findings() {
                   <h3 className="text-lg font-semibold text-[#e8f5e9] mb-2">Description</h3>
                   <p className="text-[#a5d6a7] whitespace-pre-wrap">{selectedFinding.description || selectedFinding.nvdDescription || selectedFinding.summary}</p>
                 </div>
+              )}
+
+              {/* AI assessment (advisory) — available for any CVE, including those not in the triage queue */}
+              {selectedFinding.cveId && (
+                <AIAssessmentCard cveId={selectedFinding.cveId} />
               )}
 
               {/* Source Link */}

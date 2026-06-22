@@ -126,6 +126,31 @@ export interface Assessment {
   hasFixAvailable: boolean;
 }
 
+// AI assessment types
+export type AIAssessmentStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type AIConfidence = 'low' | 'medium' | 'high';
+
+// Advisory LLM assessment of a CVE. Informational only — never sets the human assessment.
+export interface AIAssessment {
+  id: number;
+  cveId: string;
+  status: AIAssessmentStatus;
+  attackVector: string;
+  prerequisites: string;
+  recommendedStatus: '' | AssessmentStatus; // empty until completed
+  recommendationReasoning: string;
+  confidence: '' | AIConfidence;
+  model: string;
+  promptHash: string;
+  inputTokens: number;
+  outputTokens: number;
+  error?: string;
+  retryCount: number;
+  requestedBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Reason template types
 export interface ReasonTemplate {
   id: number;

@@ -14,6 +14,7 @@ import {
   LogOut,
   User,
   Radar,
+  Sparkles,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -28,6 +29,7 @@ const navItems = [
   { path: '/findings', label: 'Findings', icon: Shield },
   { path: '/triage', label: 'Triage', icon: ClipboardCheck },
   { path: '/assessments', label: 'Assessments', icon: FileCheck },
+  { path: '/ai-assessments', label: 'AI Assessments', icon: Sparkles },
   { path: '/statistics', label: 'Statistics', icon: BarChart3 },
   { path: '/reports', label: 'Reports', icon: FileText },
   { path: '/oval-database', label: 'OVAL Database', icon: Database },

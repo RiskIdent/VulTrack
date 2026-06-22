@@ -38,6 +38,7 @@ type Handler struct {
 	serverService         *services.ServerService
 	findingService        *services.FindingService
 	assessmentService     *services.AssessmentService
+	aiAssessmentService   *services.AIAssessmentService
 	statsService          *services.StatsService
 	reasonTemplateService *services.ReasonTemplateService
 	settingsService       *services.SettingsService
@@ -68,15 +69,17 @@ type Handler struct {
 
 	// Report schedules
 	reportScheduleService *services.ReportScheduleService
-	reportScheduler       interface{ RunNow(ctx context.Context, id int64) error }
+	reportScheduler       interface {
+		RunNow(ctx context.Context, id int64) error
+	}
 
 	// Jira integration
 	jiraClient *jira.Client
 
 	// OIDC auth
-	oidcProvider  *oidc.Provider
-	sessionStore  *session.Store
-	userService   *services.UserService
+	oidcProvider *oidc.Provider
+	sessionStore *session.Store
+	userService  *services.UserService
 
 	// API tokens for the MCP interface
 	apiTokenService *services.APITokenService
@@ -116,7 +119,9 @@ func New(
 	scanQ *scanqueue.Queue,
 	// Report schedules
 	reportScheduleService *services.ReportScheduleService,
-	reportScheduler interface{ RunNow(ctx context.Context, id int64) error },
+	reportScheduler interface {
+		RunNow(ctx context.Context, id int64) error
+	},
 	// Jira integration (nil-safe when disabled)
 	jiraClient *jira.Client,
 	// OIDC auth (nil and stores nil when OIDC disabled)
@@ -125,6 +130,8 @@ func New(
 	userService *services.UserService,
 	// API tokens for the MCP interface
 	apiTokenService *services.APITokenService,
+	// AI assessment service (queue runs separately; handlers only enqueue/read)
+	aiAssessmentService *services.AIAssessmentService,
 ) *Handler {
 	// Resolve the JWT signing secret.
 	// If JWT_SECRET is not configured we generate a random one and warn — tokens
@@ -145,6 +152,7 @@ func New(
 		serverService:         serverService,
 		findingService:        findingService,
 		assessmentService:     assessmentService,
+		aiAssessmentService:   aiAssessmentService,
 		statsService:          statsService,
 		reasonTemplateService: reasonTemplateService,
 		settingsService:       settingsService,
@@ -265,6 +273,11 @@ func New(
 	protected.Post("/assessments", h.createAssessment)
 	protected.Put("/assessments/:cveId", h.updateAssessment)
 	protected.Delete("/assessments/:cveId", h.deleteAssessment)
+
+	// AI assessments (advisory LLM assessments; queue runs in the background)
+	protected.Get("/ai-assessments", h.getAIAssessments)
+	protected.Get("/ai-assessments/:cveId", h.getAIAssessment)
+	protected.Post("/findings/:cveId/ai-assess", h.requestAIAssessment)
 
 	// Reason Templates
 	protected.Get("/reason-templates", h.getReasonTemplates)
@@ -1076,6 +1089,9 @@ func (h *Handler) getSettings(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"settings": settings,
+		// Derived flag: the AI API key is ENV-only and never stored in settings.
+		// The admin UI uses this to warn when ANTHROPIC_API_KEY is not set.
+		"aiApiKeyConfigured": h.cfg.AIConfigured(),
 	})
 }
 

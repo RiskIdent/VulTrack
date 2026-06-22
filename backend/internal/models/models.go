@@ -135,6 +135,35 @@ const (
 	AssessmentStatusAcceptedRisk = "accepted_risk"
 )
 
+// AIAssessment represents an advisory LLM assessment of a CVE. It is purely
+// informational: it never automatically sets the human assessment.
+type AIAssessment struct {
+	ID                      int64     `json:"id"`
+	CVEID                   string    `json:"cveId"`
+	Status                  string    `json:"status"` // pending, processing, completed, failed
+	AttackVector            string    `json:"attackVector"`
+	Prerequisites           string    `json:"prerequisites"`
+	RecommendedStatus       string    `json:"recommendedStatus"` // relevant, not_relevant, accepted_risk
+	RecommendationReasoning string    `json:"recommendationReasoning"`
+	Confidence              string    `json:"confidence"` // low, medium, high
+	Model                   string    `json:"model"`
+	PromptHash              string    `json:"promptHash"`
+	InputTokens             int       `json:"inputTokens"`
+	OutputTokens            int       `json:"outputTokens"`
+	Error                   string    `json:"error,omitempty"`
+	RetryCount              int       `json:"retryCount"`
+	RequestedBy             string    `json:"requestedBy,omitempty"`
+	CreatedAt               time.Time `json:"createdAt"`
+	UpdatedAt               time.Time `json:"updatedAt"`
+}
+
+// AIConfidence constants
+const (
+	AIConfidenceLow    = "low"
+	AIConfidenceMedium = "medium"
+	AIConfidenceHigh   = "high"
+)
+
 // ReasonTemplate represents a predefined reason for assessments
 type ReasonTemplate struct {
 	ID        int64     `json:"id"`

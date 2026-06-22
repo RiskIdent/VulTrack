@@ -11,6 +11,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/vultrack/vultrack/internal/ai"
+	"github.com/vultrack/vultrack/internal/aiqueue"
 	"github.com/vultrack/vultrack/internal/config"
 	"github.com/vultrack/vultrack/internal/database"
 	"github.com/vultrack/vultrack/internal/exploitdb"
@@ -102,6 +104,14 @@ func main() {
 	vulnScanner := scanner.NewScanner(db, vexService)
 	scanQ := scanqueue.New(db, vulnScanner, cfg)
 
+	// AI assessment service + queue (inactive when ANTHROPIC_API_KEY is unset)
+	aiAssessmentService := services.NewAIAssessmentService(db)
+	var aiClient *ai.Client
+	if cfg.AIConfigured() {
+		aiClient = ai.New(cfg.AIAPIKey, cfg.AIRequestTimeout)
+	}
+	aiQueue := aiqueue.New(aiClient, aiAssessmentService, findingService, settingsService, cfg)
+
 	// OIDC auth (provider is nil when OIDC disabled)
 	var oidcProvider *oidc.Provider
 	if cfg.OIDCEnabled {
@@ -140,6 +150,9 @@ func main() {
 	// Start scan queue
 	scanQ.Start()
 
+	// Start AI assessment queue (no-op when not configured)
+	aiQueue.Start()
+
 	// Start report scheduler
 	go reportScheduler.Start()
 
@@ -172,6 +185,7 @@ func main() {
 		sessionStore,
 		userService,
 		apiTokenService,
+		aiAssessmentService,
 	)
 
 	// Start server
@@ -188,6 +202,7 @@ func main() {
 
 	log.Info().Msg("Shutting down VulTrack server...")
 	scanQ.Stop()
+	aiQueue.Stop()
 	reportScheduler.Stop()
 	ovalSyncer.Stop()
 	nvdSyncer.Stop()

@@ -10,6 +10,7 @@ import Findings from './pages/Findings';
 import Triage from './pages/Triage';
 import TriageDetail from './pages/TriageDetail';
 import Assessments from './pages/Assessments';
+import AIAssessments from './pages/AIAssessments';
 import Statistics from './pages/Statistics';
 import Reports from './pages/Reports';
 import Admin from './pages/Admin';
@@ -47,6 +48,7 @@ export default function App() {
           <Route path="triage" element={<Triage />} />
           <Route path="triage/:cveId" element={<TriageDetail />} />
           <Route path="assessments" element={<Assessments />} />
+          <Route path="ai-assessments" element={<AIAssessments />} />
           <Route path="statistics" element={<Statistics />} />
           <Route path="reports" element={<Reports />} />
           <Route path="oval-database" element={<OVALDatabase />} />

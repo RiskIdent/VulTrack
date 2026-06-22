@@ -10,6 +10,19 @@ import (
 	"github.com/vultrack/vultrack/internal/models"
 )
 
+// AI assessment setting keys (stored in the settings table so the UI and the
+// MCP interface share a single source of truth). The API key is intentionally
+// NOT here — it is ENV-only (see config.AIAPIKey).
+const (
+	SettingAIEnabled      = "ai_enabled"       // master toggle for the feature
+	SettingAIAutoAssess   = "ai_auto_assess"   // auto-assess findings entering the triage queue
+	SettingAIModel        = "ai_model"         // model id, e.g. "claude-haiku-4-5"
+	SettingAISystemPrompt = "ai_system_prompt" // admin-configured infrastructure context
+
+	// DefaultAIModel is used when ai_model is unset.
+	DefaultAIModel = "claude-haiku-4-5"
+)
+
 // SettingsService handles application settings
 type SettingsService struct {
 	db *pgxpool.Pool

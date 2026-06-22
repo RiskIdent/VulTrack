@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, KeyRound, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw } from 'lucide-react';
+import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, KeyRound, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw, Sparkles } from 'lucide-react';
 import { ConfirmModal } from '../components/ConfirmModal';
 import {
   getSettings,
@@ -44,13 +44,14 @@ import type { AdminUser } from '../api/client';
 import type { Setting, ReasonTemplate, ServerGroup, Server as ServerType } from '../types';
 import type { EnrollmentKey, RegisteredAgent, OVALSource, APIToken } from '../api/client';
 
-type TabType = 'triage' | 'templates' | 'groups' | 'oval' | 'agents' | 'keys' | 'apitokens' | 'datasources' | 'users' | 'reset' | 'servers';
+type TabType = 'triage' | 'ai' | 'templates' | 'groups' | 'oval' | 'agents' | 'keys' | 'apitokens' | 'datasources' | 'users' | 'reset' | 'servers';
 
 export default function Admin() {
   const [activeTab, setActiveTab] = useState<TabType>('triage');
 
   const tabs = [
     { id: 'triage' as TabType, label: 'Triage', icon: ClipboardCheck },
+    { id: 'ai' as TabType, label: 'AI Assessment', icon: Sparkles },
     { id: 'oval' as TabType, label: 'OVAL Sources', icon: Shield },
     { id: 'datasources' as TabType, label: 'Data Sources', icon: Database },
     { id: 'agents' as TabType, label: 'Agents', icon: Server },
@@ -99,6 +100,7 @@ export default function Admin() {
       {/* Tab Content */}
       <div className="mt-6">
         {activeTab === 'triage' && <TriageSettingsTab />}
+        {activeTab === 'ai' && <AIAssessmentSettingsTab />}
         {activeTab === 'oval' && <OVALSourcesTab />}
         {activeTab === 'datasources' && <DataSourcesTab />}
         {activeTab === 'agents' && <AgentsTab />}
@@ -319,6 +321,161 @@ function TriageSettingsTab() {
             disabled={saving}
             className="btn btn-primary flex items-center gap-2"
           >
+            <Save className="w-4 h-4" />
+            {saving ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// AI Assessment Settings Tab
+function AIAssessmentSettingsTab() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [values, setValues] = useState<Record<string, string>>({
+    ai_enabled: 'false',
+    ai_auto_assess: 'false',
+    ai_model: 'claude-haiku-4-5',
+    ai_system_prompt: '',
+  });
+
+  useEffect(() => {
+    fetchSettings();
+  }, []);
+
+  async function fetchSettings() {
+    try {
+      const data = await getSettings();
+      const loaded: Record<string, string> = {};
+      (data.settings || []).forEach((s: Setting) => {
+        if (['ai_enabled', 'ai_auto_assess', 'ai_model', 'ai_system_prompt'].includes(s.key)) {
+          loaded[s.key] = s.value;
+        }
+      });
+      setValues((prev) => ({ ...prev, ...loaded }));
+      setApiKeyConfigured(!!data.aiApiKeyConfigured);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load settings');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    setSuccess(false);
+    try {
+      await updateSettings(values);
+      setSuccess(true);
+      setTimeout(() => setSuccess(false), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save settings');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return <div className="text-[#a5d6a7]">Loading settings...</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="card">
+        <h2 className="text-lg font-semibold text-[#e8f5e9] mb-4">AI Assessment</h2>
+
+        {!apiKeyConfigured && (
+          <div className="mb-4 p-3 bg-yellow-600/10 border border-yellow-600/50 rounded-lg text-yellow-400 flex items-start gap-2">
+            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+            <span>
+              No <code className="font-mono">ANTHROPIC_API_KEY</code> is configured. AI assessment is inactive until the
+              key is set in the server environment.
+            </span>
+          </div>
+        )}
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-600/10 border border-red-600/50 rounded-lg text-red-400">{error}</div>
+        )}
+
+        {success && (
+          <div className="mb-4 p-3 bg-green-600/10 border border-green-600/50 rounded-lg text-green-400">
+            Settings saved successfully!
+          </div>
+        )}
+
+        <div className="space-y-6">
+          {/* Enable */}
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={values.ai_enabled === 'true'}
+                onChange={(e) => setValues({ ...values, ai_enabled: e.target.checked ? 'true' : 'false' })}
+                className="w-4 h-4 rounded text-[#4ade80] bg-[#1a2420] border-[#2d3f36] focus:ring-[#4ade80]"
+              />
+              <span className="text-[#e8f5e9]">Enable AI assessment</span>
+            </label>
+            <p className="text-xs text-[#6b7280] mt-1 ml-6">
+              Master switch for the AI assessment feature.
+            </p>
+          </div>
+
+          {/* Auto-assess */}
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={values.ai_auto_assess === 'true'}
+                onChange={(e) => setValues({ ...values, ai_auto_assess: e.target.checked ? 'true' : 'false' })}
+                className="w-4 h-4 rounded text-[#4ade80] bg-[#1a2420] border-[#2d3f36] focus:ring-[#4ade80]"
+              />
+              <span className="text-[#e8f5e9]">Auto-assess triage findings</span>
+            </label>
+            <p className="text-xs text-[#6b7280] mt-1 ml-6">
+              When enabled, every CVE entering the triage queue is automatically assessed once.
+            </p>
+          </div>
+
+          {/* Model */}
+          <div>
+            <label className="block text-sm font-medium text-[#a5d6a7] mb-2">Model</label>
+            <select
+              value={values.ai_model || 'claude-haiku-4-5'}
+              onChange={(e) => setValues({ ...values, ai_model: e.target.value })}
+              className="w-full max-w-md px-3 py-2 bg-[#1a2420] border border-[#2d3f36] rounded-lg text-[#e8f5e9] focus:outline-none focus:border-[#4ade80]"
+            >
+              <option value="claude-haiku-4-5">Claude Haiku 4.5 (fast, low cost)</option>
+              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (balanced)</option>
+              <option value="claude-opus-4-8">Claude Opus 4.8 (most capable)</option>
+            </select>
+          </div>
+
+          {/* System prompt / infrastructure context */}
+          <div>
+            <label className="block text-sm font-medium text-[#a5d6a7] mb-2">Infrastructure context (system prompt)</label>
+            <p className="text-xs text-[#6b7280] mb-2">
+              Describe your infrastructure, which attack vectors are especially critical, and which scenarios are
+              acceptable risks. This guides the model's recommendations.
+            </p>
+            <textarea
+              value={values.ai_system_prompt || ''}
+              onChange={(e) => setValues({ ...values, ai_system_prompt: e.target.value })}
+              rows={10}
+              placeholder={'Infrastructure context:\n- Internet-facing services: ...\n- Internal-only services: ...\n- Critical attack vectors: ...\n- Acceptable risks: ...'}
+              className="w-full px-3 py-2 bg-[#1a2420] border border-[#2d3f36] rounded-lg text-[#e8f5e9] placeholder-[#6b7280] focus:outline-none focus:border-[#4ade80] font-mono text-sm"
+            />
+          </div>
+        </div>
+
+        <div className="mt-6 pt-4 border-t border-[#2d3f36]">
+          <button onClick={handleSave} disabled={saving} className="btn btn-primary flex items-center gap-2">
             <Save className="w-4 h-4" />
             {saving ? 'Saving...' : 'Save Settings'}
           </button>

@@ -34,13 +34,14 @@ const (
 // identically to the UI — including admin-configured triage settings and Jira
 // ticket creation.
 type Deps struct {
-	ServerService      *services.ServerService
-	FindingService     *services.FindingService
-	AssessmentService  *services.AssessmentService
-	StatsService       *services.StatsService
-	ServerGroupService *services.ServerGroupService
-	SettingsService    *services.SettingsService
-	ScanQueue          *scanqueue.Queue
+	ServerService       *services.ServerService
+	FindingService      *services.FindingService
+	AssessmentService   *services.AssessmentService
+	AIAssessmentService *services.AIAssessmentService
+	StatsService        *services.StatsService
+	ServerGroupService  *services.ServerGroupService
+	SettingsService     *services.SettingsService
+	ScanQueue           *scanqueue.Queue
 
 	// UpsertAssessment performs the same create-or-update assessment logic as the
 	// REST API — status validation plus Jira ticket creation when relevant. It is
@@ -294,12 +295,19 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 			return nil, nil, fmt.Errorf("CVE %s not found", in.CVEID)
 		}
 		assessment, _ := d.AssessmentService.GetByCVE(ctx, in.CVEID)
-		return jsonResult(map[string]any{
+		result := map[string]any{
 			"cveId":       in.CVEID,
 			"findings":    findings,
 			"serverCount": len(findings),
 			"assessment":  assessment,
-		})
+		}
+		// Include the advisory AI assessment when available (nil when never assessed).
+		if d.AIAssessmentService != nil {
+			if ai, err := d.AIAssessmentService.GetByCVE(ctx, in.CVEID); err == nil {
+				result["aiAssessment"] = ai
+			}
+		}
+		return jsonResult(result)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -311,6 +319,28 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 			return nil, nil, err
 		}
 		return jsonResult(map[string]any{"cveId": in.CVEID, "findings": findings, "total": len(findings)})
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "get_ai_assessment",
+		Description: "Get the advisory AI assessment for a CVE: a plain-language explanation of the attack " +
+			"vector and prerequisites, plus a recommended assessment status and confidence. This is generated " +
+			"by an LLM and is advisory only — it never sets the human assessment. The `status` field reports the " +
+			"assessment's lifecycle state (pending, processing, completed, failed). When no assessment exists yet, " +
+			"`aiAssessment` is null and `status` is \"none\".",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in cveInput) (*mcpsdk.CallToolResult, any, error) {
+		if d.AIAssessmentService == nil {
+			return nil, nil, fmt.Errorf("AI assessment is not available")
+		}
+		a, err := d.AIAssessmentService.GetByCVE(ctx, in.CVEID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Not yet assessed is a valid state, not an error.
+			return jsonResult(map[string]any{"cveId": in.CVEID, "status": "none", "aiAssessment": nil})
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		return jsonResult(map[string]any{"cveId": in.CVEID, "status": a.Status, "aiAssessment": a})
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{

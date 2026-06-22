@@ -77,6 +77,32 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
+-- AI assessments table (one advisory LLM assessment per CVE).
+-- The row also acts as the work queue: status 'pending' rows are picked up by
+-- the AI assessment worker. Results are advisory only and never auto-fill the
+-- human assessment in the assessments table.
+CREATE TABLE IF NOT EXISTS ai_assessments (
+    id SERIAL PRIMARY KEY,
+    cve_id VARCHAR(30) UNIQUE NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, processing, completed, failed
+    attack_vector TEXT,                            -- how the attack works
+    prerequisites TEXT,                            -- conditions required for the attack
+    recommended_status VARCHAR(20),                -- relevant, not_relevant, accepted_risk
+    recommendation_reasoning TEXT,                 -- why the model recommends that status
+    confidence VARCHAR(10),                        -- low, medium, high
+    model VARCHAR(60),                             -- model id that produced the result
+    prompt_hash VARCHAR(64),                       -- hash of (system prompt + schema) used
+    input_tokens INTEGER,                          -- token usage for cost tracking
+    output_tokens INTEGER,
+    error TEXT,                                    -- failure detail when status = 'failed'
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    requested_by VARCHAR(255),                     -- user who triggered a (re-)run; NULL = reconciler
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT valid_ai_status CHECK (status IN ('pending', 'processing', 'completed', 'failed'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_assessments_status ON ai_assessments(status);
+
 -- Server groups table
 CREATE TABLE IF NOT EXISTS server_groups (
     id SERIAL PRIMARY KEY,

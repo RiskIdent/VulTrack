@@ -34,6 +34,7 @@ func (h *Handler) registerMCPRoutes(app *fiber.App) {
 		ServerService:       h.serverService,
 		FindingService:      h.findingService,
 		AssessmentService:   h.assessmentService,
+		AIAssessmentService: h.aiAssessmentService,
 		StatsService:        h.statsService,
 		ServerGroupService:  h.serverGroupService,
 		SettingsService:     h.settingsService,

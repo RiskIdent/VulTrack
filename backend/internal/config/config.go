@@ -63,6 +63,13 @@ type Config struct {
 	SMTPFrom     string // sender address, e.g. "VulTrack <vultrack@example.com>"
 	SMTPTLSMode  string // "none", "starttls", "tls"
 	SMTPHeloHost string // EHLO hostname (default: OS hostname; "localhost" is rejected by many relays)
+
+	// AI assessment (optional; the feature is inactive when no API key is set).
+	// The API key is intentionally ENV-only and never exposed via the admin UI.
+	AIAPIKey         string // ANTHROPIC_API_KEY
+	AIWorkers        int    // number of concurrent AI assessment workers
+	AIMaxRetries     int    // retries per assessment on transient errors
+	AIRequestTimeout int    // per-request timeout in seconds
 }
 
 // Load reads configuration from environment variables
@@ -126,9 +133,22 @@ func Load() (*Config, error) {
 		SMTPFrom:     getEnv("SMTP_FROM", ""),
 		SMTPTLSMode:  getEnv("SMTP_TLS", "starttls"),
 		SMTPHeloHost: getEnv("SMTP_HELO_HOST", ""),
+
+		// AI assessment defaults (disabled until ANTHROPIC_API_KEY is set)
+		AIAPIKey:         getEnv("ANTHROPIC_API_KEY", ""),
+		AIWorkers:        getEnvAsInt("AI_ASSESSMENT_WORKERS", 2),
+		AIMaxRetries:     getEnvAsInt("AI_ASSESSMENT_MAX_RETRIES", 2),
+		AIRequestTimeout: getEnvAsInt("AI_ASSESSMENT_TIMEOUT", 60),
 	}
 
 	return cfg, nil
+}
+
+// AIConfigured reports whether the AI assessment feature has the credentials it
+// needs to run. When false, the feature stays inactive and the admin UI shows a
+// warning that ANTHROPIC_API_KEY is not set.
+func (c *Config) AIConfigured() bool {
+	return c.AIAPIKey != ""
 }
 
 // DatabaseURL returns the PostgreSQL connection string
@@ -178,4 +198,3 @@ func getEnvAsFloat(key string, defaultValue float64) float64 {
 	}
 	return defaultValue
 }
-

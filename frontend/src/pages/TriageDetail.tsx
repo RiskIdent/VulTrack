@@ -5,6 +5,7 @@ import {
   ChevronLeft, ChevronRight, Server, Package
 } from 'lucide-react';
 import { CVSSBadge, VendorSeverityBadge, FixStateBadge } from '../components/SeverityBadge';
+import { AIAssessmentCard } from '../components/AIAssessmentCard';
 import { getTriageQueue, getFindings, getFinding, createAssessment, getReasonTemplates } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import type { Finding, AssessmentStatus, ReasonTemplate } from '../types';
@@ -379,6 +380,9 @@ export default function TriageDetail() {
           </div>
         </div>
       </div>
+
+      {/* AI assessment (advisory) */}
+      <AIAssessmentCard cveId={currentFinding.cveId} />
 
       {/* Affected Servers & Packages */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

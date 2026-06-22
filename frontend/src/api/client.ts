@@ -1,5 +1,17 @@
 const API_BASE = (import.meta.env.VITE_API_URL || '/api/v1').replace(/\/$/, '');
 
+// ApiError carries the HTTP status so callers can distinguish cases (e.g. a 404
+// "not found" from a real failure). It extends Error, so existing callers that
+// read err.message keep working unchanged.
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
@@ -15,7 +27,7 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
       window.location.href = '/login';
     }
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || `HTTP error ${response.status}`);
+    throw new ApiError(response.status, error.error || `HTTP error ${response.status}`);
   }
 
   // Handle 204 No Content responses
@@ -275,6 +287,32 @@ export const updateAssessment = (cveId: string, data: { status: string; comment?
 export const deleteAssessment = (cveId: string) =>
   fetchAPI<void>(`/assessments/${cveId}`, { method: 'DELETE' });
 
+// AI Assessments (advisory LLM assessments)
+export const getAIAssessments = (params?: { status?: string; search?: string; limit?: number; offset?: number }) => {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set('status', params.status);
+  if (params?.search) qs.set('search', params.search);
+  if (params?.limit != null) qs.set('limit', String(params.limit));
+  if (params?.offset != null) qs.set('offset', String(params.offset));
+  const q = qs.toString();
+  return fetchAPI<{
+    assessments: import('../types').AIAssessment[];
+    total: number;
+    limit: number;
+    offset: number;
+  }>(`/ai-assessments${q ? '?' + q : ''}`);
+};
+
+export const getAIAssessment = (cveId: string) =>
+  fetchAPI<import('../types').AIAssessment>(`/ai-assessments/${encodeURIComponent(cveId)}`);
+
+// Request a (re-)assessment. force=true requests a fresh result when one exists.
+export const requestAIAssessment = (cveId: string, force = false) =>
+  fetchAPI<{ cveId: string; queued: boolean }>(
+    `/findings/${encodeURIComponent(cveId)}/ai-assess${force ? '?force=true' : ''}`,
+    { method: 'POST' },
+  );
+
 // Reason Templates
 export const getReasonTemplates = (appliesTo?: string) => {
   const params = appliesTo ? `?appliesTo=${appliesTo}` : '';
@@ -379,7 +417,7 @@ export const runReportScheduleNow = (id: number) =>
 
 // Admin - Settings
 export const getSettings = () =>
-  fetchAPI<{ settings: import('../types').Setting[] }>('/admin/settings');
+  fetchAPI<{ settings: import('../types').Setting[]; aiApiKeyConfigured?: boolean }>('/admin/settings');
 
 export const updateSettings = (settings: Record<string, string>) =>
   fetchAPI<{ message: string }>('/admin/settings', {
