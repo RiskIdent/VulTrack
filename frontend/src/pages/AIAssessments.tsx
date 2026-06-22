@@ -7,7 +7,9 @@ import { getAIAssessments, requestAIAssessment } from '../api/client';
 import { AIAssessmentContent, RecommendedStatusBadge, ConfidenceBadge } from '../components/AIAssessmentCard';
 import type { AIAssessment, AIAssessmentStatus } from '../types';
 
-const ITEMS_PER_PAGE = 25;
+const ITEMS_PER_PAGE = 15;
+// How often the table silently refreshes so assessment statuses stay current.
+const REFRESH_INTERVAL_MS = 5000;
 
 const statusLabels: Record<AIAssessmentStatus, string> = {
   pending: 'Pending',
@@ -68,21 +70,32 @@ export default function AIAssessments() {
     offset: (currentPage - 1) * ITEMS_PER_PAGE,
   }), [debouncedSearch, statusFilter, currentPage]);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  // silent=true is used by the auto-refresh so it doesn't flash the loading
+  // state or clobber the view with a transient polling error.
+  const fetchData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const data = await getAIAssessments(params);
       setAssessments(data.assessments || []);
       setTotal(data.total ?? 0);
+      if (silent) setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load AI assessments');
+      if (!silent) setError(err instanceof Error ? err.message : 'Failed to load AI assessments');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [params]);
 
+  // Initial load and reload on filter/page change.
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
+
+  // Auto-refresh the current view so pending/processing assessments update to
+  // their final status (and newly queued ones appear) without a manual reload.
+  useEffect(() => {
+    const id = setInterval(() => fetchData(true), REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
   }, [fetchData]);
 
   const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
