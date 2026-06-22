@@ -21,6 +21,7 @@ The VulTrack Agent can be found in [this repository](https://github.com/RiskIden
 - **Scheduled Reports**: Automated PDF reports delivered by email (weekly / monthly)
 - **Server Groups**: Organize servers into groups for targeted reporting and filtering
 - **Jira Integration**: Automatically create Jira tickets for relevant findings
+- **AI Assessment**: Optional advisory LLM assessment of CVEs — explains the attack vector and prerequisites and recommends a triage status, using a configurable model and an admin-defined infrastructure-context prompt. Advisory only; it never changes the human assessment. Requires an Anthropic API key
 - **OIDC Authentication**: Optional single sign-on via any OpenID Connect identity provider
 
 ## Architecture
@@ -220,6 +221,19 @@ When `JIRA_ENABLED=true`, a Jira ticket is automatically created whenever a find
 | `JIRA_PROJECT_KEY` | Jira project key (e.g. `SEC`) | *(empty)* |
 | `JIRA_ISSUE_TYPE` | Issue type for created tickets | `Task` |
 
+### AI Assessment (optional)
+
+When `ANTHROPIC_API_KEY` is set, VulTrack can produce an advisory LLM assessment for a CVE: a plain-language explanation of the attack vector and prerequisites plus a recommended triage status and confidence. The result is **advisory only** — it never changes the human assessment.
+
+The API key is **environment-only** and is never exposed through the API or UI. The rest of the configuration lives in **Admin → AI Assessment**: a master switch (`Enable AI assessment`), optional `Auto-assess triage findings` (assess every CVE entering the triage queue once), the model, and an infrastructure-context system prompt. Both the API key **and** the master switch must be enabled for assessments to run. CVEs can also be assessed on demand from the finding/triage views. A re-assessment of the same CVE is rate-limited to once every 30 minutes.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ANTHROPIC_API_KEY` | Anthropic API key. Enables the feature when set | *(empty)* |
+| `AI_ASSESSMENT_WORKERS` | Number of concurrent assessment workers | `2` |
+| `AI_ASSESSMENT_MAX_RETRIES` | Maximum retry attempts on transient errors | `2` |
+| `AI_ASSESSMENT_TIMEOUT` | Timeout per model request in seconds | `60` |
+
 ### Frontend Environment Variables
 
 | Variable | Description | Default |
@@ -309,6 +323,11 @@ docker compose up -d postgres
 - `POST /api/v1/assessments` - Create assessment
 - `PUT /api/v1/assessments/:cveId` - Update assessment
 - `DELETE /api/v1/assessments/:cveId` - Delete assessment
+
+### AI Assessments
+- `GET /api/v1/ai-assessments` - List AI assessments (filters: `status`, `search`; paginated)
+- `GET /api/v1/ai-assessments/:cveId` - Get the AI assessment for a CVE (404 if none yet)
+- `POST /api/v1/findings/:cveId/ai-assess` - Request an AI assessment (`?force=true` to re-assess; only for CVEs with active findings)
 
 ### Reason Templates
 - `GET /api/v1/reason-templates` - List reason templates
@@ -430,7 +449,7 @@ Deleting a token revokes it immediately. All write actions are logged with the a
 ### Tools
 
 **Read tools** (available to every token):
-`list_servers`, `get_server`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `list_triage_queue`, `get_triage_config`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
+`list_servers`, `get_server`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `get_ai_assessment`, `list_triage_queue`, `get_triage_config`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
 
 **Write tools** (only available to non-read-only tokens):
 `upsert_assessment`, `delete_assessment`, `trigger_server_scan`, `create_server_group`, `update_server_group`, `delete_server_group`, `set_server_group_members`
