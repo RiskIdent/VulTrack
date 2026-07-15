@@ -3,7 +3,7 @@ module github.com/vultrack/vultrack
 go 1.26.1
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.51.1
+	github.com/anthropics/anthropic-sdk-go v1.57.0
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/gofiber/adaptor/v2 v2.2.1
 	github.com/gofiber/fiber/v2 v2.52.13
