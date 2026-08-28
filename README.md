@@ -225,11 +225,12 @@ When `JIRA_ENABLED=true`, a Jira ticket is automatically created whenever a find
 
 When `ANTHROPIC_API_KEY` is set, VulTrack can produce an advisory LLM assessment for a CVE: a plain-language explanation of the attack vector and prerequisites plus a recommended triage status and confidence. The result is **advisory only** — it never changes the human assessment.
 
-The API key is **environment-only** and is never exposed through the API or UI. The rest of the configuration lives in **Admin → AI Assessment**: a master switch (`Enable AI assessment`), optional `Auto-assess triage findings` (assess every CVE entering the triage queue once), the model, and an infrastructure-context system prompt. Both the API key **and** the master switch must be enabled for assessments to run. CVEs can also be assessed on demand from the finding/triage views. A re-assessment of the same CVE is rate-limited to once every 30 minutes.
+The API key is **environment-only** and is never exposed through the API or UI. If the key is **identity-linked** (bound to a user identity rather than to a single workspace), also set `ANTHROPIC_WORKSPACE_ID` — such keys are not tied to one workspace, so the API rejects requests that do not name one (`400 … anthropic-workspace-id is required`). A workspace-scoped key needs no such setting. The rest of the configuration lives in **Admin → AI Assessment**: a master switch (`Enable AI assessment`), optional `Auto-assess triage findings` (assess every CVE entering the triage queue once), the model, and an infrastructure-context system prompt. Both the API key **and** the master switch must be enabled for assessments to run. CVEs can also be assessed on demand from the finding/triage views. A re-assessment of the same CVE is rate-limited to once every 30 minutes.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key. Enables the feature when set | *(empty)* |
+| `ANTHROPIC_WORKSPACE_ID` | Workspace to act in (`wrkspc_…`). Required for identity-linked API keys | *(empty)* |
 | `AI_ASSESSMENT_WORKERS` | Number of concurrent assessment workers | `2` |
 | `AI_ASSESSMENT_MAX_RETRIES` | Maximum retry attempts on transient errors | `2` |
 | `AI_ASSESSMENT_TIMEOUT` | Timeout per model request in seconds | `60` |

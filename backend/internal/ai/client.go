@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -29,7 +30,35 @@ var (
 	// ErrBadOutput means the model output could not be parsed or failed validation.
 	// Retrying the same input is unlikely to help, so callers treat it as terminal.
 	ErrBadOutput = errors.New("model output was invalid")
+	// ErrContextTooLarge means the prompt exceeded the model's context window.
+	// Usually the infrastructure context is too long for the configured model.
+	ErrContextTooLarge = errors.New("prompt exceeded the model context window")
 )
+
+// IsTerminal reports whether err will keep failing for the same input, so the
+// caller should record the failure rather than spend retries on it.
+//
+// Terminal are the model-output errors above plus API errors that reflect a bad
+// request or bad configuration — a wrong model id, a rejected key, a missing
+// workspace id. Those are 4xx, with three exceptions that do clear on their
+// own: 408 (timeout), 409 (conflict) and 429 (rate limit). Everything else
+// stays retryable, including 5xx and network failures, which carry no
+// [anthropic.Error] at all.
+func IsTerminal(err error) bool {
+	if errors.Is(err, ErrRefusal) || errors.Is(err, ErrIncompleteOutput) ||
+		errors.Is(err, ErrBadOutput) || errors.Is(err, ErrContextTooLarge) {
+		return true
+	}
+	var apiErr *anthropic.Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.StatusCode {
+	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
+		return false
+	}
+	return apiErr.StatusCode >= 400 && apiErr.StatusCode < 500
+}
 
 // Client produces CVE assessments via the Anthropic API.
 type Client struct {
@@ -39,9 +68,20 @@ type Client struct {
 }
 
 // New creates an AI client. timeoutSec bounds each request (0 = no extra bound).
-func New(apiKey string, timeoutSec int) *Client {
+//
+// workspaceID may be empty for a workspace-scoped API key, where the server
+// derives the workspace from the key itself. An identity-linked key is not
+// bound to a single workspace, so the server rejects requests that do not name
+// one; pass the `wrkspc_*` id in that case. The SDK only derives the header
+// from ANTHROPIC_WORKSPACE_ID on its profile and federation credential paths —
+// an explicit WithAPIKey short-circuits those, so we set it ourselves.
+func New(apiKey, workspaceID string, timeoutSec int) *Client {
+	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
+	if workspaceID != "" {
+		opts = append(opts, option.WithHeader("anthropic-workspace-id", workspaceID))
+	}
 	return &Client{
-		api:       anthropic.NewClient(option.WithAPIKey(apiKey)),
+		api:       anthropic.NewClient(opts...),
 		maxTokens: maxOutputTokens,
 		timeout:   time.Duration(timeoutSec) * time.Second,
 	}
@@ -98,6 +138,8 @@ func (c *Client) Assess(ctx context.Context, in AssessmentInput, opts AssessOpti
 		return AssessmentResult{}, meta, ErrRefusal
 	case anthropic.StopReasonMaxTokens:
 		return AssessmentResult{}, meta, ErrIncompleteOutput
+	case anthropic.StopReasonModelContextWindowExceeded:
+		return AssessmentResult{}, meta, ErrContextTooLarge
 	}
 
 	var text strings.Builder

@@ -108,7 +108,7 @@ func main() {
 	aiAssessmentService := services.NewAIAssessmentService(db)
 	var aiClient *ai.Client
 	if cfg.AIConfigured() {
-		aiClient = ai.New(cfg.AIAPIKey, cfg.AIRequestTimeout)
+		aiClient = ai.New(cfg.AIAPIKey, cfg.AIWorkspaceID, cfg.AIRequestTimeout)
 	}
 	aiQueue := aiqueue.New(aiClient, aiAssessmentService, findingService, settingsService, cfg)
 

@@ -67,6 +67,7 @@ type Config struct {
 	// AI assessment (optional; the feature is inactive when no API key is set).
 	// The API key is intentionally ENV-only and never exposed via the admin UI.
 	AIAPIKey         string // ANTHROPIC_API_KEY
+	AIWorkspaceID    string // ANTHROPIC_WORKSPACE_ID; required for identity-linked API keys
 	AIWorkers        int    // number of concurrent AI assessment workers
 	AIMaxRetries     int    // retries per assessment on transient errors
 	AIRequestTimeout int    // per-request timeout in seconds
@@ -136,6 +137,7 @@ func Load() (*Config, error) {
 
 		// AI assessment defaults (disabled until ANTHROPIC_API_KEY is set)
 		AIAPIKey:         getEnv("ANTHROPIC_API_KEY", ""),
+		AIWorkspaceID:    getEnv("ANTHROPIC_WORKSPACE_ID", ""),
 		AIWorkers:        getEnvAsInt("AI_ASSESSMENT_WORKERS", 2),
 		AIMaxRetries:     getEnvAsInt("AI_ASSESSMENT_MAX_RETRIES", 2),
 		AIRequestTimeout: getEnvAsInt("AI_ASSESSMENT_TIMEOUT", 60),

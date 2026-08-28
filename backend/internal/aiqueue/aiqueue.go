@@ -5,7 +5,6 @@ package aiqueue
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -184,7 +183,7 @@ func (q *Queue) process(cveID string, retryCount int) {
 
 // handleError decides whether to fail an assessment or schedule a retry.
 func (q *Queue) handleError(ctx context.Context, cveID string, retryCount int, meta ai.AssessmentMeta, err error) {
-	terminal := errors.Is(err, ai.ErrRefusal) || errors.Is(err, ai.ErrIncompleteOutput) || errors.Is(err, ai.ErrBadOutput)
+	terminal := ai.IsTerminal(err)
 	nextRetry := retryCount + 1
 
 	if terminal || nextRetry > q.cfg.AIMaxRetries {
