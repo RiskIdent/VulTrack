@@ -312,73 +312,30 @@ func EvaluateVersionOperation(installedVersion, fixedVersion, operation, package
 	}
 }
 
-// matchKernelPattern matches a kernel version against a pattern
-// Supports both simple wildcard patterns (e.g., "6.8.*") and regex patterns (e.g., "6.14.0-\\d+(-oem)")
-func matchKernelPattern(kernelVersion, pattern string) bool {
-	if kernelVersion == "" || pattern == "" {
-		return false
-	}
+// kernelReleaseEVR splits a kernel release into the "<version>-<abi>" part and
+// the flavour suffix, mirroring the regex Canonical uses in the OVAL variable
+// "kernel version in evr format". The flavour must start with a letter so that
+// the ABI number is captured in full ("6.8.0-79-generic" must not yield
+// "6.8.0-7" with "9" treated as part of the flavour).
+var kernelReleaseEVR = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)*-[0-9]+)-[a-zA-Z][\w.-]*$`)
 
-	// Normalize kernel version (remove common suffixes for simple patterns)
-	normalizedVersion := normalizeKernelVersion(kernelVersion)
-	
-	// Check if pattern is a simple wildcard pattern (ends with ".*")
-	if strings.HasSuffix(pattern, ".*") {
-		prefix := strings.TrimSuffix(pattern, ".*")
-		return strings.HasPrefix(normalizedVersion, prefix+".")
+// KernelEVR converts a kernel release as reported by `uname -r` into the EVR
+// string that OVAL variable_test states are compared against.
+//
+//	"6.8.0-79-generic" -> "0:6.8.0-79"
+//
+// Ubuntu's OVAL derives this value from the running kernel and compares it with
+// the fixed kernel package version (e.g. "6.8.0-84.84"). Comparing the raw
+// `uname -r` string instead would put the flavour ("generic") into the Debian
+// revision field and compare it against a number, which silently produces both
+// wrong "affected" and wrong "not affected" verdicts.
+//
+// Returns "" when the release does not have the expected shape; callers must
+// then treat kernel version tests as not matching rather than guessing.
+func KernelEVR(release string) string {
+	match := kernelReleaseEVR.FindStringSubmatch(strings.TrimSpace(release))
+	if match == nil {
+		return ""
 	}
-	
-	// Check if pattern contains regex metacharacters (likely a regex pattern)
-	// OVAL patterns like "6.14.0-\\d+(-oem)" contain \d, (), |, etc.
-	hasRegexChars := strings.Contains(pattern, "\\d") || strings.Contains(pattern, "(") || 
-		strings.Contains(pattern, "|") || strings.Contains(pattern, "[") || 
-		strings.Contains(pattern, "*") || strings.Contains(pattern, "+")
-	
-	if hasRegexChars {
-		// Compile and match regex pattern against the full kernel version
-		// OVAL patterns contain regex metacharacters like \d, which need to be properly escaped
-		// The pattern from DB is like "6.14.0-\d+(-oem)" (single backslash in string)
-		// We need to convert \d to [0-9] or properly escape it for Go regexp
-		// Since the pattern comes from DB as a string, \d is already a single backslash+d
-		// We'll convert common regex patterns to Go regexp syntax
-		regexPattern := pattern
-		// Convert \d to [0-9] for digit matching
-		regexPattern = strings.ReplaceAll(regexPattern, "\\d", "[0-9]")
-		// Anchor the pattern
-		regexPattern = "^" + regexPattern + "$"
-		
-		re, err := regexp.Compile(regexPattern)
-		if err != nil {
-			// If regex compilation fails, fall back to simple matching
-			return kernelVersion == pattern || normalizedVersion == pattern
-		}
-		return re.MatchString(kernelVersion)
-	}
-	
-	// Exact match (fallback for simple patterns)
-	return kernelVersion == pattern || normalizedVersion == pattern
-}
-
-// normalizeKernelVersion removes architecture suffixes from kernel version
-// e.g., "6.8.0-8-generic" -> "6.8.0-8"
-// This is used for simple wildcard pattern matching
-func normalizeKernelVersion(version string) string {
-	// Remove common suffixes (including complex ones like -generic-64k)
-	// Use regex to match any suffix pattern like -suffix or -suffix-suffix2
-	suffixPattern := regexp.MustCompile(`-[a-z]+(-[a-z0-9]+)*$`)
-	normalized := suffixPattern.ReplaceAllString(version, "")
-	
-	// If regex didn't match anything, try the old method as fallback
-	if normalized == version {
-		suffixes := []string{"-generic", "-lowlatency", "-server", "-desktop", "-cloud", 
-			"-oem", "-aws", "-azure", "-gcp", "-gke", "-gkeop", "-ibm", "-oracle", 
-			"-nvidia", "-raspi", "-realtime", "-fips", "-64k"}
-		for _, suffix := range suffixes {
-			if strings.HasSuffix(version, suffix) {
-				return strings.TrimSuffix(version, suffix)
-			}
-		}
-	}
-	
-	return normalized
+	return "0:" + match[1]
 }

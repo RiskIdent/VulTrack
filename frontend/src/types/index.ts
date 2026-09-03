@@ -43,7 +43,8 @@ export interface Finding {
   severity: string;
   summary: string;
   sourceLink: string;
-  sourceType?: string;  // 'usn' | 'cve' (OVAL source)
+  sourceType?: string;  // 'usn' | 'cve' (OVAL) | 'pkg' (Ubuntu package feed)
+  fixPocket?: string;   // pocket the fix comes from; 'esm-*' needs Ubuntu Pro
   firstSeenAt: string;
   lastSeenAt: string;
   resolvedAt: string | null;
@@ -52,6 +53,10 @@ export interface Finding {
   serverName?: string;
   // Best-available CVE description (OVAL preferred, NVD fallback)
   description?: string;
+  // Canonical package feed enrichment
+  ubuntuPriority?: string;
+  ubuntuNotes?: string[];
+  ubuntuMitigation?: string;
   // NVD enrichment
   nvdDescription?: string;
   nvdCvss3Score?: number | null;
@@ -77,6 +82,7 @@ export interface PackageFinding {
   version: string;
   fixedIn: string;
   fixState: string;
+  fixPocket?: string;
   firstSeenAt: string;
   lastSeenAt: string;
   resolvedAt: string | null;

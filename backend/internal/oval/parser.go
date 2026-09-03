@@ -52,8 +52,8 @@ type Variables struct {
 }
 
 type ConstantVariable struct {
-	ID      string   `xml:"id,attr"`
-	Values  []string `xml:"value"`
+	ID     string   `xml:"id,attr"`
+	Values []string `xml:"value"`
 }
 
 type Generator struct {
@@ -67,9 +67,9 @@ type Definitions struct {
 }
 
 type Definition struct {
-	ID       string   `xml:"id,attr"`
-	Class    string   `xml:"class,attr"`
-	Metadata Metadata `xml:"metadata"`
+	ID       string    `xml:"id,attr"`
+	Class    string    `xml:"class,attr"`
+	Metadata Metadata  `xml:"metadata"`
 	Criteria *Criteria `xml:"criteria"`
 }
 
@@ -122,12 +122,12 @@ type ExtendDefinition struct {
 // Tests container
 type Tests struct {
 	// Support both with and without namespace prefix
-	DpkgInfoTest    []DpkgInfoTest `xml:"dpkginfo_test"`
-	DpkgInfoTestNS  []DpkgInfoTest `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#linux dpkginfo_test"`
-	RpmInfoTest     []RpmInfoTest  `xml:"rpminfo_test"`
-	RpmInfoTestNS   []RpmInfoTest  `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#linux rpminfo_test"`
-	UnameTest       []UnameTest    `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#unix uname_test"`
-	VariableTest    []VariableTest `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#independent variable_test"`
+	DpkgInfoTest   []DpkgInfoTest `xml:"dpkginfo_test"`
+	DpkgInfoTestNS []DpkgInfoTest `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#linux dpkginfo_test"`
+	RpmInfoTest    []RpmInfoTest  `xml:"rpminfo_test"`
+	RpmInfoTestNS  []RpmInfoTest  `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#linux rpminfo_test"`
+	UnameTest      []UnameTest    `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#unix uname_test"`
+	VariableTest   []VariableTest `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#independent variable_test"`
 }
 
 type DpkgInfoTest struct {
@@ -247,8 +247,8 @@ type States struct {
 	DpkgInfoStateNS []DpkgInfoState `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#linux dpkginfo_state"`
 	RpmInfoState    []RpmInfoState  `xml:"rpminfo_state"`
 	RpmInfoStateNS  []RpmInfoState  `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#linux rpminfo_state"`
-	UnameState      []UnameState     `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#unix uname_state"`
-	VariableState   []VariableState  `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#independent variable_state"`
+	UnameState      []UnameState    `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#unix uname_state"`
+	VariableState   []VariableState `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#independent variable_state"`
 }
 
 type DpkgInfoState struct {
@@ -284,7 +284,7 @@ type EVR struct {
 }
 
 type UnameState struct {
-	ID        string `xml:"id,attr"`
+	ID        string     `xml:"id,attr"`
 	OSRelease *OSRelease `xml:"http://oval.mitre.org/XMLSchema/oval-definitions-5#unix os_release"`
 }
 
@@ -338,10 +338,9 @@ func (p *Parser) ParseAndStore(ctx context.Context, sourceID int64, xmlData []by
 		return nil, fmt.Errorf("failed to clear existing OVAL data: %w", err)
 	}
 
-	// Maps to store OVAL ID -> DB ID mappings
+	// Maps criterion test_ref -> DB test ID so criteria can be linked to tests.
+	// Objects and states need no such map: tests reference them by OVAL ID.
 	testIDMap := make(map[string]int64)
-	objectIDMap := make(map[string]int64)
-	stateIDMap := make(map[string]int64)
 
 	// Build variable map (var_id -> list of package names)
 	variableMap := make(map[string][]string)
@@ -352,92 +351,41 @@ func (p *Parser) ParseAndStore(ctx context.Context, sourceID int64, xmlData []by
 
 	log.Debug().Int("variables", len(variableMap)).Msg("Loaded OVAL variables")
 
-	// 1. Insert objects (combine regular and namespaced variants)
-	// For objects with var_ref, resolve to actual package names
+	// 1. Insert objects (combine regular and namespaced variants).
+	// One row per OVAL object, keyed by its real OVAL ID so that a test's
+	// object_ref resolves by plain equality. Objects with a var_ref cover
+	// several binary packages; all of them go into the names array.
 	allDpkgObjects := append(oval.Objects.DpkgInfoObject, oval.Objects.DpkgInfoObjectNS...)
 	for _, obj := range allDpkgObjects {
-		name := obj.GetName()
-		varRef := obj.GetVarRef()
-		
-		// If there's a var_ref, resolve it to package names
-		if varRef != "" {
-			if names, ok := variableMap[varRef]; ok && len(names) > 0 {
-				// Insert one object per package name
-				for _, pkgName := range names {
-					// Use a composite ID to make it unique
-					compositeID := obj.ID + ":" + pkgName
-					id, err := p.ovalService.InsertObject(ctx, tx, sourceID, compositeID, "dpkginfo_object", pkgName)
-					if err != nil {
-						return nil, fmt.Errorf("failed to insert dpkg object %s: %w", compositeID, err)
-					}
-					// Map original object ID to the first inserted ID (for test references)
-					if _, exists := objectIDMap[obj.ID]; !exists {
-						objectIDMap[obj.ID] = id
-					}
-					stats.TotalObjects++
-				}
-				continue
-			}
-		}
-		
-		// Direct name or fallback
-		id, err := p.ovalService.InsertObject(ctx, tx, sourceID, obj.ID, "dpkginfo_object", name)
-		if err != nil {
+		names := resolveObjectNames(obj.GetName(), obj.GetVarRef(), variableMap)
+		if _, err := p.ovalService.InsertObject(ctx, tx, sourceID, obj.ID, "dpkginfo_object", names); err != nil {
 			return nil, fmt.Errorf("failed to insert dpkg object %s: %w", obj.ID, err)
 		}
-		objectIDMap[obj.ID] = id
 		stats.TotalObjects++
 	}
-	
+
 	allRpmObjects := append(oval.Objects.RpmInfoObject, oval.Objects.RpmInfoObjectNS...)
 	for _, obj := range allRpmObjects {
-		name := obj.GetName()
-		varRef := obj.GetVarRef()
-		
-		if varRef != "" {
-			if names, ok := variableMap[varRef]; ok && len(names) > 0 {
-				for _, pkgName := range names {
-					compositeID := obj.ID + ":" + pkgName
-					id, err := p.ovalService.InsertObject(ctx, tx, sourceID, compositeID, "rpminfo_object", pkgName)
-					if err != nil {
-						return nil, fmt.Errorf("failed to insert rpm object %s: %w", compositeID, err)
-					}
-					if _, exists := objectIDMap[obj.ID]; !exists {
-						objectIDMap[obj.ID] = id
-					}
-					stats.TotalObjects++
-				}
-				continue
-			}
-		}
-		
-		id, err := p.ovalService.InsertObject(ctx, tx, sourceID, obj.ID, "rpminfo_object", name)
-		if err != nil {
+		names := resolveObjectNames(obj.GetName(), obj.GetVarRef(), variableMap)
+		if _, err := p.ovalService.InsertObject(ctx, tx, sourceID, obj.ID, "rpminfo_object", names); err != nil {
 			return nil, fmt.Errorf("failed to insert rpm object %s: %w", obj.ID, err)
 		}
-		objectIDMap[obj.ID] = id
 		stats.TotalObjects++
 	}
 
-	// Insert uname objects (no name needed - they reference system uname)
+	// Insert uname objects (no package names - they reference the running kernel)
 	for _, obj := range oval.Objects.UnameObject {
-		// Store empty name - uname objects don't have package names
-		id, err := p.ovalService.InsertObject(ctx, tx, sourceID, obj.ID, "uname_object", "")
-		if err != nil {
+		if _, err := p.ovalService.InsertObject(ctx, tx, sourceID, obj.ID, "uname_object", nil); err != nil {
 			return nil, fmt.Errorf("failed to insert uname object %s: %w", obj.ID, err)
 		}
-		objectIDMap[obj.ID] = id
 		stats.TotalObjects++
 	}
 
-	// Insert variable objects (reference variables)
+	// Insert variable objects (no package names - they reference an OVAL variable)
 	for _, obj := range oval.Objects.VariableObject {
-		// Store var_ref as name for reference
-		id, err := p.ovalService.InsertObject(ctx, tx, sourceID, obj.ID, "variable_object", obj.VarRef)
-		if err != nil {
+		if _, err := p.ovalService.InsertObject(ctx, tx, sourceID, obj.ID, "variable_object", nil); err != nil {
 			return nil, fmt.Errorf("failed to insert variable object %s: %w", obj.ID, err)
 		}
-		objectIDMap[obj.ID] = id
 		stats.TotalObjects++
 	}
 
@@ -449,11 +397,9 @@ func (p *Parser) ParseAndStore(ctx context.Context, sourceID int64, xmlData []by
 			op = evr.Operation
 			val = strings.TrimSpace(evr.Value)
 		}
-		id, err := p.ovalService.InsertState(ctx, tx, sourceID, state.ID, "dpkginfo_state", op, val)
-		if err != nil {
+		if _, err := p.ovalService.InsertState(ctx, tx, sourceID, state.ID, "dpkginfo_state", op, val); err != nil {
 			return nil, fmt.Errorf("failed to insert dpkg state %s: %w", state.ID, err)
 		}
-		stateIDMap[state.ID] = id
 		stats.TotalStates++
 	}
 	allRpmStates := append(oval.States.RpmInfoState, oval.States.RpmInfoStateNS...)
@@ -463,11 +409,9 @@ func (p *Parser) ParseAndStore(ctx context.Context, sourceID int64, xmlData []by
 			op = evr.Operation
 			val = strings.TrimSpace(evr.Value)
 		}
-		id, err := p.ovalService.InsertState(ctx, tx, sourceID, state.ID, "rpminfo_state", op, val)
-		if err != nil {
+		if _, err := p.ovalService.InsertState(ctx, tx, sourceID, state.ID, "rpminfo_state", op, val); err != nil {
 			return nil, fmt.Errorf("failed to insert rpm state %s: %w", state.ID, err)
 		}
-		stateIDMap[state.ID] = id
 		stats.TotalStates++
 	}
 
@@ -478,11 +422,9 @@ func (p *Parser) ParseAndStore(ctx context.Context, sourceID int64, xmlData []by
 			op = state.OSRelease.Operation
 			val = strings.TrimSpace(state.OSRelease.Value)
 		}
-		id, err := p.ovalService.InsertState(ctx, tx, sourceID, state.ID, "uname_state", op, val)
-		if err != nil {
+		if _, err := p.ovalService.InsertState(ctx, tx, sourceID, state.ID, "uname_state", op, val); err != nil {
 			return nil, fmt.Errorf("failed to insert uname state %s: %w", state.ID, err)
 		}
-		stateIDMap[state.ID] = id
 		stats.TotalStates++
 	}
 
@@ -493,11 +435,9 @@ func (p *Parser) ParseAndStore(ctx context.Context, sourceID int64, xmlData []by
 			op = state.Value.Operation
 			val = strings.TrimSpace(state.Value.Value)
 		}
-		id, err := p.ovalService.InsertState(ctx, tx, sourceID, state.ID, "variable_state", op, val)
-		if err != nil {
+		if _, err := p.ovalService.InsertState(ctx, tx, sourceID, state.ID, "variable_state", op, val); err != nil {
 			return nil, fmt.Errorf("failed to insert variable state %s: %w", state.ID, err)
 		}
-		stateIDMap[state.ID] = id
 		stats.TotalStates++
 	}
 
@@ -616,6 +556,32 @@ func (p *Parser) ParseAndStore(ctx context.Context, sourceID int64, xmlData []by
 	}
 
 	return stats, nil
+}
+
+// resolveObjectNames returns the binary package names a dpkginfo/rpminfo object
+// matches. Canonical states them indirectly through a constant_variable holding
+// all binaries built from a source package; a direct <name> element is used when
+// there is no such variable.
+func resolveObjectNames(name, varRef string, variableMap map[string][]string) []string {
+	if varRef != "" {
+		if names, ok := variableMap[varRef]; ok && len(names) > 0 {
+			resolved := make([]string, 0, len(names))
+			for _, n := range names {
+				if n = strings.TrimSpace(n); n != "" {
+					resolved = append(resolved, n)
+				}
+			}
+			if len(resolved) > 0 {
+				return resolved
+			}
+		}
+		// var_ref points at a variable we cannot resolve (e.g. a local_variable);
+		// fall through so a literal name is still used if one is present.
+	}
+	if name = strings.TrimSpace(name); name != "" {
+		return []string{name}
+	}
+	return nil
 }
 
 // insertCriteriaTree recursively inserts criteria and their children

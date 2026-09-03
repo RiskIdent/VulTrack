@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, X, Database, ExternalLink, AlertTriangle } from 'lucide-react';
 import { getOVALDefinitions, getOVALDefinition, getOVALSources, type OVALDefinitionFilter } from '../api/client';
 import type { OVALDefinition } from '../types';
+import { SourceBadge } from '../components/SeverityBadge';
 
 const ITEMS_PER_PAGE = 50;
 
@@ -353,13 +354,7 @@ export default function OVALDatabase() {
                         {def.version} {def.codename && `(${def.codename})`}
                       </td>
                       <td className="py-3 px-4">
-                        {def.sourceType && (
-                          <span className={`px-2 py-1 rounded text-xs font-medium ${
-                            def.sourceType === 'usn' ? 'bg-amber-600/20 text-amber-400' : 'bg-sky-600/20 text-sky-400'
-                          }`}>
-                            {def.sourceType.toUpperCase()}
-                          </span>
-                        )}
+                        {def.sourceType && <SourceBadge sourceType={def.sourceType} />}
                       </td>
                       <td className="py-3 px-4 text-sm text-[#e8f5e9]">{def.title || '-'}</td>
                       <td className="py-3 px-4">
@@ -478,15 +473,7 @@ export default function OVALDatabase() {
                     <div>
                       <div className="text-xs text-[#6b7280] uppercase tracking-wide mb-1">Source</div>
                       <div className="text-sm">
-                        {selectedDefinition.sourceType ? (
-                          <span className={`px-2 py-1 rounded text-xs font-medium ${
-                            selectedDefinition.sourceType === 'usn' ? 'bg-amber-600/20 text-amber-400' : 'bg-sky-600/20 text-sky-400'
-                          }`}>
-                            {selectedDefinition.sourceType.toUpperCase()}
-                          </span>
-                        ) : (
-                          <span className="text-[#6b7280]">-</span>
-                        )}
+                        <SourceBadge sourceType={selectedDefinition.sourceType} />
                       </div>
                     </div>
                     <div>

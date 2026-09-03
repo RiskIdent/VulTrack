@@ -491,6 +491,75 @@ See [docs/AGENT_API.md](docs/AGENT_API.md) for the complete agent API specificat
 
 For a deeper OIDC setup guide including IdP-specific instructions, see [docs/OIDC_SETUP.md](docs/OIDC_SETUP.md).
 
+## Ubuntu package vulnerability feed
+
+Next to the OVAL files, Canonical publishes `com.ubuntu.<codename>.pkg.json.xz` —
+the dataset the `pro cves` command evaluates on a machine. VulTrack imports it
+server-side as a third source per Ubuntu release, alongside the USN and CVE OVAL
+feeds. Agents need no Ubuntu Pro client and no subscription; the feed is public.
+
+It closes two gaps in the OVAL feeds:
+
+- **Binary packages OVAL does not enumerate.** OVAL lists the binaries of a
+  source package in `constant_variable` elements, and that list is incomplete.
+  On a 24.04 host with 10,269 packages installed, the feed found 3,329 findings
+  the OVAL feeds miss (`bluez-tests`, `libc6-prof`, and similar).
+- **CVSS scores, Canonical's triage notes and mitigations.** The feed carries
+  CVSS for 27,046 of the CVEs in the 24.04 data, plus free-text notes for 5,330
+  and mitigation advice for 105. VulTrack otherwise waits for the rate-limited
+  NVD sync for scores and has no access to the notes at all. Scores and
+  descriptions are backfilled into the CVE catalog for fields NVD has not
+  delivered; wherever NVD has a value it keeps it.
+
+It also records the archive pocket a fix comes from. An `esm-infra`/`esm-apps`
+pocket means the fix only reaches a machine with an Ubuntu Pro subscription,
+which is shown on the finding.
+
+The feed also corrects OVAL's kernel findings. Ubuntu's OVAL identifies the
+running kernel by name pattern and cannot express an architecture, while the
+riscv64 kernel flavour is also called `generic` — so on an amd64 host the
+criteria for `linux-riscv` match too, and every CVE that affects only the riscv
+kernel is reported. That was 3,670 of 5,779 kernel findings on 24.04 with
+`6.8.0-124-generic`. VulTrack now resolves which kernel source package the
+running kernel was built from and drops kernel findings the feed attributes to a
+different one. See
+[docs/KERNEL_FLAVOUR_FILTER_PLAN.md](docs/KERNEL_FLAVOUR_FILTER_PLAN.md).
+
+Two deliberate limits:
+
+- **The kernel stays with OVAL.** 53 kernel source packages carry 95% of the
+  feed's CVE statuses, and the feed sees *installed* kernel packages, so it
+  would report every kernel still present in `/boot`. OVAL evaluates the kernel
+  against the *running* kernel instead, which is more precise and far less
+  noisy, so kernel source packages contribute no findings from this source —
+  only the cross-check above.
+- **A weaker source never overwrites a stronger one.** A USN advisory is the
+  most specific statement Ubuntu makes; the per-CVE OVAL adds the vendor's
+  triage state (`will_not_fix`, `deferred`); the feed only distinguishes
+  vulnerable from fixed. The pocket is the exception: only the feed knows it, so
+  it is filled in regardless of which source owns the rest of the finding.
+
+The feed is optional. A distribution without a feed URL never gets such a
+source, a release whose feed is missing fails only its own sync, and the source
+can be disabled individually under Admin → OVAL Sources. With it off, detection
+behaves exactly as it did with the OVAL feeds alone.
+
+## Upgrading
+
+Database migrations run automatically on backend startup.
+
+Already-enabled Ubuntu releases get a package feed source on the next start;
+the syncer imports it shortly afterwards. Expect the finding count to rise,
+mostly with `affected` entries for binary packages that were previously
+invisible.
+
+One migration needs a note: OVAL tests now store the OVAL IDs of the object and
+state they reference, instead of the link being guessed from the test's own ID.
+Stored OVAL data cannot be converted, so the migration clears it and marks every
+enabled source for re-sync. The syncer re-downloads the feeds shortly after
+startup; until it finishes, scans find nothing. Re-scan your servers afterwards
+so their findings are rebuilt from the corrected data.
+
 ## Roadmap
 
 - [ ] Support for more Linux distributions (Debian, RHEL, ...)

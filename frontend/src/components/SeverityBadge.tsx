@@ -203,3 +203,66 @@ export function FixStateBadge({ fixState }: { fixState?: string }) {
     </span>
   );
 }
+
+// SourceBadge shows which vulnerability source a finding or definition came from.
+// The sources are ordered by how much they say about the vendor's position:
+// a USN advisory is the most specific, the per-CVE OVAL adds the triage state,
+// and the package feed only distinguishes vulnerable from fixed.
+export function SourceBadge({ sourceType }: { sourceType?: string }) {
+  if (!sourceType) {
+    return <span className="text-[#6b7280]">-</span>;
+  }
+
+  const config: Record<string, { className: string; title: string }> = {
+    usn: {
+      className: 'bg-amber-600/20 text-amber-400',
+      title: 'Ubuntu Security Notice (OVAL)',
+    },
+    cve: {
+      className: 'bg-sky-600/20 text-sky-400',
+      title: 'Per-CVE OVAL definition',
+    },
+    pkg: {
+      className: 'bg-teal-600/20 text-teal-400',
+      title: "Ubuntu package vulnerability feed — the data 'pro cves' evaluates",
+    },
+  };
+
+  const c = config[sourceType] || {
+    className: 'bg-gray-600/20 text-gray-400',
+    title: sourceType,
+  };
+
+  return (
+    <span className={`px-2 py-1 rounded text-xs font-medium ${c.className}`} title={c.title}>
+      {sourceType.toUpperCase()}
+    </span>
+  );
+}
+
+// PocketBadge shows the Ubuntu archive pocket a fix comes from. The point of
+// showing it is esm-infra/esm-apps: those fixes only reach a machine with an
+// Ubuntu Pro subscription, which changes what "a fix is available" means.
+export function PocketBadge({ pocket }: { pocket?: string }) {
+  if (!pocket) return null;
+
+  const needsPro = pocket.startsWith('esm-');
+
+  return (
+    <span
+      className={clsx(
+        'px-2 py-0.5 rounded text-xs font-medium border',
+        needsPro
+          ? 'bg-purple-600/20 text-purple-400 border-purple-600/40'
+          : 'bg-gray-600/20 text-gray-400 border-gray-600/40'
+      )}
+      title={
+        needsPro
+          ? `Fix is published in the ${pocket} pocket and requires an Ubuntu Pro subscription`
+          : `Fix is published in the ${pocket} pocket`
+      }
+    >
+      {needsPro ? `${pocket} (Ubuntu Pro)` : pocket}
+    </span>
+  );
+}

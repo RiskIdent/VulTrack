@@ -3,6 +3,8 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,11 +18,15 @@ import (
 type Scanner struct {
 	db         *pgxpool.Pool
 	vexService *services.VEXService
+	// pkgFeedService is optional: without it, sources of type 'pkg' are skipped
+	// and only the OVAL sources contribute findings.
+	pkgFeedService *services.PkgFeedService
 }
 
-// NewScanner creates a new Scanner
-func NewScanner(db *pgxpool.Pool, vexService *services.VEXService) *Scanner {
-	return &Scanner{db: db, vexService: vexService}
+// NewScanner creates a new Scanner. Both services may be nil, in which case the
+// corresponding enrichment or source is skipped.
+func NewScanner(db *pgxpool.Pool, vexService *services.VEXService, pkgFeedService *services.PkgFeedService) *Scanner {
+	return &Scanner{db: db, vexService: vexService, pkgFeedService: pkgFeedService}
 }
 
 // ScanResult contains the results of a vulnerability scan
@@ -35,23 +41,25 @@ type ScanResult struct {
 
 // OVALTestData contains preloaded OVAL test data for scanning
 type OVALTestData struct {
-	TestID       int64
-	TestType     string
-	PackageName  string   // Primary package name
-	PackageNames []string // All package names (for var_ref expanded objects)
-	EVROperation string
-	EVRValue     string
+	TestID         int64
+	TestType       string
+	PackageNames   []string       // every package the referenced object matches
+	EVROperation   string         // operation of the referenced state ("" = existence-only test)
+	EVRValue       string         // value of the referenced state
+	ReleasePattern *regexp.Regexp // compiled EVRValue for uname_test "pattern match"
 }
 
-// GetPackageNames returns all package names this test applies to
-func (t *OVALTestData) GetPackageNames() []string {
-	if len(t.PackageNames) > 0 {
-		return t.PackageNames
-	}
-	if t.PackageName != "" {
-		return []string{t.PackageName}
-	}
-	return nil
+// kernelInfo describes the running kernel the way OVAL looks at it.
+type kernelInfo struct {
+	// Release is `uname -r` (e.g. "6.8.0-79-generic"), compared against
+	// uname_state/os_release.
+	Release string
+	// EVR is the kernel package version derived from Release (e.g. "0:6.8.0-79"),
+	// compared against variable_state values. Canonical builds it in the OVAL
+	// variable "kernel version in evr format"; comparing the raw uname string
+	// instead puts the flavour suffix into the Debian revision field and yields
+	// wrong results.
+	EVR string
 }
 
 // OVALDefinitionData contains definition data with associated CVEs
@@ -118,10 +126,34 @@ func (s *Scanner) ScanServer(ctx context.Context, serverID int64) (*ScanResult, 
 	// Track current findings across all sources (cve_id|package_name -> true if still present)
 	currentFindings := make(map[string]bool)
 
-	// Process each OVAL source (USN, then CVE)
+	kernel := kernelInfo{Release: server.Kernel, EVR: KernelEVR(server.Kernel)}
+	if server.Kernel != "" && kernel.EVR == "" {
+		log.Warn().
+			Int64("serverId", serverID).
+			Str("kernel", server.Kernel).
+			Msg("Cannot derive kernel EVR from reported kernel release; kernel version tests will not match")
+	}
+
+	kernelFilter := s.newKernelFeedFilter(ctx, serverID, sources, packageMap, kernel, server.PackageManager)
+	suppressedKernelFindings := 0
+
+	// Process each source. Findings from a weaker source never overwrite a
+	// stronger one (see models.SourceTypeRank), so the order does not matter.
 	for _, source := range sources {
+		if source.SourceType == models.SourceTypePkg {
+			if err := s.scanPkgFeedSource(ctx, serverID, source, server, currentFindings, result); err != nil {
+				// The package feed is supplementary: a release without it, or a
+				// source that has not synced yet, must not fail the whole scan.
+				log.Warn().Err(err).
+					Str("distribution", source.Distribution).
+					Str("version", source.Version).
+					Msg("Skipping package vulnerability feed for this scan")
+			}
+			continue
+		}
+
 		// Load OVAL test data - OPTIMIZED: only for installed packages
-		tests, err := s.loadOVALTestsForPackages(ctx, source.ID, packageNames)
+		tests, err := s.loadOVALPackageTests(ctx, source.ID, packageNames)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load OVAL tests for source %s: %w", source.SourceType, err)
 		}
@@ -172,54 +204,79 @@ func (s *Scanner) ScanServer(ctx context.Context, serverID int64) (*ScanResult, 
 				continue
 			}
 
-			vulnerable, affectedPackages := s.evaluateDefinitionWithCriteria(ctx, source.ID, def.DefinitionID, packageMap, tests, server.PackageManager, server.Kernel, allCriteria)
+			evaluation := s.evaluateDefinitionWithCriteria(ctx, source.ID, def.DefinitionID, packageMap, tests, server.PackageManager, kernel, allCriteria)
 			result.TotalChecks++
 
-			if vulnerable {
-				hasKernelTests := s.definitionHasKernelTests(ctx, def.DefinitionID, tests)
+			if !evaluation.Matched {
+				continue
+			}
 
-				if len(affectedPackages) > 0 {
-					for _, cveID := range def.CVEIDs {
-						for _, pkgInfo := range affectedPackages {
-							key := cveID + "|" + pkgInfo.Package.Name
-							currentFindings[key] = true
-
-							// Fixed version and fix_state come directly from the matching test/criterion
-							err := s.upsertFinding(ctx, serverID, cveID, pkgInfo.Package, def, pkgInfo.FixedIn, pkgInfo.FixState, server.OSFamily, source.SourceType)
-							if err != nil {
-								log.Warn().Err(err).
-									Str("cve", cveID).
-									Str("package", pkgInfo.Package.Name).
-									Str("fixState", pkgInfo.FixState).
-									Str("sourceType", source.SourceType).
-									Msg("Failed to upsert finding")
-							} else {
-								result.NewFindings++
-							}
-						}
-					}
-				} else if hasKernelTests {
-					for _, cveID := range def.CVEIDs {
-						key := cveID + "|kernel"
+			if len(evaluation.Packages) > 0 {
+				for _, cveID := range def.CVEIDs {
+					for _, pkgInfo := range evaluation.Packages {
+						key := cveID + "|" + pkgInfo.Package.Name
 						currentFindings[key] = true
 
-						kernelPkg := &models.ServerPackage{
-							Name:    "kernel",
-							Version: server.Kernel,
-						}
-						err := s.upsertFinding(ctx, serverID, cveID, kernelPkg, def, "", "affected", server.OSFamily, source.SourceType)
+						// Fixed version and fix_state come directly from the matching test/criterion
+						err := s.upsertFinding(ctx, serverID, cveID, pkgInfo.Package, def, pkgInfo.FixedIn, pkgInfo.FixState, server.OSFamily, source.SourceType)
 						if err != nil {
 							log.Warn().Err(err).
 								Str("cve", cveID).
+								Str("package", pkgInfo.Package.Name).
+								Str("fixState", pkgInfo.FixState).
 								Str("sourceType", source.SourceType).
-								Msg("Failed to upsert kernel finding")
+								Msg("Failed to upsert finding")
 						} else {
 							result.NewFindings++
 						}
 					}
 				}
+				continue
+			}
+
+			// No package matched, but a test on the running kernel did: the
+			// definition covers the kernel itself, which dpkg does not report as
+			// an installed package here.
+			if evaluation.KernelMatch {
+				for _, cveID := range def.CVEIDs {
+					// Ubuntu's uname tests carry no architecture predicate, and the
+					// riscv64 kernel flavour is also called "generic", so a criterion
+					// for a foreign flavour can match the running kernel. Where the
+					// package feed can name the source package this kernel was built
+					// from, its verdict decides.
+					if !kernelFilter.justifies(cveID) {
+						suppressedKernelFindings++
+						continue
+					}
+
+					key := cveID + "|kernel"
+					currentFindings[key] = true
+
+					kernelPkg := &models.ServerPackage{
+						Name:    "kernel",
+						Version: server.Kernel,
+					}
+					err := s.upsertFinding(ctx, serverID, cveID, kernelPkg, def, "", "affected", server.OSFamily, source.SourceType)
+					if err != nil {
+						log.Warn().Err(err).
+							Str("cve", cveID).
+							Str("sourceType", source.SourceType).
+							Msg("Failed to upsert kernel finding")
+					} else {
+						result.NewFindings++
+					}
+				}
 			}
 		}
+	}
+
+	if suppressedKernelFindings > 0 {
+		log.Info().
+			Int64("serverId", serverID).
+			Str("kernel", kernel.Release).
+			Str("kernelSource", kernelFilter.source).
+			Int("suppressed", suppressedKernelFindings).
+			Msg("Dropped kernel findings the package feed attributes to another kernel flavour")
 	}
 
 	// Resolve findings that are no longer detected
@@ -328,447 +385,82 @@ func (s *Scanner) getServerPackages(ctx context.Context, serverID int64) ([]mode
 	return packages, nil
 }
 
-// loadOVALTests loads all tests for a source with their object and state data
-func (s *Scanner) loadOVALTests(ctx context.Context, sourceID int64) (map[int64]*OVALTestData, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT t.id, t.test_type, o.name, COALESCE(st.evr_operation, ''), COALESCE(st.evr_value, '')
-		FROM oval_tests t
-		LEFT JOIN oval_objects o ON o.source_id = t.source_id AND o.oval_id = (
-			SELECT oval_id FROM oval_objects WHERE source_id = t.source_id LIMIT 1
-		)
-		LEFT JOIN oval_states st ON st.source_id = t.source_id
-		WHERE t.source_id = $1
-	`, sourceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	// This query is not ideal - we need a better way to link tests to objects/states
-	// For now, load them separately
-	rows.Close()
-
-	// Load tests with a simpler approach
+// loadOVALPackageTests loads the dpkginfo/rpminfo tests whose referenced object
+// matches at least one installed package, resolving object and state through the
+// object_ref/state_ref links stored at import time.
+func (s *Scanner) loadOVALPackageTests(ctx context.Context, sourceID int64, packageNames []string) (map[int64]*OVALTestData, error) {
 	tests := make(map[int64]*OVALTestData)
-
-	// Load test -> object -> state mappings
-	testRows, err := s.db.Query(ctx, `
-		SELECT t.id, t.test_type, t.oval_id
-		FROM oval_tests t
-		WHERE t.source_id = $1
-	`, sourceID)
-	if err != nil {
-		return nil, err
-	}
-	defer testRows.Close()
-
-	testOvalIDs := make(map[int64]string)
-	for testRows.Next() {
-		var testID int64
-		var testType, ovalID string
-		if err := testRows.Scan(&testID, &testType, &ovalID); err != nil {
-			return nil, err
-		}
-		tests[testID] = &OVALTestData{
-			TestID:   testID,
-			TestType: testType,
-		}
-		testOvalIDs[testID] = ovalID
-	}
-
-	// Load objects
-	objectRows, err := s.db.Query(ctx, `
-		SELECT id, oval_id, name FROM oval_objects WHERE source_id = $1
-	`, sourceID)
-	if err != nil {
-		return nil, err
-	}
-	defer objectRows.Close()
-
-	objects := make(map[string]string)           // oval_id -> name (exact match)
-	objectsByPrefix := make(map[string][]string) // base_oval_id -> list of package names
-	for objectRows.Next() {
-		var id int64
-		var ovalID, name string
-		if err := objectRows.Scan(&id, &ovalID, &name); err != nil {
-			return nil, err
-		}
-		objects[ovalID] = name
-
-		// Also index by prefix (for var_ref expanded objects like "oval:...:obj:123:pkgname")
-		// Extract base ID by taking everything before the last colon if it contains 5+ colons
-		colonCount := countColons(ovalID)
-		if colonCount >= 4 {
-			// Format: oval:namespace:obj:id:pkgname -> base is oval:namespace:obj:id
-			lastColon := lastIndexColon(ovalID)
-			if lastColon > 0 {
-				baseID := ovalID[:lastColon]
-				objectsByPrefix[baseID] = append(objectsByPrefix[baseID], name)
-			}
-		}
-	}
-
-	// Load states
-	stateRows, err := s.db.Query(ctx, `
-		SELECT id, oval_id, evr_operation, evr_value FROM oval_states WHERE source_id = $1
-	`, sourceID)
-	if err != nil {
-		return nil, err
-	}
-	defer stateRows.Close()
-
-	type stateData struct {
-		operation string
-		value     string
-	}
-	states := make(map[string]stateData) // oval_id -> state data
-	for stateRows.Next() {
-		var id int64
-		var ovalID, op, val string
-		if err := stateRows.Scan(&id, &ovalID, &op, &val); err != nil {
-			return nil, err
-		}
-		states[ovalID] = stateData{operation: op, value: val}
-	}
-
-	// Now we need to link tests to objects and states
-	// The OVAL standard uses object_ref and state_ref attributes
-	// We stored these during parsing but need to resolve them
-
-	// For now, use a heuristic: extract object/state IDs from test oval_id
-	// e.g., oval:com.ubuntu.noble:tst:123 -> look for obj:123 and ste:123
-	for testID, ovalID := range testOvalIDs {
-		// Extract the numeric part
-		parts := splitOvalID(ovalID)
-		if parts.id == "" {
-			continue
-		}
-
-		// Look for matching object (exact match first)
-		objOvalID := fmt.Sprintf("oval:%s:obj:%s", parts.namespace, parts.id)
-		if name, ok := objects[objOvalID]; ok {
-			tests[testID].PackageName = name
-		} else if names, ok := objectsByPrefix[objOvalID]; ok && len(names) > 0 {
-			// Multiple packages from var_ref expansion - store all names
-			tests[testID].PackageNames = names
-			tests[testID].PackageName = names[0] // Primary for backwards compat
-		}
-
-		// Look for matching state
-		steOvalID := fmt.Sprintf("oval:%s:ste:%s", parts.namespace, parts.id)
-		if st, ok := states[steOvalID]; ok {
-			tests[testID].EVROperation = st.operation
-			tests[testID].EVRValue = st.value
-		}
-	}
-
-	return tests, nil
-}
-
-// loadOVALTestsForPackages loads only tests relevant to the given packages (OPTIMIZED)
-func (s *Scanner) loadOVALTestsForPackages(ctx context.Context, sourceID int64, packageNames []string) (map[int64]*OVALTestData, error) {
 	if len(packageNames) == 0 {
-		return make(map[int64]*OVALTestData), nil
-	}
-
-	// Step 1: Find all objects matching the installed packages
-	// This is the key optimization - we filter at the DB level
-	objectRows, err := s.db.Query(ctx, `
-		SELECT id, oval_id, name FROM oval_objects 
-		WHERE source_id = $1 AND name = ANY($2)
-	`, sourceID, packageNames)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query objects: %w", err)
-	}
-	defer objectRows.Close()
-
-	// Build reverse index: extract base OVAL IDs to find matching tests
-	// Object OVAL ID format: oval:namespace:obj:123 or oval:namespace:obj:123:pkgname
-	testOvalIDsNeeded := make(map[string]bool)    // set of test oval_ids we need
-	objectPackageMap := make(map[string][]string) // base_obj_id -> package names
-
-	for objectRows.Next() {
-		var id int64
-		var ovalID, name string
-		if err := objectRows.Scan(&id, &ovalID, &name); err != nil {
-			return nil, err
-		}
-
-		// Extract base object ID and derive test ID
-		parts := splitOvalID(ovalID)
-		if parts.id == "" {
-			continue
-		}
-
-		// Handle composite IDs (oval:ns:obj:123:pkgname)
-		baseID := parts.id
-		if colonCount := countColons(ovalID); colonCount >= 4 {
-			// Extract just the numeric part
-			lastColon := lastIndexColon(ovalID)
-			if lastColon > 0 {
-				baseParts := splitOvalID(ovalID[:lastColon])
-				baseID = baseParts.id
-			}
-		}
-
-		// Derive test OVAL ID from object ID
-		testOvalID := fmt.Sprintf("oval:%s:tst:%s", parts.namespace, baseID)
-		testOvalIDsNeeded[testOvalID] = true
-
-		objKey := fmt.Sprintf("oval:%s:obj:%s", parts.namespace, baseID)
-		objectPackageMap[objKey] = append(objectPackageMap[objKey], name)
-	}
-
-	if len(testOvalIDsNeeded) == 0 {
-		return make(map[int64]*OVALTestData), nil
-	}
-
-	// Step 2: Load only the tests we need
-	testOvalIDs := make([]string, 0, len(testOvalIDsNeeded))
-	for ovalID := range testOvalIDsNeeded {
-		testOvalIDs = append(testOvalIDs, ovalID)
-	}
-
-	testRows, err := s.db.Query(ctx, `
-		SELECT id, test_type, oval_id FROM oval_tests 
-		WHERE source_id = $1 AND oval_id = ANY($2)
-	`, sourceID, testOvalIDs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query tests: %w", err)
-	}
-	defer testRows.Close()
-
-	tests := make(map[int64]*OVALTestData)
-	testIDToOvalID := make(map[int64]string)
-
-	for testRows.Next() {
-		var testID int64
-		var testType, ovalID string
-		if err := testRows.Scan(&testID, &testType, &ovalID); err != nil {
-			return nil, err
-		}
-		tests[testID] = &OVALTestData{
-			TestID:   testID,
-			TestType: testType,
-		}
-		testIDToOvalID[testID] = ovalID
-	}
-
-	// Step 3: Load only the states we need
-	stateOvalIDs := make([]string, 0, len(testOvalIDsNeeded))
-	for testOvalID := range testOvalIDsNeeded {
-		parts := splitOvalID(testOvalID)
-		stateOvalID := fmt.Sprintf("oval:%s:ste:%s", parts.namespace, parts.id)
-		stateOvalIDs = append(stateOvalIDs, stateOvalID)
-	}
-
-	stateRows, err := s.db.Query(ctx, `
-		SELECT oval_id, evr_operation, evr_value FROM oval_states 
-		WHERE source_id = $1 AND oval_id = ANY($2)
-	`, sourceID, stateOvalIDs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query states: %w", err)
-	}
-	defer stateRows.Close()
-
-	type stateData struct {
-		operation string
-		value     string
-	}
-	states := make(map[string]stateData)
-	for stateRows.Next() {
-		var ovalID, op, val string
-		if err := stateRows.Scan(&ovalID, &op, &val); err != nil {
-			return nil, err
-		}
-		states[ovalID] = stateData{operation: op, value: val}
-	}
-
-	// Step 4: Link tests to packages and states
-	for testID, testOvalID := range testIDToOvalID {
-		parts := splitOvalID(testOvalID)
-		if parts.id == "" {
-			continue
-		}
-
-		// Get package names for this test
-		objOvalID := fmt.Sprintf("oval:%s:obj:%s", parts.namespace, parts.id)
-		if names, ok := objectPackageMap[objOvalID]; ok {
-			tests[testID].PackageNames = names
-			if len(names) > 0 {
-				tests[testID].PackageName = names[0]
-			}
-		}
-
-		// Get state data
-		steOvalID := fmt.Sprintf("oval:%s:ste:%s", parts.namespace, parts.id)
-		if st, ok := states[steOvalID]; ok {
-			tests[testID].EVROperation = st.operation
-			tests[testID].EVRValue = st.value
-		}
-	}
-
-	return tests, nil
-}
-
-// loadOVALKernelTests loads uname_test and variable_test tests (kernel version checks)
-func (s *Scanner) loadOVALKernelTests(ctx context.Context, sourceID int64) (map[int64]*OVALTestData, error) {
-	// Load all kernel-related tests
-	testRows, err := s.db.Query(ctx, `
-		SELECT t.id, t.test_type, t.oval_id
-		FROM oval_tests t
-		WHERE t.source_id = $1 AND t.test_type IN ('uname_test', 'variable_test')
-	`, sourceID)
-	if err != nil {
-		return nil, err
-	}
-	defer testRows.Close()
-
-	tests := make(map[int64]*OVALTestData)
-	testOvalIDs := make(map[int64]string)
-
-	for testRows.Next() {
-		var testID int64
-		var testType, ovalID string
-		if err := testRows.Scan(&testID, &testType, &ovalID); err != nil {
-			return nil, err
-		}
-		tests[testID] = &OVALTestData{
-			TestID:   testID,
-			TestType: testType,
-		}
-		testOvalIDs[testID] = ovalID
-	}
-
-	if len(tests) == 0 {
 		return tests, nil
 	}
 
-	// Load states for kernel tests
-	stateRows, err := s.db.Query(ctx, `
-		SELECT id, oval_id, evr_operation, evr_value FROM oval_states 
-		WHERE source_id = $1 AND state_type IN ('uname_state', 'variable_state')
-	`, sourceID)
-	if err != nil {
-		return nil, err
-	}
-	defer stateRows.Close()
-
-	type stateData struct {
-		operation string
-		value     string
-	}
-	states := make(map[string]stateData)
-	for stateRows.Next() {
-		var id int64
-		var ovalID, op, val string
-		if err := stateRows.Scan(&id, &ovalID, &op, &val); err != nil {
-			return nil, err
-		}
-		states[ovalID] = stateData{operation: op, value: val}
-	}
-
-	// Link tests to states using OVAL ID heuristic
-	for testID, ovalID := range testOvalIDs {
-		parts := splitOvalID(ovalID)
-		if parts.id == "" {
-			continue
-		}
-
-		// Build state OVAL ID: oval:namespace:ste:123
-		steOvalID := fmt.Sprintf("oval:%s:ste:%s", parts.namespace, parts.id)
-		if st, ok := states[steOvalID]; ok {
-			tests[testID].EVROperation = st.operation
-			tests[testID].EVRValue = st.value
-		}
-	}
-
-	return tests, nil
-}
-
-func countColons(s string) int {
-	count := 0
-	for _, c := range s {
-		if c == ':' {
-			count++
-		}
-	}
-	return count
-}
-
-func lastIndexColon(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == ':' {
-			return i
-		}
-	}
-	return -1
-}
-
-type ovalIDParts struct {
-	namespace string
-	typ       string
-	id        string
-}
-
-func splitOvalID(ovalID string) ovalIDParts {
-	// Format: oval:com.ubuntu.noble:tst:12345
-	parts := ovalIDParts{}
-	segments := splitString(ovalID, ":")
-	if len(segments) >= 4 {
-		parts.namespace = segments[1]
-		parts.typ = segments[2]
-		parts.id = segments[3]
-	}
-	return parts
-}
-
-func splitString(s, sep string) []string {
-	var result []string
-	for len(s) > 0 {
-		idx := indexOf(s, sep)
-		if idx < 0 {
-			result = append(result, s)
-			break
-		}
-		result = append(result, s[:idx])
-		s = s[idx+len(sep):]
-	}
-	return result
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
-}
-
-// loadOVALDefinitions loads all definitions for a source (kept for backwards compat)
-func (s *Scanner) loadOVALDefinitions(ctx context.Context, sourceID int64) ([]OVALDefinitionData, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, oval_id, COALESCE(title, ''), COALESCE(description, ''), 
-		       COALESCE(severity, ''), COALESCE(cve_ids, '{}')
-		FROM oval_definitions
-		WHERE source_id = $1 AND class IN ('vulnerability', 'patch')
-	`, sourceID)
+		SELECT t.id, t.test_type, o.names,
+		       COALESCE(st.evr_operation, ''), COALESCE(st.evr_value, '')
+		FROM oval_tests t
+		JOIN oval_objects o
+		  ON o.source_id = t.source_id AND o.oval_id = t.object_ref
+		LEFT JOIN oval_states st
+		  ON st.source_id = t.source_id AND st.oval_id = t.state_ref
+		WHERE t.source_id = $1
+		  AND t.test_type IN ('dpkginfo_test', 'rpminfo_test')
+		  AND o.names && $2::text[]
+	`, sourceID, packageNames)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query package tests: %w", err)
 	}
 	defer rows.Close()
 
-	var definitions []OVALDefinitionData
 	for rows.Next() {
-		var def OVALDefinitionData
-		err := rows.Scan(&def.DefinitionID, &def.OvalID, &def.Title, &def.Description, &def.Severity, &def.CVEIDs)
-		if err != nil {
+		var test OVALTestData
+		if err := rows.Scan(&test.TestID, &test.TestType, &test.PackageNames,
+			&test.EVROperation, &test.EVRValue); err != nil {
 			return nil, err
 		}
-		definitions = append(definitions, def)
+		tests[test.TestID] = &test
 	}
-	return definitions, nil
+	return tests, rows.Err()
+}
+
+// loadOVALKernelTests loads the tests that inspect the running kernel
+// (uname_test on `uname -r`, variable_test on the derived kernel EVR).
+func (s *Scanner) loadOVALKernelTests(ctx context.Context, sourceID int64) (map[int64]*OVALTestData, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT t.id, t.test_type,
+		       COALESCE(st.evr_operation, ''), COALESCE(st.evr_value, '')
+		FROM oval_tests t
+		LEFT JOIN oval_states st
+		  ON st.source_id = t.source_id AND st.oval_id = t.state_ref
+		WHERE t.source_id = $1 AND t.test_type IN ('uname_test', 'variable_test')
+	`, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query kernel tests: %w", err)
+	}
+	defer rows.Close()
+
+	tests := make(map[int64]*OVALTestData)
+	for rows.Next() {
+		var test OVALTestData
+		if err := rows.Scan(&test.TestID, &test.TestType,
+			&test.EVROperation, &test.EVRValue); err != nil {
+			return nil, err
+		}
+		// Compile once here rather than per definition: a single uname pattern is
+		// referenced by thousands of definitions.
+		if test.TestType == "uname_test" && test.EVROperation == "pattern match" && test.EVRValue != "" {
+			pattern, err := regexp.Compile(test.EVRValue)
+			if err != nil {
+				log.Warn().Err(err).
+					Int64("testId", test.TestID).
+					Str("pattern", test.EVRValue).
+					Msg("Skipping uname test with unusable os_release pattern")
+				continue
+			}
+			test.ReleasePattern = pattern
+		}
+		tests[test.TestID] = &test
+	}
+	return tests, rows.Err()
 }
 
 // loadOVALDefinitionsForTests loads only definitions that reference the given tests (OPTIMIZED)
@@ -804,53 +496,6 @@ func (s *Scanner) loadOVALDefinitionsForTests(ctx context.Context, sourceID int6
 		definitions = append(definitions, def)
 	}
 	return definitions, nil
-}
-
-// evaluateDefinition evaluates a definition's criteria against installed packages.
-// Returns whether the system is vulnerable and the list of affected packages with fix status.
-func (s *Scanner) evaluateDefinition(ctx context.Context, sourceID, definitionID int64, packages map[string]*models.ServerPackage, tests map[int64]*OVALTestData, packageManager string, kernelVersion string) (bool, []AffectedPackageInfo) {
-	// Load criteria for this definition
-	criteria, err := s.loadCriteria(ctx, definitionID)
-	if err != nil {
-		log.Warn().Err(err).Int64("definitionId", definitionID).Msg("Failed to load criteria")
-		return false, nil
-	}
-
-	if len(criteria) == 0 {
-		return false, nil
-	}
-
-	// Find root criteria (no parent)
-	var rootCriteria *criteriaNode
-	for _, c := range criteria {
-		if c.ParentID == nil {
-			rootCriteria = c
-			break
-		}
-	}
-
-	if rootCriteria == nil {
-		return false, nil
-	}
-
-	// Build criteria tree
-	criteriaMap := make(map[int64]*criteriaNode)
-	for _, c := range criteria {
-		criteriaMap[c.ID] = c
-	}
-	for _, c := range criteria {
-		if c.ParentID != nil {
-			if parent, ok := criteriaMap[*c.ParentID]; ok {
-				parent.Children = append(parent.Children, c)
-			}
-		}
-	}
-
-	// Evaluate the criteria tree
-	var affectedPackages []AffectedPackageInfo
-	vulnerable := s.evaluateCriteriaNode(ctx, sourceID, rootCriteria, packages, tests, packageManager, kernelVersion, &affectedPackages)
-
-	return vulnerable, affectedPackages
 }
 
 // criterionRef represents a single criterion (test reference) with its metadata
@@ -1030,368 +675,573 @@ func (s *Scanner) loadCriteriaBulk(ctx context.Context, definitionIDs []int64) (
 	return byDefinition, nil
 }
 
-// evaluateDefinitionWithCriteria evaluates a definition using pre-loaded criteria.
-// The evaluation logic is identical to evaluateDefinition — only the data source differs.
-func (s *Scanner) evaluateDefinitionWithCriteria(ctx context.Context, sourceID, definitionID int64, packages map[string]*models.ServerPackage, tests map[int64]*OVALTestData, packageManager string, kernelVersion string, allCriteria map[int64][]*criteriaNode) (bool, []AffectedPackageInfo) {
-	criteria, ok := allCriteria[definitionID]
-	if !ok || len(criteria) == 0 {
-		return false, nil
-	}
-
-	// Find root criteria (no parent)
-	var rootCriteria *criteriaNode
-	for _, c := range criteria {
-		if c.ParentID == nil {
-			rootCriteria = c
-			break
-		}
-	}
-
-	if rootCriteria == nil {
-		return false, nil
-	}
-
-	// Build criteria tree
-	criteriaMap := make(map[int64]*criteriaNode)
-	for _, c := range criteria {
-		criteriaMap[c.ID] = c
-	}
-	for _, c := range criteria {
-		if c.ParentID != nil {
-			if parent, ok := criteriaMap[*c.ParentID]; ok {
-				parent.Children = append(parent.Children, c)
-			}
-		}
-	}
-
-	// Evaluate the criteria tree (same logic as evaluateDefinition)
-	var affectedPackages []AffectedPackageInfo
-	vulnerable := s.evaluateCriteriaNode(ctx, sourceID, rootCriteria, packages, tests, packageManager, kernelVersion, &affectedPackages)
-
-	return vulnerable, affectedPackages
+// criteriaResult is the outcome of evaluating one criterion or criteria node.
+//
+// Packages and KernelMatch are only ever propagated out of a subtree that
+// actually holds: an OVAL definition lists the affected packages of every
+// release channel it knows about, so collecting matches from branches that
+// evaluated to false would blame packages the definition does not apply to.
+type criteriaResult struct {
+	Matched bool
+	// KernelMatch reports that a uname_test or variable_test matched inside the
+	// satisfied part of the subtree, i.e. the running kernel really is affected.
+	KernelMatch bool
+	// Packages are the installed packages the satisfied tests matched.
+	Packages []AffectedPackageInfo
 }
 
-func (s *Scanner) evaluateCriteriaNode(ctx context.Context, sourceID int64, node *criteriaNode, packages map[string]*models.ServerPackage, tests map[int64]*OVALTestData, packageManager string, kernelVersion string, affectedPackages *[]AffectedPackageInfo) bool {
+// evaluateDefinitionWithCriteria evaluates a definition against the server using
+// pre-loaded criteria.
+func (s *Scanner) evaluateDefinitionWithCriteria(ctx context.Context, sourceID, definitionID int64, packages map[string]*models.ServerPackage, tests map[int64]*OVALTestData, packageManager string, kernel kernelInfo, allCriteria map[int64][]*criteriaNode) criteriaResult {
+	rootCriteria := buildCriteriaTree(allCriteria[definitionID])
+	if rootCriteria == nil {
+		return criteriaResult{}
+	}
+	return s.evaluateCriteriaNode(ctx, sourceID, rootCriteria, packages, tests, packageManager, kernel)
+}
+
+// buildCriteriaTree links a definition's flat criteria rows into a tree and
+// returns its root, or nil if the definition has no criteria.
+func buildCriteriaTree(criteria []*criteriaNode) *criteriaNode {
+	if len(criteria) == 0 {
+		return nil
+	}
+
+	criteriaMap := make(map[int64]*criteriaNode, len(criteria))
+	for _, c := range criteria {
+		c.Children = nil
+		criteriaMap[c.ID] = c
+	}
+
+	var root *criteriaNode
+	for _, c := range criteria {
+		if c.ParentID == nil {
+			if root == nil {
+				root = c
+			}
+			continue
+		}
+		if parent, ok := criteriaMap[*c.ParentID]; ok {
+			parent.Children = append(parent.Children, c)
+		}
+	}
+	return root
+}
+
+func (s *Scanner) evaluateCriteriaNode(ctx context.Context, sourceID int64, node *criteriaNode, packages map[string]*models.ServerPackage, tests map[int64]*OVALTestData, packageManager string, kernel kernelInfo) criteriaResult {
 	if node == nil {
-		return false
+		return criteriaResult{}
 	}
 
-	var results []bool
+	results := make([]criteriaResult, 0, len(node.Tests)+len(node.Children))
 
-	// Evaluate direct test references (now with criterion comments)
 	for _, criterion := range node.Tests {
-		test, ok := tests[criterion.TestID]
-		if !ok {
-			continue
-		}
-
-		testMatched := false
-
-		// Handle kernel tests (uname_test, variable_test)
-		if test.TestType == "uname_test" || test.TestType == "variable_test" {
-			if kernelVersion == "" {
-				// No kernel version available - skip kernel tests
-				continue
-			}
-
-			if test.TestType == "uname_test" {
-				// Pattern matching for kernel version (e.g., "6.8.*")
-				if test.EVRValue != "" {
-					matched := matchKernelPattern(kernelVersion, test.EVRValue)
-					if matched {
-						testMatched = true
-					}
-				}
-			} else if test.TestType == "variable_test" {
-				// Version comparison for kernel version
-				if test.EVROperation != "" && test.EVRValue != "" {
-					vulnerable := EvaluateVersionOperation(kernelVersion, test.EVRValue, test.EVROperation, "generic")
-					if vulnerable {
-						testMatched = true
-					}
-				}
-			}
-		} else {
-			// Handle package tests (dpkginfo_test, rpminfo_test)
-			pkgNames := test.GetPackageNames()
-
-			// Determine the fix_state from the criterion comment
-			fixState := classifyCriterionComment(criterion.Comment)
-
-			for _, pkgName := range pkgNames {
-				pkg, ok := packages[pkgName]
-				if !ok {
-					// Package not installed - continue checking other names
-					continue
-				}
-
-				// Evaluate version comparison
-				if test.EVROperation != "" && test.EVRValue != "" {
-					vulnerable := EvaluateVersionOperation(pkg.Version, test.EVRValue, test.EVROperation, packageManager)
-					if vulnerable {
-						*affectedPackages = append(*affectedPackages, AffectedPackageInfo{
-							Package:  pkg,
-							FixedIn:  test.EVRValue,
-							FixState: "fix_available", // A known fix version always means fix_available
-						})
-						testMatched = true
-					}
-				} else {
-					// Existence-only check - package is present.
-					// The fix_state (from criterion comment) determines the categorization:
-					// - "affected": known vulnerability, no fix available yet
-					// - "will_not_fix": vendor decided to ignore this issue
-					// - "deferred": vendor acknowledged but deferred the fix
-					*affectedPackages = append(*affectedPackages, AffectedPackageInfo{
-						Package:  pkg,
-						FixedIn:  "", // No fixed version for existence-only checks
-						FixState: fixState,
-					})
-					testMatched = true
-				}
-			}
-		}
-
-		// Apply criterion-level negate if needed
-		if criterion.Negate {
-			testMatched = !testMatched
-		}
-
-		results = append(results, testMatched)
+		results = append(results, evaluateCriterion(criterion, packages, tests, packageManager, kernel))
 	}
 
-	// Evaluate child criteria
 	for _, child := range node.Children {
-		childResult := s.evaluateCriteriaNode(ctx, sourceID, child, packages, tests, packageManager, kernelVersion, affectedPackages)
-		results = append(results, childResult)
+		results = append(results, s.evaluateCriteriaNode(ctx, sourceID, child, packages, tests, packageManager, kernel))
 	}
 
-	// Evaluate extend_definition references
 	for _, extDef := range node.ExtendDefinitions {
-		extDefResult := s.evaluateExtendDefinition(ctx, sourceID, extDef, packages, tests, packageManager, kernelVersion, affectedPackages)
-
-		// Apply negation if needed
+		extDefResult := s.evaluateExtendDefinition(ctx, sourceID, extDef, packages, tests, packageManager, kernel)
 		if extDef.Negate {
-			extDefResult = !extDefResult
+			extDefResult = negate(extDefResult)
 		}
 
-		// Applicability checks are pre-conditions:
-		// If failed, the vulnerability doesn't apply to this system
+		// Applicability checks are pre-conditions ("Ubuntu 24.04 is installed"):
+		// if one fails the definition does not apply to this system at all, and a
+		// passing one is not part of the surrounding AND/OR logic.
 		if extDef.ApplicabilityCheck {
-			if !extDefResult {
-				return false
+			if !extDefResult.Matched {
+				return criteriaResult{}
 			}
-			// If passed, don't add to results - it's a pre-condition, not part of AND/OR logic
 			continue
 		}
 
-		// Non-applicability extend_definitions are regular conditions
 		results = append(results, extDefResult)
 	}
 
-	// Combine results based on operator
-	var result bool
-	switch node.Operator {
-	case "AND":
-		// Empty results means no tests matched - not vulnerable
-		if len(results) == 0 {
-			result = false
-		} else {
-			result = true
-			for _, r := range results {
-				if !r {
-					result = false
-					break
-				}
-			}
-		}
-	case "OR":
-		result = false
-		for _, r := range results {
-			if r {
-				result = true
-				break
-			}
-		}
-	default:
-		// Default to AND
-		result = len(results) > 0
-		for _, r := range results {
-			if !r {
-				result = false
-				break
-			}
-		}
-	}
-
-	// Apply negation
+	combined := combineCriteriaResults(node.Operator, results)
 	if node.Negate {
-		result = !result
+		combined = negate(combined)
+	}
+	return combined
+}
+
+// combineCriteriaResults applies a criteria node's operator. An absent operator
+// means AND per the OVAL specification, and a node without any criteria cannot
+// hold.
+func combineCriteriaResults(operator string, results []criteriaResult) criteriaResult {
+	var combined criteriaResult
+	if len(results) == 0 {
+		return combined
 	}
 
+	if operator == "OR" {
+		for _, r := range results {
+			if !r.Matched {
+				continue
+			}
+			combined.Matched = true
+			combined.KernelMatch = combined.KernelMatch || r.KernelMatch
+			combined.Packages = append(combined.Packages, r.Packages...)
+		}
+		return combined
+	}
+
+	for _, r := range results {
+		if !r.Matched {
+			return criteriaResult{}
+		}
+	}
+	combined.Matched = true
+	for _, r := range results {
+		combined.KernelMatch = combined.KernelMatch || r.KernelMatch
+		combined.Packages = append(combined.Packages, r.Packages...)
+	}
+	return combined
+}
+
+// negate inverts a result. Whatever the negated subtree matched says nothing
+// about the system once the sense is flipped, so the evidence is dropped.
+func negate(r criteriaResult) criteriaResult {
+	return criteriaResult{Matched: !r.Matched}
+}
+
+// evaluateCriterion evaluates a single criterion (one test reference).
+func evaluateCriterion(criterion criterionRef, packages map[string]*models.ServerPackage, tests map[int64]*OVALTestData, packageManager string, kernel kernelInfo) criteriaResult {
+	test, ok := tests[criterion.TestID]
+	if !ok {
+		// The test was not loaded: either its object matches no installed package,
+		// or it is a test type we cannot evaluate (family_test, file_test and
+		// textfilecontent54_test, used by the OS inventory and Livepatch notices).
+		// Either way the criterion does not hold — skipping it instead would drop
+		// it out of the enclosing AND and weaken the condition.
+		var unmatched criteriaResult
+		if criterion.Negate {
+			unmatched.Matched = true
+		}
+		return unmatched
+	}
+
+	var result criteriaResult
+
+	switch test.TestType {
+	case "uname_test":
+		result.Matched = matchOSRelease(kernel.Release, test)
+		result.KernelMatch = result.Matched
+
+	case "variable_test":
+		if kernel.EVR != "" && test.EVROperation != "" && test.EVRValue != "" {
+			result.Matched = EvaluateVersionOperation(kernel.EVR, test.EVRValue, test.EVROperation, "dpkg")
+		}
+		result.KernelMatch = result.Matched
+
+	default:
+		// Package tests (dpkginfo_test, rpminfo_test). The criterion comment
+		// carries the vendor's stance for existence-only tests.
+		fixState := classifyCriterionComment(criterion.Comment)
+
+		for _, pkgName := range test.PackageNames {
+			pkg, installed := packages[pkgName]
+			if !installed {
+				continue
+			}
+
+			if test.EVROperation == "" || test.EVRValue == "" {
+				// Existence-only check: the package is present and the vendor has
+				// no fixed version for it yet.
+				result.Matched = true
+				result.Packages = append(result.Packages, AffectedPackageInfo{
+					Package:  pkg,
+					FixedIn:  "",
+					FixState: fixState,
+				})
+				continue
+			}
+
+			if EvaluateVersionOperation(pkg.Version, test.EVRValue, test.EVROperation, packageManager) {
+				result.Matched = true
+				result.Packages = append(result.Packages, AffectedPackageInfo{
+					Package:  pkg,
+					FixedIn:  test.EVRValue,
+					FixState: "fix_available", // a known fixed version always means fix_available
+				})
+			}
+		}
+	}
+
+	if criterion.Negate {
+		result = negate(result)
+	}
 	return result
+}
+
+// matchOSRelease evaluates a uname_test against `uname -r`. OVAL's
+// "pattern match" is an unanchored regular expression search, so the pattern
+// must not be wrapped in ^...$.
+func matchOSRelease(release string, test *OVALTestData) bool {
+	if release == "" || test.EVRValue == "" {
+		return false
+	}
+
+	switch test.EVROperation {
+	case "pattern match":
+		return test.ReleasePattern != nil && test.ReleasePattern.MatchString(release)
+	case "not equal":
+		return release != test.EVRValue
+	default:
+		return release == test.EVRValue
+	}
 }
 
 // classifyCriterionComment determines the fix_state from the OVAL criterion comment.
 // These comments are machine-generated by Canonical's OVAL tools and follow consistent patterns.
 // Falls back to "affected" if the comment doesn't match any known pattern.
 func classifyCriterionComment(comment string) string {
-	if comment == "" {
+	switch {
+	case comment == "":
+		return "affected"
+	case strings.Contains(comment, "was vulnerable but has been fixed"):
+		return "fix_available"
+	case strings.Contains(comment, "decision has been made to ignore"):
+		return "will_not_fix"
+	case strings.Contains(comment, "decision has been made to defer"):
+		return "deferred"
+	default:
+		// "affected and needs fixing" / "affected and may need fixing", and the
+		// fallback for unrecognized comments.
 		return "affected"
 	}
-
-	// Check for version-fixed pattern: "was vulnerable but has been fixed"
-	if indexOf(comment, "was vulnerable but has been fixed") >= 0 {
-		return "fix_available"
-	}
-
-	// Check for vendor ignore: "decision has been made to ignore"
-	if indexOf(comment, "decision has been made to ignore") >= 0 {
-		return "will_not_fix"
-	}
-
-	// Check for deferred: "decision has been made to defer"
-	if indexOf(comment, "decision has been made to defer") >= 0 {
-		return "deferred"
-	}
-
-	// "affected and needs fixing" or "affected and may need fixing" → affected (no fix available)
-	// This is also the fallback for unrecognized comments
-	return "affected"
 }
 
-// evaluateExtendDefinition evaluates a referenced definition by its OVAL ID
-func (s *Scanner) evaluateExtendDefinition(ctx context.Context, sourceID int64, extDef extendDefinitionRef, packages map[string]*models.ServerPackage, tests map[int64]*OVALTestData, packageManager string, kernelVersion string, affectedPackages *[]AffectedPackageInfo) bool {
+// evaluateExtendDefinition evaluates a referenced definition by its OVAL ID.
+func (s *Scanner) evaluateExtendDefinition(ctx context.Context, sourceID int64, extDef extendDefinitionRef, packages map[string]*models.ServerPackage, tests map[int64]*OVALTestData, packageManager string, kernel kernelInfo) criteriaResult {
 	// For applicability_check definitions (like "Ubuntu 24.04 is installed"):
-	// Since VulTrack already loads only the OVAL source matching the server's OS codename,
-	// the applicability check is implicitly satisfied. We return true to indicate
-	// that the server matches the expected OS/distribution.
-	//
-	// This is a pragmatic optimization that avoids implementing family_test and
-	// textfilecontent54_test which are only used for OS detection in OVAL.
+	// the scan only loads the OVAL source matching the server's release, so the
+	// check is implicitly satisfied. This avoids implementing family_test and
+	// textfilecontent54_test, which OVAL uses for OS detection only.
 	if extDef.ApplicabilityCheck {
-		return true
+		return criteriaResult{Matched: true}
 	}
 
-	// For non-applicability extend_definitions, evaluate the referenced definition
-	// IMPORTANT: Filter by source_id to ensure we only use definitions from the same OVAL source
-	// (same Ubuntu version). This prevents cross-version contamination.
+	// For non-applicability extend_definitions, evaluate the referenced definition.
+	// Filtering by source_id keeps the lookup inside the same OVAL source (same
+	// distribution release) and prevents cross-version contamination.
 	var definitionID int64
 	err := s.db.QueryRow(ctx, `
 		SELECT id FROM oval_definitions WHERE oval_id = $1 AND source_id = $2
 	`, extDef.DefinitionOvalID, sourceID).Scan(&definitionID)
 	if err != nil {
-		// Definition not found in this source - this is expected for cross-version references
-		return false
+		// Definition not found in this source - expected for cross-version references
+		return criteriaResult{}
 	}
 
-	// Load criteria for the referenced definition
 	criteria, err := s.loadCriteria(ctx, definitionID)
-	if err != nil || len(criteria) == 0 {
-		return false
+	if err != nil {
+		log.Warn().Err(err).
+			Str("definitionRef", extDef.DefinitionOvalID).
+			Msg("Failed to load criteria of extended definition")
+		return criteriaResult{}
 	}
 
-	// Find root criteria (parent_id is NULL)
-	var rootCriteria *criteriaNode
-	for _, c := range criteria {
-		if c.ParentID == nil {
-			rootCriteria = c
+	rootCriteria := buildCriteriaTree(criteria)
+	if rootCriteria == nil {
+		return criteriaResult{}
+	}
+
+	return s.evaluateCriteriaNode(ctx, sourceID, rootCriteria, packages, tests, packageManager, kernel)
+}
+
+// kernelFeedFilter decides whether a kernel finding really applies to the
+// kernel a server runs.
+//
+// Ubuntu's OVAL identifies the running kernel with a uname pattern against
+// `uname -r` and has no way to express an architecture, while the riscv64
+// kernel flavour is also named "generic". Every "-generic" release string is
+// therefore matched by two flavour criteria — linux and linux-riscv,
+// linux-hwe-6.14 and linux-riscv-6.14, and so on — and since the criteria sit
+// in an OR, one match is enough. On an amd64 host the riscv criterion fires for
+// every CVE that affects the riscv kernel but not the one actually booted; that
+// was 63% of the kernel findings on Ubuntu 24.04 with 6.8.0-124-generic.
+//
+// Canonical's package feed records its verdict per kernel source package, which
+// resolves the ambiguity the uname pattern cannot. A zero filter is inert, so
+// every reason the verdict is unavailable simply leaves OVAL's result standing.
+type kernelFeedFilter struct {
+	// source is the kernel source package the running kernel was built from.
+	source string
+	// verdicts is the feed's position on every CVE it tracks for that source.
+	verdicts map[string]services.KernelVerdict
+	// kernelEVR is the running kernel in the form the feed's fixed versions use.
+	kernelEVR      string
+	packageManager string
+}
+
+// justifies reports whether a kernel finding for cveID should be filed.
+//
+// It fails open at every step: an inert filter, or a CVE the feed does not
+// track, keeps whatever OVAL determined.
+func (f *kernelFeedFilter) justifies(cveID string) bool {
+	if f == nil || f.source == "" || len(f.verdicts) == 0 {
+		return true
+	}
+
+	verdict, tracked := f.verdicts[cveID]
+	if !tracked {
+		// The feed does not cover this CVE at all — it may be newer in the OVAL
+		// feed than in the package feed. Not evidence of anything.
+		return true
+	}
+
+	switch verdict.Status {
+	case "vulnerable":
+		return true
+	case "fixed":
+		// Affected as long as the running kernel is older than the fix.
+		return EvaluateVersionOperation(f.kernelEVR, verdict.SourceFixedVersion, "less than", f.packageManager)
+	default:
+		// The feed tracks the CVE but records no status for this source package,
+		// which is how a dropped 'not-vulnerable' row shows up: Canonical triaged
+		// this kernel as unaffected.
+		return false
+	}
+}
+
+// newKernelFeedFilter resolves which kernel source package the running kernel
+// belongs to and loads the feed's verdicts for it. It returns nil — an inert
+// filter — whenever any step is unavailable.
+func (s *Scanner) newKernelFeedFilter(ctx context.Context, serverID int64, sources []*models.OVALSource, packages map[string]*models.ServerPackage, kernel kernelInfo, packageManager string) *kernelFeedFilter {
+	if s.pkgFeedService == nil || kernel.Release == "" || kernel.EVR == "" {
+		return nil
+	}
+
+	var feedSource *models.OVALSource
+	for _, source := range sources {
+		if source.SourceType == models.SourceTypePkg {
+			feedSource = source
 			break
 		}
 	}
-	if rootCriteria == nil {
-		return false
+	if feedSource == nil {
+		return nil
 	}
 
-	// Build criteria tree
-	criteriaMap := make(map[int64]*criteriaNode)
-	for _, c := range criteria {
-		criteriaMap[c.ID] = c
-	}
-	for _, c := range criteria {
-		if c.ParentID != nil {
-			if parent, ok := criteriaMap[*c.ParentID]; ok {
-				parent.Children = append(parent.Children, c)
-			}
-		}
+	kernelSource := s.resolveKernelSource(ctx, feedSource.ID, packages, kernel.Release)
+	if kernelSource == "" {
+		log.Debug().
+			Int64("serverId", serverID).
+			Str("kernel", kernel.Release).
+			Msg("Cannot tell which kernel source package the running kernel came from; keeping all kernel findings")
+		return nil
 	}
 
-	// Evaluate the criteria tree of the referenced definition
-	result := s.evaluateCriteriaNode(ctx, sourceID, rootCriteria, packages, tests, packageManager, kernelVersion, affectedPackages)
+	verdicts, err := s.pkgFeedService.KernelVerdicts(ctx, feedSource.ID, kernelSource)
+	if err != nil {
+		log.Warn().Err(err).
+			Str("kernelSource", kernelSource).
+			Msg("Failed to load kernel verdicts from the package feed; keeping all kernel findings")
+		return nil
+	}
+	if len(verdicts) == 0 {
+		return nil
+	}
 
-	return result
+	log.Debug().
+		Int64("serverId", serverID).
+		Str("kernel", kernel.Release).
+		Str("kernelSource", kernelSource).
+		Int("verdicts", len(verdicts)).
+		Msg("Cross-checking kernel findings against the package feed")
+
+	return &kernelFeedFilter{
+		source:         kernelSource,
+		verdicts:       verdicts,
+		kernelEVR:      kernel.EVR,
+		packageManager: packageManager,
+	}
 }
 
-// getFixedVersion is no longer used - fixed version is now determined per-test
-// during criteria evaluation and returned as part of AffectedPackageInfo.
-
-// definitionHasKernelTests checks if a definition uses kernel tests
-func (s *Scanner) definitionHasKernelTests(ctx context.Context, definitionID int64, tests map[int64]*OVALTestData) bool {
-	// Load test IDs for this definition
-	rows, err := s.db.Query(ctx, `
-		SELECT test_id FROM oval_criteria_tests 
-		WHERE criteria_id IN (
-			SELECT id FROM oval_criteria WHERE definition_id = $1
-		)
-	`, definitionID)
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var testID int64
-		if err := rows.Scan(&testID); err != nil {
+// resolveKernelSource determines the kernel source package the running kernel
+// was built from, or "" when it cannot be established.
+//
+// The agent's dpkg metadata is asked first because it is authoritative, and
+// linux-modules/linux-headers are used rather than linux-image: Ubuntu builds
+// the signed image in a separate "linux-signed" source package, which does not
+// appear in the vulnerability feed at all. Every candidate is checked against
+// the feed's own list of kernel source packages, so a name the feed does not
+// know is discarded instead of being treated as a kernel with no vulnerabilities.
+func (s *Scanner) resolveKernelSource(ctx context.Context, feedSourceID int64, packages map[string]*models.ServerPackage, release string) string {
+	for _, prefix := range []string{"linux-modules-", "linux-headers-"} {
+		pkg, installed := packages[prefix+release]
+		if !installed || pkg.SourcePackage == "" {
 			continue
 		}
-		if test, ok := tests[testID]; ok {
-			if test.TestType == "uname_test" || test.TestType == "variable_test" {
-				return true
-			}
+		known, err := s.pkgFeedService.IsKernelSourcePackage(ctx, feedSourceID, pkg.SourcePackage)
+		if err != nil {
+			log.Warn().Err(err).Str("candidate", pkg.SourcePackage).Msg("Failed to check kernel source package")
+			return ""
+		}
+		if known {
+			return pkg.SourcePackage
 		}
 	}
-	return false
+
+	// No usable dpkg metadata: fall back to the feed's own binary map, which is
+	// unambiguous for most releases but not for the HWE/riscv pairs.
+	kernelSource, err := s.pkgFeedService.KernelSourceForRelease(ctx, feedSourceID, release)
+	if err != nil {
+		log.Warn().Err(err).Str("kernel", release).Msg("Failed to resolve kernel source package from the package feed")
+		return ""
+	}
+	return kernelSource
 }
 
-// upsertFinding creates or updates a finding. Precedence: USN overwrites CVE; CVE does not overwrite USN.
+// scanPkgFeedSource evaluates Canonical's package vulnerability feed for the
+// server. This is the same computation `pro cves` performs on the machine
+// itself: an installed binary package is affected when its source package has a
+// CVE that is either unfixed, or fixed in a source version whose corresponding
+// binary version is newer than the installed one.
+//
+// It complements the OVAL sources rather than replacing them. OVAL enumerates
+// only the binary packages its constant_variables list, so the feed adds the
+// ones it omits, and it names the pocket a fix comes from. Kernel source
+// packages are excluded at the query level: OVAL evaluates the kernel against
+// the *running* kernel, which is both more precise and vastly less noisy than
+// reporting every installed kernel's binary packages.
+func (s *Scanner) scanPkgFeedSource(ctx context.Context, serverID int64, source *models.OVALSource, server *models.Server, currentFindings map[string]bool, result *ScanResult) error {
+	if s.pkgFeedService == nil {
+		return fmt.Errorf("package vulnerability feed support is not configured")
+	}
+
+	candidates, err := s.pkgFeedService.GetScanCandidates(ctx, source.ID, serverID)
+	if err != nil {
+		return err
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	log.Debug().
+		Str("sourceType", source.SourceType).
+		Int("candidates", len(candidates)).
+		Msg("Loaded package vulnerability feed candidates")
+
+	for _, candidate := range candidates {
+		result.TotalChecks++
+
+		fixState := "affected"
+		fixedIn := ""
+		pocket := ""
+
+		if candidate.Status == "fixed" {
+			if candidate.FixedBinaryVersion == "" {
+				// The fixing source version no longer builds this binary package.
+				// Canonical's own client reports that as affected without a fix,
+				// because there is no version to tell the operator to install.
+				fixState = "affected"
+			} else {
+				if !EvaluateVersionOperation(candidate.InstalledVersion, candidate.FixedBinaryVersion, "less than", server.PackageManager) {
+					continue // already at or past the fixed version
+				}
+				fixState = "fix_available"
+				fixedIn = candidate.FixedBinaryVersion
+				pocket = candidate.Pocket
+			}
+		}
+
+		pkg := &models.ServerPackage{Name: candidate.PackageName, Version: candidate.InstalledVersion}
+		def := OVALDefinitionData{
+			Severity: candidate.UbuntuPriority,
+			Title: fmt.Sprintf("%s on Ubuntu %s (%s) - %s",
+				candidate.CVEID, source.Version, source.Codename, candidate.UbuntuPriority),
+		}
+
+		currentFindings[candidate.CVEID+"|"+candidate.PackageName] = true
+
+		if err := s.upsertFindingWithPocket(ctx, serverID, candidate.CVEID, pkg, def,
+			fixedIn, fixState, &pocket, server.OSFamily, source.SourceType); err != nil {
+			log.Warn().Err(err).
+				Str("cve", candidate.CVEID).
+				Str("package", candidate.PackageName).
+				Msg("Failed to upsert package feed finding")
+			continue
+		}
+		result.NewFindings++
+	}
+
+	return nil
+}
+
+// upsertFinding creates or updates a finding from an OVAL source. OVAL says
+// nothing about the pocket a fix comes from, so it leaves that field alone.
 func (s *Scanner) upsertFinding(ctx context.Context, serverID int64, cveID string, pkg *models.ServerPackage, def OVALDefinitionData, fixedVersion string, fixState string, osFamily string, sourceType string) error {
+	return s.upsertFindingWithPocket(ctx, serverID, cveID, pkg, def, fixedVersion, fixState, nil, osFamily, sourceType)
+}
+
+// upsertFindingWithPocket creates or updates a finding.
+//
+// What the vendor determined about a package — the fix state, the fixed
+// version, the severity — is only overwritten by a source that is at least as
+// authoritative (see finding_source_rank in the schema). The pocket is handled
+// separately: only the package feed knows it, so it is additive and is written
+// whichever source owns the rest of the row. Pass a nil fixPocket to mean "this
+// source has no opinion"; pass a pointer to "" to record that there is no
+// pocket, which clears a stale one.
+//
+// The precedence is applied per column in SQL rather than as a WHERE guard, so
+// that last_seen_at still advances when a weaker source reports the finding —
+// otherwise the row would look stale purely because a stronger source got there
+// first.
+func (s *Scanner) upsertFindingWithPocket(ctx context.Context, serverID int64, cveID string, pkg *models.ServerPackage, def OVALDefinitionData, fixedVersion, fixState string, fixPocket *string, osFamily, sourceType string) error {
 	now := time.Now()
 	if sourceType == "" {
-		sourceType = "usn"
+		sourceType = models.SourceTypeUSN
 	}
 	if fixState == "" {
 		fixState = "affected"
 	}
 
-	// Map OVAL severity to our severity
+	// Map vendor severity to our severity
 	severity := mapSeverity(def.Severity)
 
 	// Generate vendor advisory link
 	sourceLink := getVendorLink(osFamily, cveID)
 
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO findings (
-			server_id, cve_id, package_name, package_version, 
-			fix_state, fixed_in, severity, summary, source_link, source_type,
-			first_seen_at, last_seen_at, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $11, $11)
-		ON CONFLICT (server_id, cve_id, package_name) 
-		DO UPDATE SET
-			package_version = EXCLUDED.package_version,
-			fix_state = EXCLUDED.fix_state,
-			fixed_in = EXCLUDED.fixed_in,
-			severity = EXCLUDED.severity,
-			source_link = EXCLUDED.source_link,
-			source_type = EXCLUDED.source_type,
-			last_seen_at = EXCLUDED.last_seen_at,
-			updated_at = EXCLUDED.updated_at,
-			resolved_at = NULL
-		WHERE NOT (findings.source_type = 'usn' AND EXCLUDED.source_type = 'cve')
-	`, serverID, cveID, pkg.Name, pkg.Version,
-		fixState, fixedVersion, severity, def.Title, sourceLink, sourceType, now)
+	_, err := s.db.Exec(ctx, upsertFindingQuery,
+		serverID, cveID, pkg.Name, pkg.Version,
+		fixState, fixedVersion, fixPocket, severity, def.Title, sourceLink, sourceType, now)
 
 	return err
 }
+
+// findingSourceWins is true when the incoming source ($11) is at least as
+// authoritative as the one already on the row.
+const findingSourceWins = `finding_source_rank($11) >= finding_source_rank(findings.source_type)`
+
+// upsertFindingQuery is assembled once: it is executed for every single finding
+// of every scan.
+var upsertFindingQuery = fmt.Sprintf(`
+	INSERT INTO findings (
+		server_id, cve_id, package_name, package_version,
+		fix_state, fixed_in, fix_pocket, severity, summary, source_link, source_type,
+		first_seen_at, last_seen_at, created_at, updated_at
+	) VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9, $10, $11, $12, $12, $12, $12)
+	ON CONFLICT (server_id, cve_id, package_name)
+	DO UPDATE SET
+		package_version = CASE WHEN %[1]s THEN EXCLUDED.package_version ELSE findings.package_version END,
+		fix_state       = CASE WHEN %[1]s THEN EXCLUDED.fix_state       ELSE findings.fix_state       END,
+		fixed_in        = CASE WHEN %[1]s THEN EXCLUDED.fixed_in        ELSE findings.fixed_in        END,
+		severity        = CASE WHEN %[1]s THEN EXCLUDED.severity        ELSE findings.severity        END,
+		summary         = CASE WHEN %[1]s THEN EXCLUDED.summary         ELSE findings.summary         END,
+		source_link     = CASE WHEN %[1]s THEN EXCLUDED.source_link     ELSE findings.source_link     END,
+		source_type     = CASE WHEN %[1]s THEN EXCLUDED.source_type     ELSE findings.source_type     END,
+		fix_pocket      = CASE WHEN $7::text IS NULL THEN findings.fix_pocket ELSE NULLIF($7, '') END,
+		last_seen_at    = EXCLUDED.last_seen_at,
+		updated_at      = EXCLUDED.updated_at,
+		resolved_at     = NULL
+`, findingSourceWins)
 
 func mapSeverity(ovalSeverity string) string {
 	switch ovalSeverity {

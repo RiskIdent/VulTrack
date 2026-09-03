@@ -271,8 +271,8 @@ CREATE TABLE IF NOT EXISTS oval_tests (
     source_id INTEGER REFERENCES oval_sources(id) ON DELETE CASCADE,
     oval_id VARCHAR(255) NOT NULL,            -- e.g., 'oval:com.ubuntu.noble:tst:100' (CVE OVAL uses longer IDs)
     test_type VARCHAR(50) NOT NULL,           -- 'dpkginfo_test', 'rpminfo_test', etc.
-    object_id INTEGER,                        -- References oval_objects
-    state_id INTEGER,                         -- References oval_states
+    object_ref VARCHAR(255),                  -- oval_id of the referenced oval_objects row
+    state_ref VARCHAR(255),                   -- oval_id of the referenced oval_states row
     comment TEXT,
     UNIQUE(source_id, oval_id)
 );
@@ -281,9 +281,10 @@ CREATE TABLE IF NOT EXISTS oval_tests (
 CREATE TABLE IF NOT EXISTS oval_objects (
     id SERIAL PRIMARY KEY,
     source_id INTEGER REFERENCES oval_sources(id) ON DELETE CASCADE,
-    oval_id VARCHAR(255) NOT NULL,            -- e.g., 'oval:com.ubuntu.noble:obj:100' (CVE OVAL uses longer IDs with pkg name)
+    oval_id VARCHAR(255) NOT NULL,            -- e.g., 'oval:com.ubuntu.noble:obj:100'
     object_type VARCHAR(50) NOT NULL,         -- 'dpkginfo_object', 'rpminfo_object', etc.
-    name VARCHAR(255),                        -- Package name or pattern
+    name VARCHAR(255),                        -- First package name (for single-name display)
+    names TEXT[],                             -- All package names the object matches
     UNIQUE(source_id, oval_id)
 );
 
@@ -654,3 +655,146 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 -- never map to two tokens and duplicate inserts are rejected at the DB layer.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_token_hash
     ON api_tokens(token_hash);
+
+-- ============================================================================
+-- OVAL: store the real test -> object / test -> state references
+-- ============================================================================
+-- Tests used to be linked to their object and state by guessing that all three
+-- OVAL IDs share the same numeric suffix (oval:ns:tst:123 -> oval:ns:obj:123).
+-- Canonical reuses objects and states across tests, so that guess silently
+-- dropped 660/1162 (USN) and 965/3391 (CVE) package tests in the Ubuntu 24.04
+-- feeds and stripped the version comparison off others. The refs are now stored
+-- verbatim and joined on.
+--
+-- oval_objects.names holds every binary package a dpkginfo/rpminfo object
+-- expands to (previously encoded as one row per name with a synthetic
+-- "oval:ns:obj:123:pkgname" ID, which broke the object_ref equality join).
+
+ALTER TABLE oval_objects ADD COLUMN IF NOT EXISTS names TEXT[];
+ALTER TABLE oval_tests   ADD COLUMN IF NOT EXISTS state_ref VARCHAR(255);
+
+-- object_id/state_id were meant to hold the resolved links but were never
+-- populated, which is what made the ID-suffix guess necessary in the first place.
+ALTER TABLE oval_tests DROP COLUMN IF EXISTS object_id;
+ALTER TABLE oval_tests DROP COLUMN IF EXISTS state_id;
+
+DO $$
+BEGIN
+  -- object_ref is the sentinel for this migration: stored OVAL data predates the
+  -- reference columns and cannot be repaired in place, so drop it and let the
+  -- syncer re-import every enabled source (last_sync_at = NULL forces a sync).
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'oval_tests'
+      AND column_name = 'object_ref'
+  ) THEN
+    ALTER TABLE oval_tests ADD COLUMN object_ref VARCHAR(255);
+
+    TRUNCATE oval_definitions, oval_tests, oval_objects, oval_states CASCADE;
+
+    UPDATE oval_sources
+    SET last_sync_at = NULL, sync_status = 'pending', definition_count = 0, sync_error = NULL;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_oval_tests_object_ref ON oval_tests(source_id, object_ref);
+CREATE INDEX IF NOT EXISTS idx_oval_tests_state_ref ON oval_tests(source_id, state_ref);
+CREATE INDEX IF NOT EXISTS idx_oval_tests_source_type ON oval_tests(source_id, test_type);
+CREATE INDEX IF NOT EXISTS idx_oval_objects_names ON oval_objects USING GIN(names);
+
+-- ============================================================================
+-- Ubuntu package vulnerability feed (OVAL source_type 'pkg')
+-- ============================================================================
+-- Canonical publishes com.ubuntu.<series>.pkg.json.xz next to the OVAL files.
+-- It is what `pro cves` evaluates: a complete source -> binary -> version matrix
+-- plus a per-source-package CVE status. It closes two gaps in the OVAL feeds:
+-- binary packages that OVAL's constant_variables do not enumerate, and CVSS
+-- scores, Canonical triage notes and mitigations that VulTrack otherwise has to
+-- source from NVD (rate-limited) or does not have at all.
+--
+-- The feed is optional: a distribution without url_template_pkg never gets a
+-- 'pkg' source, and a source whose feed is missing simply fails its own sync.
+
+ALTER TABLE oval_distributions ADD COLUMN IF NOT EXISTS url_template_pkg TEXT;
+
+-- Pocket a fix comes from ('security', 'updates', 'esm-infra', 'esm-apps', ...).
+-- An esm-* pocket means the fix needs an Ubuntu Pro subscription.
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS fix_pocket VARCHAR(30);
+
+-- Source packages of the feed. is_kernel marks the 53 kernel source packages,
+-- which are excluded from detection: they carry 95% of the feed's CVE statuses,
+-- and OVAL already covers the kernel through uname tests against the RUNNING
+-- kernel, which is both more accurate and far less noisy than reporting every
+-- installed kernel's binary packages. Their metadata is still imported, because
+-- the OVAL kernel findings benefit from it.
+CREATE TABLE IF NOT EXISTS pkg_source_packages (
+    id        BIGSERIAL PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES oval_sources(id) ON DELETE CASCADE,
+    name      VARCHAR(255) NOT NULL,
+    is_kernel BOOLEAN NOT NULL DEFAULT false,
+    UNIQUE (source_id, name)
+);
+
+-- source_version -> binary package versions. Needed because a CVE is fixed in a
+-- SOURCE version while a server reports installed BINARY versions.
+CREATE TABLE IF NOT EXISTS pkg_binary_versions (
+    id             BIGSERIAL PRIMARY KEY,
+    source_id      INTEGER NOT NULL REFERENCES oval_sources(id) ON DELETE CASCADE,
+    source_package VARCHAR(255) NOT NULL,
+    source_version VARCHAR(255) NOT NULL,
+    binary_package VARCHAR(255) NOT NULL,
+    binary_version VARCHAR(255) NOT NULL,
+    pocket         VARCHAR(30),
+    UNIQUE (source_id, source_package, source_version, binary_package)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pkg_binary_versions_binary
+    ON pkg_binary_versions(source_id, binary_package);
+
+-- Per source package, the status Canonical tracks for a CVE. 'not-vulnerable'
+-- rows are not imported: they are 56% of the feed and can never yield a finding.
+CREATE TABLE IF NOT EXISTS pkg_cve_status (
+    id                   BIGSERIAL PRIMARY KEY,
+    source_id            INTEGER NOT NULL REFERENCES oval_sources(id) ON DELETE CASCADE,
+    source_package       VARCHAR(255) NOT NULL,
+    cve_id               VARCHAR(30) NOT NULL,
+    status               VARCHAR(20) NOT NULL,   -- 'vulnerable' | 'fixed'
+    source_fixed_version VARCHAR(255),            -- set iff status = 'fixed'
+    UNIQUE (source_id, source_package, cve_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pkg_cve_status_source_package
+    ON pkg_cve_status(source_id, source_package);
+
+-- Per-CVE metadata from the feed, for every CVE the feed knows about.
+CREATE TABLE IF NOT EXISTS pkg_cve_metadata (
+    id              BIGSERIAL PRIMARY KEY,
+    source_id       INTEGER NOT NULL REFERENCES oval_sources(id) ON DELETE CASCADE,
+    cve_id          VARCHAR(30) NOT NULL,
+    ubuntu_priority VARCHAR(20),
+    cvss_score      DECIMAL(3,1),
+    cvss_severity   VARCHAR(20),
+    description     TEXT,
+    notes           TEXT[],
+    mitigation      TEXT,
+    published_at    TIMESTAMP,
+    UNIQUE (source_id, cve_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pkg_cve_metadata_cve ON pkg_cve_metadata(cve_id);
+
+-- Finding precedence. A USN advisory is the most specific statement Ubuntu
+-- makes about a package; the per-CVE OVAL adds the vendor's triage state
+-- (will_not_fix, deferred); the package feed only distinguishes vulnerable from
+-- fixed. A weaker source must therefore never overwrite what a stronger one
+-- determined. This is the single definition of that order.
+CREATE OR REPLACE FUNCTION finding_source_rank(p_source_type TEXT) RETURNS INT
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $fn$
+    SELECT CASE p_source_type
+        WHEN 'usn' THEN 3
+        WHEN 'cve' THEN 2
+        WHEN 'pkg' THEN 1
+        ELSE 0
+    END
+$fn$;

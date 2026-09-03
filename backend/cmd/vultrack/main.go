@@ -86,9 +86,18 @@ func main() {
 	// Report schedule service
 	reportScheduleService := services.NewReportScheduleService(db)
 
-	// OVAL services
+	// OVAL services, plus Canonical's package vulnerability feed
 	ovalService := services.NewOVALService(db)
-	ovalSyncer := oval.NewSyncer(ovalService, settingsService)
+	pkgFeedService := services.NewPkgFeedService(db)
+	ovalSyncer := oval.NewSyncer(ovalService, settingsService, pkgFeedService)
+
+	// Give already-enabled distribution versions the sources their distribution
+	// has gained since, so an upgrade picks up the package feed on its own.
+	if created, err := ovalService.EnsureOptionalSources(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("Failed to create newly available OVAL sources")
+	} else if created > 0 {
+		log.Info().Int("created", created).Msg("Created newly available OVAL sources")
+	}
 
 	// NVD syncer
 	nvdSyncer := nvd.New(db, settingsService)
@@ -101,7 +110,7 @@ func main() {
 	vexSyncer := vex.New(vexService, settingsService)
 
 	// Vulnerability scanner + scan queue
-	vulnScanner := scanner.NewScanner(db, vexService)
+	vulnScanner := scanner.NewScanner(db, vexService, pkgFeedService)
 	scanQ := scanqueue.New(db, vulnScanner, cfg)
 
 	// AI assessment service + queue (inactive when ANTHROPIC_API_KEY is unset)

@@ -38,7 +38,8 @@ type Finding struct {
 	Severity       string     `json:"severity"`
 	Summary        string     `json:"summary"`
 	SourceLink     string     `json:"sourceLink"`
-	SourceType     string     `json:"sourceType,omitempty"` // 'usn' or 'cve' (OVAL source); empty = legacy
+	SourceType     string     `json:"sourceType,omitempty"` // 'usn', 'cve' or 'pkg'; empty = legacy
+	FixPocket      string     `json:"fixPocket,omitempty"`  // pocket the fix comes from; 'esm-*' needs Ubuntu Pro
 	FirstSeenAt    time.Time  `json:"firstSeenAt"`
 	LastSeenAt     time.Time  `json:"lastSeenAt"`
 	ResolvedAt     *time.Time `json:"resolvedAt"`
@@ -69,6 +70,13 @@ type Finding struct {
 	// VEX enrichment (Ubuntu VEX data)
 	VexStatus        *string `json:"vexStatus,omitempty"`
 	VexJustification *string `json:"vexJustification,omitempty"`
+
+	// Enrichment from Canonical's package vulnerability feed. UbuntuPriority is
+	// the vendor's triage priority; Notes and Mitigation are written by the
+	// Ubuntu Security team and say more about real-world impact than CVSS does.
+	UbuntuPriority   string   `json:"ubuntuPriority,omitempty"`
+	UbuntuNotes      []string `json:"ubuntuNotes,omitempty"`
+	UbuntuMitigation string   `json:"ubuntuMitigation,omitempty"`
 }
 
 // PackageFinding represents a single package-level entry inside a GroupedFinding.
@@ -78,6 +86,7 @@ type PackageFinding struct {
 	Version          string     `json:"version"`
 	FixedIn          string     `json:"fixedIn"`
 	FixState         string     `json:"fixState"`
+	FixPocket        string     `json:"fixPocket,omitempty"`
 	FirstSeenAt      time.Time  `json:"firstSeenAt"`
 	LastSeenAt       time.Time  `json:"lastSeenAt"`
 	ResolvedAt       *time.Time `json:"resolvedAt,omitempty"`
@@ -456,6 +465,7 @@ type OVALDistribution struct {
 	DisplayName    string          `json:"displayName"`    // 'Ubuntu', 'Debian', etc.
 	URLTemplate    string          `json:"urlTemplate"`    // USN / primary OVAL URL template
 	URLTemplateCve string          `json:"urlTemplateCve"` // Optional CVE OVAL URL template
+	URLTemplatePkg string          `json:"urlTemplatePkg"` // Optional package vulnerability feed template
 	PackageManager string          `json:"packageManager"` // 'dpkg' or 'rpm'
 	Versions       []DistroVersion `json:"versions"`       // Available versions
 }
@@ -466,6 +476,18 @@ type DistroVersion struct {
 	Codename string `json:"codename,omitempty"`
 	LTS      bool   `json:"lts,omitempty"`
 }
+
+// Vulnerability source types. They also order finding precedence: a USN
+// advisory is the most specific statement Ubuntu makes, the per-CVE OVAL adds
+// the vendor's triage state (will_not_fix, deferred), and the package feed only
+// distinguishes vulnerable from fixed — so a finding from a weaker source must
+// never overwrite one from a stronger source. That order is defined once, by
+// the finding_source_rank() SQL function.
+const (
+	SourceTypeUSN = "usn" // Ubuntu Security Notice OVAL
+	SourceTypeCVE = "cve" // per-CVE OVAL
+	SourceTypePkg = "pkg" // Canonical's package vulnerability feed (pkg.json)
+)
 
 // OVALSource represents a user-enabled OVAL source for a specific distribution version
 type OVALSource struct {

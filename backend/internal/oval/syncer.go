@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"github.com/ulikunitz/xz"
 
 	"github.com/vultrack/vultrack/internal/models"
 	"github.com/vultrack/vultrack/internal/services"
@@ -21,7 +22,10 @@ import (
 type Syncer struct {
 	ovalService     *services.OVALService
 	settingsService *services.SettingsService
-	httpClient      *http.Client
+	// pkgFeedService is optional: without it, sources of type 'pkg' are skipped
+	// and VulTrack behaves exactly as it did with the OVAL feeds alone.
+	pkgFeedService *services.PkgFeedService
+	httpClient     *http.Client
 
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
@@ -29,11 +33,13 @@ type Syncer struct {
 	running map[int64]bool // Track running syncs by source ID
 }
 
-// NewSyncer creates a new OVAL Syncer
-func NewSyncer(ovalService *services.OVALService, settingsService *services.SettingsService) *Syncer {
+// NewSyncer creates a new OVAL Syncer. pkgFeedService may be nil, in which case
+// Canonical's package vulnerability feed is not imported.
+func NewSyncer(ovalService *services.OVALService, settingsService *services.SettingsService, pkgFeedService *services.PkgFeedService) *Syncer {
 	return &Syncer{
 		ovalService:     ovalService,
 		settingsService: settingsService,
+		pkgFeedService:  pkgFeedService,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Minute, // OVAL files can be large
 		},
@@ -229,15 +235,23 @@ func (s *Syncer) SyncSource(ctx context.Context, sourceID int64) error {
 		log.Warn().Err(err).Msg("Failed to create sync status")
 	}
 
-	// Download OVAL file
-	xmlData, err := s.downloadOVAL(ctx, source.URL)
-	if err != nil {
-		errMsg := fmt.Sprintf("download failed: %v", err)
+	fail := func(stage string, cause error) error {
+		errMsg := fmt.Sprintf("%s failed: %v", stage, cause)
 		s.ovalService.UpdateSyncStatus(ctx, sourceID, "failed", errMsg)
 		if syncStatus != nil {
 			s.ovalService.CompleteSyncStatus(ctx, syncStatus.ID, "failed", errMsg)
 		}
-		return fmt.Errorf("failed to download OVAL: %w", err)
+		return fmt.Errorf("failed to %s %s source: %w", stage, source.SourceType, cause)
+	}
+
+	if source.SourceType == models.SourceTypePkg {
+		return s.syncPkgSource(ctx, source, syncStatus, fail)
+	}
+
+	// Download OVAL file
+	xmlData, err := s.downloadOVAL(ctx, source.URL)
+	if err != nil {
+		return fail("download", err)
 	}
 
 	log.Info().
@@ -250,12 +264,13 @@ func (s *Syncer) SyncSource(ctx context.Context, sourceID int64) error {
 	parser := NewParser(s.ovalService)
 	stats, err := parser.ParseAndStore(ctx, sourceID, xmlData)
 	if err != nil {
-		errMsg := fmt.Sprintf("parse failed: %v", err)
-		s.ovalService.UpdateSyncStatus(ctx, sourceID, "failed", errMsg)
-		if syncStatus != nil {
-			s.ovalService.CompleteSyncStatus(ctx, syncStatus.ID, "failed", errMsg)
-		}
-		return fmt.Errorf("failed to parse OVAL: %w", err)
+		return fail("parse", err)
+	}
+
+	// The import replaced this source's whole dataset; refresh planner
+	// statistics so the following scans do not run on stale ones.
+	if err := s.ovalService.AnalyzeOVALTables(ctx); err != nil {
+		log.Warn().Err(err).Msg("Failed to refresh OVAL table statistics; scans may be slow until autovacuum runs")
 	}
 
 	// Update sync status
@@ -276,6 +291,86 @@ func (s *Syncer) SyncSource(ctx context.Context, sourceID int64) error {
 		Msg("OVAL sync completed")
 
 	return nil
+}
+
+// syncPkgSource imports Canonical's package vulnerability feed for a source of
+// type 'pkg'. The feed is streamed straight from the HTTP response through the
+// xz decompressor into the parser: uncompressed it is around 170 MB, which is
+// not worth holding in memory.
+func (s *Syncer) syncPkgSource(ctx context.Context, source *models.OVALSource, syncStatus *models.SyncStatus, fail func(string, error) error) error {
+	if s.pkgFeedService == nil {
+		return fail("import", fmt.Errorf("package vulnerability feed support is not configured"))
+	}
+
+	body, err := s.openStream(ctx, source.URL)
+	if err != nil {
+		return fail("download", err)
+	}
+	defer body.Close()
+
+	xzReader, err := xz.NewReader(body)
+	if err != nil {
+		return fail("download", fmt.Errorf("failed to open xz stream: %w", err))
+	}
+
+	stats, err := NewPkgParser(s.pkgFeedService).ParseAndStore(ctx, source.ID, xzReader)
+	if err != nil {
+		return fail("parse", err)
+	}
+
+	// The import replaced this source's whole dataset; refresh planner
+	// statistics so the following scans do not run on stale ones.
+	if err := s.pkgFeedService.AnalyzePkgTables(ctx); err != nil {
+		log.Warn().Err(err).Msg("Failed to refresh package feed statistics; scans may be slow until autovacuum runs")
+	}
+
+	// Fill CVSS scores and descriptions NVD has not delivered yet.
+	backfilled, err := s.pkgFeedService.BackfillCVECatalog(ctx, source.ID)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to backfill the CVE catalog from the package feed")
+	}
+
+	s.ovalService.UpdateSyncStatus(ctx, source.ID, "success", "")
+	if syncStatus != nil {
+		s.ovalService.UpdateSyncProgress(ctx, syncStatus.ID, stats.CVEStatuses)
+		s.ovalService.CompleteSyncStatus(ctx, syncStatus.ID, "success", "")
+	}
+
+	log.Info().
+		Str("distribution", source.Distribution).
+		Str("version", source.Version).
+		Str("sourceType", source.SourceType).
+		Int("sourcePackages", stats.SourcePackages).
+		Int("kernelPackages", stats.KernelPackages).
+		Int("binaryVersions", stats.BinaryVersions).
+		Int("cveStatuses", stats.CVEStatuses).
+		Int("cveMetadata", stats.CVEMetadata).
+		Int("skippedNotVulnerable", stats.SkippedStatus).
+		Int64("cveCatalogBackfilled", backfilled).
+		Msg("Package vulnerability feed sync completed")
+
+	return nil
+}
+
+// openStream performs the GET and returns the undecoded response body. The
+// caller closes it and applies whatever decompression the format needs.
+func (s *Syncer) openStream(ctx context.Context, url string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "VulTrack/1.0")
+	req.Header.Set("Accept", "application/json, application/x-xz")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+	return resp.Body, nil
 }
 
 // downloadOVAL downloads an OVAL file from the given URL

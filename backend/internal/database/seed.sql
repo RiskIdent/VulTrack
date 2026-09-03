@@ -6,10 +6,11 @@
 -- OVAL DISTRIBUTIONS (Ubuntu only)
 -- ============================================================================
 
-INSERT INTO oval_distributions (name, display_name, url_template, url_template_cve, package_manager, versions) VALUES
+INSERT INTO oval_distributions (name, display_name, url_template, url_template_cve, url_template_pkg, package_manager, versions) VALUES
 ('ubuntu', 'Ubuntu',
  'https://security-metadata.canonical.com/oval/com.ubuntu.{codename}.usn.oval.xml.bz2',
  'https://security-metadata.canonical.com/oval/com.ubuntu.{codename}.cve.oval.xml.bz2',
+ 'https://security-metadata.canonical.com/oval/com.ubuntu.{codename}.pkg.json.xz',
  'dpkg',
  '[
    {"version": "20.04", "codename": "focal", "lts": true},
@@ -22,6 +23,7 @@ ON CONFLICT (name) DO UPDATE SET
     display_name = EXCLUDED.display_name,
     url_template = EXCLUDED.url_template,
     url_template_cve = EXCLUDED.url_template_cve,
+    url_template_pkg = EXCLUDED.url_template_pkg,
     package_manager = EXCLUDED.package_manager,
     versions = EXCLUDED.versions;
 

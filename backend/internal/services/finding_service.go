@@ -99,7 +99,7 @@ func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]mo
 	selectQuery := `
 		SELECT
 			f.id, f.server_id, f.cve_id, f.package_name, COALESCE(f.package_version, ''),
-			COALESCE(f.fix_state, ''), COALESCE(f.fixed_in, ''), f.cvss3_score,
+			COALESCE(f.fix_state, ''), COALESCE(f.fixed_in, ''), COALESCE(f.fix_pocket, ''), f.cvss3_score,
 			COALESCE(f.severity, ''), COALESCE(f.source_link, ''),
 			COALESCE(f.source_type, ''),
 			f.first_seen_at, f.last_seen_at, f.resolved_at, f.created_at, f.updated_at,
@@ -129,7 +129,7 @@ func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]mo
 		var f models.Finding
 		err := rows.Scan(
 			&f.ID, &f.ServerID, &f.CVEID, &f.PackageName, &f.PackageVersion,
-			&f.FixState, &f.FixedIn, &f.CVSS3Score, &f.Severity, &f.SourceLink,
+			&f.FixState, &f.FixedIn, &f.FixPocket, &f.CVSS3Score, &f.Severity, &f.SourceLink,
 			&f.SourceType,
 			&f.FirstSeenAt, &f.LastSeenAt, &f.ResolvedAt, &f.CreatedAt, &f.UpdatedAt,
 			&f.ServerName,
@@ -240,6 +240,7 @@ func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter
 				'version', COALESCE(f.package_version, ''),
 				'fixedIn', COALESCE(f.fixed_in, ''),
 				'fixState', COALESCE(f.fix_state, ''),
+				'fixPocket', COALESCE(f.fix_pocket, ''),
 				-- Cast naive timestamps to timestamptz so JSON gets a proper RFC 3339
 				-- offset suffix. Without this, Go's time.Time JSON unmarshal fails on
 				-- the offset-less form Postgres emits for "timestamp without time zone".
@@ -361,13 +362,13 @@ func findingsOrderBy(sortBy, sortOrder string) string {
 
 // TriageFilterOptions defines filter options for the triage queue
 type TriageFilterOptions struct {
-	Mode             string   // "cvss" or "vendor_severity"
-	CVSSThreshold    float64  // Used when Mode == "cvss"
-	VendorSeverities []string // Used when Mode == "vendor_severity"
-	IncludeUnrated   bool     // Include findings without vendor severity
-	HideVexNotAffected bool   // When true, exclude findings with vex_status = 'not_affected'
-	Limit            int
-	Offset           int
+	Mode               string   // "cvss" or "vendor_severity"
+	CVSSThreshold      float64  // Used when Mode == "cvss"
+	VendorSeverities   []string // Used when Mode == "vendor_severity"
+	IncludeUnrated     bool     // Include findings without vendor severity
+	HideVexNotAffected bool     // When true, exclude findings with vex_status = 'not_affected'
+	Limit              int
+	Offset             int
 }
 
 // GetTriageQueue returns findings that need assessment based on filter options
@@ -499,6 +500,10 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 			cve.published_at,
 			-- OVAL description (preferred over NVD)
 			COALESCE(oval_desc.description, ''),
+			-- Ubuntu package feed triage information
+			COALESCE(ubuntu.ubuntu_priority, ''),
+			COALESCE(ubuntu.notes, ARRAY[]::text[]),
+			COALESCE(ubuntu.mitigation, ''),
 			-- ExploitDB enrichment
 			COALESCE(exp.exploit_count, 0)::int,
 			COALESCE(exp.exploit_ids, ARRAY[]::int[]),
@@ -508,13 +513,42 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 		FROM findings f
 		JOIN servers srv ON f.server_id = srv.id
 		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id
+		-- OVAL descriptions are release-specific (they name the Ubuntu release, the
+		-- USN and the fixed package versions), so the definition must come from an
+		-- OVAL source matching this server's distribution release. Without that
+		-- filter the newest definition for the CVE won — typically from whichever
+		-- release synced last — and a 24.04 finding could be described with 26.04
+		-- update instructions. The finding's own source type is preferred so a USN
+		-- finding keeps its advisory text.
 		LEFT JOIN LATERAL (
 			SELECT od.description
 			FROM oval_definitions od
+			JOIN oval_sources os ON os.id = od.source_id
 			WHERE f.cve_id = ANY(od.cve_ids)
-			ORDER BY od.id DESC
+			  AND os.distribution = LOWER(srv.os_family)
+			  AND (
+			    os.version = srv.os_release
+			    OR (COALESCE(srv.os_codename, '') <> '' AND os.codename = srv.os_codename)
+			  )
+			ORDER BY (COALESCE(os.source_type, 'usn') = COALESCE(f.source_type, 'usn')) DESC,
+			         od.id DESC
 			LIMIT 1
 		) oval_desc ON true
+		-- Canonical's own triage information for this CVE on this server's release.
+		-- ubuntu_priority reflects real-world impact where CVSS often does not,
+		-- and notes/mitigation are free-text guidance nothing else provides.
+		LEFT JOIN LATERAL (
+			SELECT m.ubuntu_priority, m.notes, m.mitigation
+			FROM pkg_cve_metadata m
+			JOIN oval_sources os ON os.id = m.source_id
+			WHERE m.cve_id = f.cve_id
+			  AND os.distribution = LOWER(srv.os_family)
+			  AND (
+			    os.version = srv.os_release
+			    OR (COALESCE(srv.os_codename, '') <> '' AND os.codename = srv.os_codename)
+			  )
+			LIMIT 1
+		) ubuntu ON true
 		LEFT JOIN LATERAL (
 			SELECT 
 				COUNT(*) as exploit_count,
@@ -534,7 +568,7 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 
 	err := s.db.QueryRow(ctx, query, id).Scan(
 		&f.ID, &f.ServerID, &f.CVEID, &f.PackageName, &f.PackageVersion,
-		&f.FixState, &f.FixedIn, &f.CVSS3Score, &f.Severity, &f.Summary, &f.SourceLink,
+		&f.FixState, &f.FixedIn, &f.FixPocket, &f.CVSS3Score, &f.Severity, &f.Summary, &f.SourceLink,
 		&f.SourceType,
 		&f.FirstSeenAt, &f.LastSeenAt, &f.ResolvedAt, &f.CreatedAt, &f.UpdatedAt,
 		&f.ServerName,
@@ -542,6 +576,8 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 		&f.NVDDescription, &f.NVDCvss3Score, &f.CVSS3Vector, &f.CVSS3Severity, &f.CVSS2Score, &f.CWEIDs, &f.CVEPublishedAt,
 		// OVAL
 		&ovalDescription,
+		// Ubuntu package feed
+		&f.UbuntuPriority, &f.UbuntuNotes, &f.UbuntuMitigation,
 		// ExploitDB
 		&exploitCount, &exploitIDs, &hasVerified,
 		// VEX
@@ -659,7 +695,7 @@ func (s *FindingService) GetServersByCVE(ctx context.Context, cveID string) ([]m
 	query := `
 		SELECT 
 			f.id, f.server_id, f.cve_id, f.package_name, f.package_version,
-			f.fix_state, f.fixed_in, f.cvss3_score, f.severity, f.summary, f.source_link,
+			f.fix_state, f.fixed_in, COALESCE(f.fix_pocket, ''), f.cvss3_score, f.severity, f.summary, f.source_link,
 			COALESCE(f.source_type, ''),
 			f.first_seen_at, f.last_seen_at, f.resolved_at, f.created_at, f.updated_at,
 			srv.name as server_name
@@ -693,4 +729,3 @@ func (s *FindingService) GetServersByCVE(ctx context.Context, cveID string) ([]m
 
 	return findings, nil
 }
-

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, X, ExternalLink, AlertTriangle } from 'lucide-react';
-import { CVSSBadge, VendorSeverityBadge, FixStateBadge, VEXBadge } from '../components/SeverityBadge';
+import { CVSSBadge, VendorSeverityBadge, FixStateBadge, VEXBadge, SourceBadge, PocketBadge } from '../components/SeverityBadge';
 import { AIAssessmentCard } from '../components/AIAssessmentCard';
 import { getFindings, getFinding, getFindingsGrouped } from '../api/client';
 import type { Finding, GroupedFinding } from '../types';
@@ -606,15 +606,7 @@ export default function Findings() {
                   <div>
                     <div className="text-xs text-[#6b7280] uppercase tracking-wide mb-1">Source</div>
                     <div className="text-sm">
-                      {selectedFinding.sourceType ? (
-                        <span className={`px-2 py-1 rounded text-xs font-medium ${
-                          selectedFinding.sourceType === 'usn' ? 'bg-amber-600/20 text-amber-400' : 'bg-sky-600/20 text-sky-400'
-                        }`}>
-                          {selectedFinding.sourceType.toUpperCase()}
-                        </span>
-                      ) : (
-                        <span className="text-[#6b7280]">-</span>
-                      )}
+                      <SourceBadge sourceType={selectedFinding.sourceType} />
                     </div>
                   </div>
                   <div>
@@ -637,7 +629,10 @@ export default function Findings() {
                   </div>
                   <div>
                     <div className="text-xs text-[#6b7280] uppercase tracking-wide mb-1">Fixed In</div>
-                    <div className="text-sm text-[#4ade80] font-mono">{selectedFinding.fixedIn || '-'}</div>
+                    <div className="text-sm text-[#4ade80] font-mono flex flex-wrap items-center gap-2">
+                      <span>{selectedFinding.fixedIn || '-'}</span>
+                      <PocketBadge pocket={selectedFinding.fixPocket} />
+                    </div>
                   </div>
                   <div>
                     <div className="text-xs text-[#6b7280] uppercase tracking-wide mb-1">Fix State</div>
@@ -723,6 +718,35 @@ export default function Findings() {
                 <div>
                   <h3 className="text-lg font-semibold text-[#e8f5e9] mb-2">Description</h3>
                   <p className="text-[#a5d6a7] whitespace-pre-wrap">{selectedFinding.description || selectedFinding.nvdDescription || selectedFinding.summary}</p>
+                </div>
+              )}
+
+              {/* Ubuntu Security team's own triage notes, from Canonical's
+                  package vulnerability feed. Often explains why a CVE matters
+                  less (or more) on Ubuntu than the CVSS score suggests. */}
+              {((selectedFinding.ubuntuNotes?.length ?? 0) > 0 || selectedFinding.ubuntuMitigation) && (
+                <div>
+                  <h3 className="text-lg font-semibold text-[#e8f5e9] mb-2">
+                    Ubuntu Security Notes
+                    {selectedFinding.ubuntuPriority && (
+                      <span className="ml-2 text-xs font-normal text-[#6b7280]">
+                        vendor priority: {selectedFinding.ubuntuPriority}
+                      </span>
+                    )}
+                  </h3>
+                  {selectedFinding.ubuntuMitigation && (
+                    <div className="mb-3 p-3 rounded-lg bg-[#1a2420] border border-[#2d3f36]">
+                      <div className="text-xs text-[#6b7280] uppercase tracking-wide mb-1">Mitigation</div>
+                      <p className="text-[#a5d6a7] whitespace-pre-wrap text-sm">{selectedFinding.ubuntuMitigation}</p>
+                    </div>
+                  )}
+                  {(selectedFinding.ubuntuNotes?.length ?? 0) > 0 && (
+                    <ul className="space-y-1 list-disc list-inside">
+                      {selectedFinding.ubuntuNotes?.map((note, i) => (
+                        <li key={i} className="text-[#a5d6a7] whitespace-pre-wrap text-sm">{note}</li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               )}
 

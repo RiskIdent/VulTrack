@@ -30,7 +30,8 @@ func NewOVALService(db *pgxpool.Pool) *OVALService {
 // GetDistributions returns all known OVAL distributions
 func (s *OVALService) GetDistributions(ctx context.Context) ([]models.OVALDistribution, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, display_name, url_template, COALESCE(url_template_cve, ''), package_manager, versions
+		SELECT id, name, display_name, url_template, COALESCE(url_template_cve, ''),
+		       COALESCE(url_template_pkg, ''), package_manager, versions
 		FROM oval_distributions
 		ORDER BY display_name
 	`)
@@ -43,7 +44,8 @@ func (s *OVALService) GetDistributions(ctx context.Context) ([]models.OVALDistri
 	for rows.Next() {
 		var d models.OVALDistribution
 		var versionsJSON []byte
-		err := rows.Scan(&d.ID, &d.Name, &d.DisplayName, &d.URLTemplate, &d.URLTemplateCve, &d.PackageManager, &versionsJSON)
+		err := rows.Scan(&d.ID, &d.Name, &d.DisplayName, &d.URLTemplate, &d.URLTemplateCve,
+			&d.URLTemplatePkg, &d.PackageManager, &versionsJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -61,10 +63,12 @@ func (s *OVALService) GetDistributionByName(ctx context.Context, name string) (*
 	var d models.OVALDistribution
 	var versionsJSON []byte
 	err := s.db.QueryRow(ctx, `
-		SELECT id, name, display_name, url_template, COALESCE(url_template_cve, ''), package_manager, versions
+		SELECT id, name, display_name, url_template, COALESCE(url_template_cve, ''),
+		       COALESCE(url_template_pkg, ''), package_manager, versions
 		FROM oval_distributions
 		WHERE name = $1
-	`, name).Scan(&d.ID, &d.Name, &d.DisplayName, &d.URLTemplate, &d.URLTemplateCve, &d.PackageManager, &versionsJSON)
+	`, name).Scan(&d.ID, &d.Name, &d.DisplayName, &d.URLTemplate, &d.URLTemplateCve,
+		&d.URLTemplatePkg, &d.PackageManager, &versionsJSON)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -282,24 +286,107 @@ func (s *OVALService) EnableSource(ctx context.Context, distribution, version st
 	}
 
 	// Create USN source
-	usnURL := strings.ReplaceAll(distro.URLTemplate, "{version}", version)
-	usnURL = strings.ReplaceAll(usnURL, "{codename}", codename)
-	usnSource, err := s.CreateSource(ctx, distribution, version, "usn", codename, usnURL, distro.PackageManager)
+	usnURL := expandSourceURL(distro.URLTemplate, version, codename)
+	usnSource, err := s.CreateSource(ctx, distribution, version, models.SourceTypeUSN, codename, usnURL, distro.PackageManager)
 	if err != nil {
 		return nil, err
 	}
 
-	// Create CVE source if template is set
-	if distro.URLTemplateCve != "" {
-		cveURL := strings.ReplaceAll(distro.URLTemplateCve, "{version}", version)
-		cveURL = strings.ReplaceAll(cveURL, "{codename}", codename)
-		_, err = s.CreateSource(ctx, distribution, version, "cve", codename, cveURL, distro.PackageManager)
-		if err != nil {
+	// Create the CVE OVAL and package feed sources for distributions that
+	// publish them. A distribution without the template simply has no such
+	// source, which is how the package feed stays optional.
+	for _, optional := range []struct {
+		sourceType string
+		template   string
+	}{
+		{models.SourceTypeCVE, distro.URLTemplateCve},
+		{models.SourceTypePkg, distro.URLTemplatePkg},
+	} {
+		if optional.template == "" {
+			continue
+		}
+		url := expandSourceURL(optional.template, version, codename)
+		if _, err := s.CreateSource(ctx, distribution, version, optional.sourceType, codename, url, distro.PackageManager); err != nil {
 			return nil, err
 		}
 	}
 
 	return usnSource, nil
+}
+
+// expandSourceURL fills a distribution's URL template.
+func expandSourceURL(template, version, codename string) string {
+	url := strings.ReplaceAll(template, "{version}", version)
+	return strings.ReplaceAll(url, "{codename}", codename)
+}
+
+// EnsureOptionalSources creates the sources a distribution gained since its
+// versions were first enabled, so an upgrade does not require re-enabling them
+// by hand. Existing sources are left untouched, including their enabled state.
+//
+// Returns the number of sources created.
+func (s *OVALService) EnsureOptionalSources(ctx context.Context) (int, error) {
+	distributions, err := s.GetDistributions(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	created := 0
+	for _, distro := range distributions {
+		if distro.URLTemplatePkg == "" {
+			continue
+		}
+
+		// Only versions the operator already enabled get a package feed source.
+		rows, err := s.db.Query(ctx, `
+			SELECT DISTINCT version, COALESCE(codename, '')
+			FROM oval_sources
+			WHERE distribution = $1
+			  AND NOT EXISTS (
+			    SELECT 1 FROM oval_sources existing
+			    WHERE existing.distribution = oval_sources.distribution
+			      AND existing.version = oval_sources.version
+			      AND existing.source_type = $2
+			  )
+		`, distro.Name, models.SourceTypePkg)
+		if err != nil {
+			return created, err
+		}
+
+		type pending struct{ version, codename string }
+		var missing []pending
+		for rows.Next() {
+			var p pending
+			if err := rows.Scan(&p.version, &p.codename); err != nil {
+				rows.Close()
+				return created, err
+			}
+			missing = append(missing, p)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return created, err
+		}
+
+		for _, p := range missing {
+			codename := p.codename
+			if codename == "" {
+				for _, v := range distro.Versions {
+					if v.Version == p.version {
+						codename = v.Codename
+						break
+					}
+				}
+			}
+			url := expandSourceURL(distro.URLTemplatePkg, p.version, codename)
+			if _, err := s.CreateSource(ctx, distro.Name, p.version, models.SourceTypePkg, codename, url, distro.PackageManager); err != nil {
+				return created, fmt.Errorf("failed to create package feed source for %s %s: %w", distro.Name, p.version, err)
+			}
+			created++
+		}
+	}
+
+	return created, nil
 }
 
 // DisableSource disables an OVAL source
@@ -420,7 +507,18 @@ func (s *OVALService) GetDefinitions(ctx context.Context, filter OVALDefinitionF
 	}
 
 	if filter.Package != nil && *filter.Package != "" {
-		whereConditions = append(whereConditions, fmt.Sprintf("EXISTS (SELECT 1 FROM oval_criteria_tests oct JOIN oval_tests ot ON oct.test_id = ot.id JOIN oval_objects oo ON ot.source_id = oo.source_id WHERE oct.criteria_id IN (SELECT id FROM oval_criteria WHERE definition_id = od.id) AND oo.name ILIKE $%d)", argIndex))
+		// Objects must be joined through the test's object_ref, not merely through
+		// the shared source: joining on source_id alone matched every definition
+		// of a source that contained the package anywhere.
+		whereConditions = append(whereConditions, fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM oval_criteria oc
+			JOIN oval_criteria_tests oct ON oct.criteria_id = oc.id
+			JOIN oval_tests ot ON ot.id = oct.test_id
+			JOIN oval_objects oo ON oo.source_id = ot.source_id AND oo.oval_id = ot.object_ref
+			WHERE oc.definition_id = od.id
+			  AND EXISTS (SELECT 1 FROM unnest(oo.names) AS pkg WHERE pkg ILIKE $%d)
+		)`, argIndex))
 		args = append(args, "%"+*filter.Package+"%")
 		argIndex++
 	}
@@ -437,23 +535,23 @@ func (s *OVALService) GetDefinitions(ctx context.Context, filter OVALDefinitionF
 
 	whereClause := strings.Join(whereConditions, " AND ")
 
-	// Build ORDER BY
-	orderBy := "od.created_at DESC"
-	if filter.SortBy != "" {
-		switch filter.SortBy {
-		case "cveId":
-			orderBy = "od.cve_ids[1]"
-		case "severity":
-			orderBy = "od.severity"
-		case "createdAt":
-			orderBy = "od.created_at"
-		}
+	// Build ORDER BY. Column and direction are assembled separately so an unset
+	// SortBy cannot produce "od.created_at DESC DESC".
+	orderColumn := "od.created_at"
+	switch filter.SortBy {
+	case "cveId":
+		// The query selects DISTINCT rows, so the sort expression has to be part
+		// of the select list — hence the alias rather than od.cve_ids[1].
+		orderColumn = "sort_cve_id"
+	case "severity":
+		orderColumn = "od.severity"
 	}
+
+	direction := "DESC"
 	if filter.SortOrder == "asc" {
-		orderBy += " ASC"
-	} else {
-		orderBy += " DESC"
+		direction = "ASC"
 	}
+	orderBy := orderColumn + " " + direction
 
 	// Get total count
 	var total int
@@ -473,7 +571,8 @@ func (s *OVALService) GetDefinitions(ctx context.Context, filter OVALDefinitionF
 		SELECT DISTINCT
 			od.id, od.source_id, od.oval_id, od.class, od.title, od.description,
 			od.severity, od.cve_ids, od.created_at,
-			os.distribution, os.version, os.codename, COALESCE(os.source_type, 'usn')
+			os.distribution, os.version, os.codename, COALESCE(os.source_type, 'usn'),
+			od.cve_ids[1] AS sort_cve_id
 		FROM oval_definitions od
 		JOIN oval_sources os ON od.source_id = os.id
 		WHERE %s
@@ -491,142 +590,56 @@ func (s *OVALService) GetDefinitions(ctx context.Context, filter OVALDefinitionF
 	var definitions []OVALDefinitionWithSource
 	for rows.Next() {
 		var def OVALDefinitionWithSource
+		// sort_cve_id only exists to satisfy SELECT DISTINCT + ORDER BY; discard it.
+		var discardSortKey *string
 		err := rows.Scan(
 			&def.ID, &def.SourceID, &def.OvalID, &def.Class, &def.Title, &def.Description,
 			&def.Severity, &def.CVEIDs, &def.CreatedAt,
 			&def.Distribution, &def.Version, &def.Codename, &def.SourceType,
+			&discardSortKey,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
 
-		// Get affected packages for this definition
-		packages, err := s.getAffectedPackages(ctx, def.ID)
-		if err == nil {
-			def.AffectedPackages = packages
-		}
-
 		definitions = append(definitions, def)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	// Affected packages need their own query per definition, which cannot run
+	// while the rows above are still being streamed on the same connection.
+	for i := range definitions {
+		packages, err := s.getAffectedPackages(ctx, definitions[i].ID)
+		if err != nil {
+			return nil, 0, err
+		}
+		definitions[i].AffectedPackages = packages
 	}
 
 	return definitions, total, nil
 }
 
-// getAffectedPackages returns all package names affected by a definition
+// getAffectedPackages returns all package names affected by a definition,
+// resolved through each test's stored object_ref.
 func (s *OVALService) getAffectedPackages(ctx context.Context, definitionID int64) ([]string, error) {
-	// Check if definition has criteria
-	var hasCriteria bool
-	err := s.db.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM oval_criteria WHERE definition_id = $1)
-	`, definitionID).Scan(&hasCriteria)
-	if err != nil {
-		return nil, err
-	}
-
-	if !hasCriteria {
-		// Definition has no criteria, return empty list
-		return []string{}, nil
-	}
-
-	// Get all tests linked to this definition via criteria
-	testRows, err := s.db.Query(ctx, `
-		SELECT DISTINCT ot.id, ot.oval_id, ot.source_id, ot.test_type
-		FROM oval_criteria_tests oct
-		JOIN oval_tests ot ON oct.test_id = ot.id
-		WHERE oct.criteria_id IN (SELECT id FROM oval_criteria WHERE definition_id = $1)
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT pkg
+		FROM oval_criteria c
+		JOIN oval_criteria_tests ct ON ct.criteria_id = c.id
+		JOIN oval_tests t ON t.id = ct.test_id
+		JOIN oval_objects o ON o.source_id = t.source_id AND o.oval_id = t.object_ref
+		CROSS JOIN LATERAL unnest(o.names) AS pkg
+		WHERE c.definition_id = $1
+		ORDER BY pkg
 	`, definitionID)
-	if err != nil {
-		return nil, err
-	}
-	defer testRows.Close()
-
-	type testInfo struct {
-		id       int64
-		ovalID   string
-		sourceID int64
-		testType string
-	}
-	var tests []testInfo
-	hasKernelTests := false
-	hasPackageTests := false
-	for testRows.Next() {
-		var t testInfo
-		if err := testRows.Scan(&t.id, &t.ovalID, &t.sourceID, &t.testType); err != nil {
-			return nil, err
-		}
-		tests = append(tests, t)
-		if t.testType == "uname_test" || t.testType == "variable_test" {
-			hasKernelTests = true
-		} else {
-			hasPackageTests = true
-		}
-	}
-
-	if len(tests) == 0 {
-		return []string{}, nil
-	}
-
-	// If only kernel tests and no package tests, return "Kernel"
-	if hasKernelTests && !hasPackageTests {
-		return []string{"Kernel"}, nil
-	}
-
-	// Extract object OVAL IDs from test OVAL IDs using heuristic
-	// Test: oval:namespace:tst:123 -> Object: oval:namespace:obj:123
-	// Also handle var_ref expanded objects: oval:namespace:obj:123:pkgname
-	objectOvalIDs := make(map[string]bool)
-	sourceIDs := make(map[int64]bool)
-
-	for _, test := range tests {
-		sourceIDs[test.sourceID] = true
-
-		// Parse test OVAL ID: oval:namespace:tst:123
-		parts := strings.Split(test.ovalID, ":")
-		if len(parts) >= 4 && parts[2] == "tst" {
-			// Build object OVAL ID: oval:namespace:obj:123
-			objOvalID := fmt.Sprintf("%s:%s:obj:%s", parts[0], parts[1], parts[3])
-			objectOvalIDs[objOvalID] = true
-		}
-	}
-
-	if len(objectOvalIDs) == 0 {
-		return []string{}, nil
-	}
-
-	// Get package names from objects matching the derived OVAL IDs
-	// We need to match both exact OVAL IDs and prefix matches (for var_ref expansion)
-	objectIDList := make([]string, 0, len(objectOvalIDs))
-	for id := range objectOvalIDs {
-		objectIDList = append(objectIDList, id)
-	}
-
-	sourceIDList := make([]int64, 0, len(sourceIDs))
-	for id := range sourceIDs {
-		sourceIDList = append(sourceIDList, id)
-	}
-
-	// Build query with proper array handling
-	query := `
-		SELECT DISTINCT oo.name
-		FROM oval_objects oo
-		WHERE oo.source_id = ANY($1::bigint[])
-		AND (
-			oo.oval_id = ANY($2::text[])
-			OR EXISTS (
-				SELECT 1 FROM unnest($2::text[]) AS base_id
-				WHERE oo.oval_id LIKE base_id || ':%'
-			)
-		)
-		AND oo.name IS NOT NULL
-		ORDER BY oo.name
-	`
-	rows, err := s.db.Query(ctx, query, sourceIDList, objectIDList)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var packages []string
+	packages := []string{}
 	for rows.Next() {
 		var pkg string
 		if err := rows.Scan(&pkg); err != nil {
@@ -634,9 +647,29 @@ func (s *OVALService) getAffectedPackages(ctx context.Context, definitionID int6
 		}
 		packages = append(packages, pkg)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-	// If no packages found but kernel tests exist, return "Kernel"
-	if len(packages) == 0 && hasKernelTests {
+	if len(packages) > 0 {
+		return packages, nil
+	}
+
+	// Kernel definitions test the running kernel rather than a package.
+	var hasKernelTests bool
+	err = s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM oval_criteria c
+			JOIN oval_criteria_tests ct ON ct.criteria_id = c.id
+			JOIN oval_tests t ON t.id = ct.test_id
+			WHERE c.definition_id = $1 AND t.test_type IN ('uname_test', 'variable_test')
+		)
+	`, definitionID).Scan(&hasKernelTests)
+	if err != nil {
+		return nil, err
+	}
+	if hasKernelTests {
 		return []string{"Kernel"}, nil
 	}
 
@@ -718,156 +751,42 @@ func (s *OVALService) getExploitInfoForCVEs(ctx context.Context, cveIDs []string
 	return len(ids), ids, hasVerified
 }
 
-// getDefinitionTests returns all tests for a definition with object and state details
+// getDefinitionTests returns a definition's tests with the package names and
+// version comparison they actually reference (via object_ref/state_ref).
 func (s *OVALService) getDefinitionTests(ctx context.Context, definitionID int64) ([]OVALTestWithDetails, error) {
-	// Check if definition has criteria
-	var hasCriteria bool
-	err := s.db.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM oval_criteria WHERE definition_id = $1)
-	`, definitionID).Scan(&hasCriteria)
-	if err != nil {
-		return nil, err
-	}
-
-	if !hasCriteria {
-		// Definition has no criteria, return empty list
-		return []OVALTestWithDetails{}, nil
-	}
-
-	// First, get all tests linked to this definition
-	testRows, err := s.db.Query(ctx, `
-		SELECT DISTINCT ot.id, ot.oval_id, ot.test_type, COALESCE(ot.comment, ''), ot.source_id
-		FROM oval_criteria_tests oct
-		JOIN oval_tests ot ON oct.test_id = ot.id
-		WHERE oct.criteria_id IN (SELECT id FROM oval_criteria WHERE definition_id = $1)
-		ORDER BY ot.id
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT
+			t.id, t.oval_id, t.test_type, COALESCE(t.comment, ''),
+			COALESCE(o.names, ARRAY[]::text[]),
+			COALESCE(st.evr_operation, ''), COALESCE(st.evr_value, '')
+		FROM oval_criteria c
+		JOIN oval_criteria_tests ct ON ct.criteria_id = c.id
+		JOIN oval_tests t ON t.id = ct.test_id
+		LEFT JOIN oval_objects o ON o.source_id = t.source_id AND o.oval_id = t.object_ref
+		LEFT JOIN oval_states st ON st.source_id = t.source_id AND st.oval_id = t.state_ref
+		WHERE c.definition_id = $1
+		ORDER BY t.id
 	`, definitionID)
 	if err != nil {
 		return nil, err
 	}
-	defer testRows.Close()
+	defer rows.Close()
 
-	type testInfo struct {
-		id       int64
-		ovalID   string
-		testType string
-		comment  string
-		sourceID int64
-	}
-	var tests []testInfo
-	for testRows.Next() {
-		var t testInfo
-		if err := testRows.Scan(&t.id, &t.ovalID, &t.testType, &t.comment, &t.sourceID); err != nil {
+	result := []OVALTestWithDetails{}
+	for rows.Next() {
+		var test OVALTestWithDetails
+		if err := rows.Scan(
+			&test.ID, &test.OvalID, &test.TestType, &test.Comment,
+			&test.PackageNames, &test.EVROperation, &test.EVRValue,
+		); err != nil {
 			return nil, err
 		}
-		tests = append(tests, t)
-	}
-
-	if len(tests) == 0 {
-		return []OVALTestWithDetails{}, nil
-	}
-
-	// Load all objects and states for the source(s) to match them
-	sourceIDs := make(map[int64]bool)
-	for _, t := range tests {
-		sourceIDs[t.sourceID] = true
-	}
-	sourceIDList := make([]int64, 0, len(sourceIDs))
-	for id := range sourceIDs {
-		sourceIDList = append(sourceIDList, id)
-	}
-
-	// Load all objects
-	objectRows, err := s.db.Query(ctx, `
-		SELECT id, oval_id, name FROM oval_objects WHERE source_id = ANY($1::bigint[])
-	`, sourceIDList)
-	if err != nil {
-		return nil, err
-	}
-	defer objectRows.Close()
-
-	objects := make(map[string]string)           // exact oval_id -> name
-	objectsByPrefix := make(map[string][]string) // base_oval_id -> list of names
-	for objectRows.Next() {
-		var id int64
-		var ovalID, name string
-		if err := objectRows.Scan(&id, &ovalID, &name); err != nil {
-			return nil, err
+		if len(test.PackageNames) > 0 {
+			test.PackageName = test.PackageNames[0]
 		}
-		objects[ovalID] = name
-
-		// Also index by prefix for var_ref expansion
-		colonCount := strings.Count(ovalID, ":")
-		if colonCount >= 4 {
-			lastColon := strings.LastIndex(ovalID, ":")
-			if lastColon > 0 {
-				baseID := ovalID[:lastColon]
-				objectsByPrefix[baseID] = append(objectsByPrefix[baseID], name)
-			}
-		}
+		result = append(result, test)
 	}
-
-	// Load all states
-	stateRows, err := s.db.Query(ctx, `
-		SELECT id, oval_id, evr_operation, evr_value FROM oval_states WHERE source_id = ANY($1::bigint[])
-	`, sourceIDList)
-	if err != nil {
-		return nil, err
-	}
-	defer stateRows.Close()
-
-	type stateData struct {
-		operation string
-		value     string
-	}
-	states := make(map[string]stateData)
-	for stateRows.Next() {
-		var id int64
-		var ovalID, op, val string
-		if err := stateRows.Scan(&id, &ovalID, &op, &val); err != nil {
-			return nil, err
-		}
-		states[ovalID] = stateData{operation: op, value: val}
-	}
-
-	// Match tests to objects and states using OVAL ID heuristic
-	result := make([]OVALTestWithDetails, 0, len(tests))
-	for _, test := range tests {
-		testDetail := OVALTestWithDetails{
-			ID:       test.id,
-			OvalID:   test.ovalID,
-			TestType: test.testType,
-			Comment:  test.comment,
-		}
-
-		// Parse test OVAL ID: oval:namespace:tst:123
-		parts := strings.Split(test.ovalID, ":")
-		if len(parts) >= 4 && parts[2] == "tst" {
-			// Build object OVAL ID: oval:namespace:obj:123
-			objOvalID := fmt.Sprintf("%s:%s:obj:%s", parts[0], parts[1], parts[3])
-
-			// Try exact match first
-			if name, ok := objects[objOvalID]; ok {
-				testDetail.PackageName = name
-				testDetail.PackageNames = []string{name}
-			} else if names, ok := objectsByPrefix[objOvalID]; ok && len(names) > 0 {
-				// Multiple packages from var_ref expansion
-				testDetail.PackageNames = names
-				testDetail.PackageName = names[0] // First package for backwards compatibility
-			}
-
-			// Build state OVAL ID: oval:namespace:ste:123
-			steOvalID := fmt.Sprintf("%s:%s:ste:%s", parts[0], parts[1], parts[3])
-			if st, ok := states[steOvalID]; ok {
-				testDetail.EVROperation = st.operation
-				testDetail.EVRValue = st.value
-			}
-		}
-
-		result = append(result, testDetail)
-	}
-
-	return result, nil
+	return result, rows.Err()
 }
 
 // GetDefinitionCount returns the number of definitions for a source
@@ -1037,29 +956,42 @@ func (s *OVALService) InsertDefinition(ctx context.Context, tx pgx.Tx, sourceID 
 	return id, err
 }
 
-// InsertTest inserts an OVAL test
+// InsertTest inserts an OVAL test together with the OVAL IDs of the object and
+// state it references. Those references are the only reliable way to resolve a
+// test's package names and version comparison — Canonical reuses objects and
+// states across tests, so their numeric IDs must never be derived from the
+// test's own OVAL ID.
 func (s *OVALService) InsertTest(ctx context.Context, tx pgx.Tx, sourceID int64, ovalID, testType string, objectOvalID, stateOvalID, comment string) (int64, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `
-		INSERT INTO oval_tests (source_id, oval_id, test_type, comment)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO oval_tests (source_id, oval_id, test_type, object_ref, state_ref, comment)
+		VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6)
 		ON CONFLICT (source_id, oval_id) DO UPDATE SET
-			test_type = EXCLUDED.test_type, comment = EXCLUDED.comment
+			test_type = EXCLUDED.test_type, object_ref = EXCLUDED.object_ref,
+			state_ref = EXCLUDED.state_ref, comment = EXCLUDED.comment
 		RETURNING id
-	`, sourceID, ovalID, testType, comment).Scan(&id)
+	`, sourceID, ovalID, testType, objectOvalID, stateOvalID, comment).Scan(&id)
 	return id, err
 }
 
-// InsertObject inserts an OVAL object
-func (s *OVALService) InsertObject(ctx context.Context, tx pgx.Tx, sourceID int64, ovalID, objectType, name string) (int64, error) {
+// InsertObject inserts an OVAL object. names holds every binary package the
+// object expands to (a var_ref object covers all binaries of a source package);
+// it is empty for uname/variable objects, which carry no package name.
+func (s *OVALService) InsertObject(ctx context.Context, tx pgx.Tx, sourceID int64, ovalID, objectType string, names []string) (int64, error) {
+	// name keeps the first package for the list views that show a single name.
+	var primary string
+	if len(names) > 0 {
+		primary = names[0]
+	}
+
 	var id int64
 	err := tx.QueryRow(ctx, `
-		INSERT INTO oval_objects (source_id, oval_id, object_type, name)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO oval_objects (source_id, oval_id, object_type, name, names)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (source_id, oval_id) DO UPDATE SET
-			object_type = EXCLUDED.object_type, name = EXCLUDED.name
+			object_type = EXCLUDED.object_type, name = EXCLUDED.name, names = EXCLUDED.names
 		RETURNING id
-	`, sourceID, ovalID, objectType, name).Scan(&id)
+	`, sourceID, ovalID, objectType, primary, names).Scan(&id)
 	return id, err
 }
 
@@ -1097,11 +1029,19 @@ func (s *OVALService) LinkCriteriaToTest(ctx context.Context, tx pgx.Tx, criteri
 	return err
 }
 
-// UpdateTestReferences updates object_id and state_id references after all objects/states are inserted
-func (s *OVALService) UpdateTestReferences(ctx context.Context, tx pgx.Tx, sourceID int64) error {
-	// This will be called after parsing to resolve object/state references
-	// For now, we store the oval_ids and resolve them in the scanner
-	return nil
+// AnalyzeOVALTables refreshes planner statistics for the OVAL tables.
+//
+// A sync replaces the entire dataset of a source, which leaves the statistics
+// describing the previous contents (or, right after the initial import, no
+// statistics at all). Scans then get bad plans for the object/state lookups and
+// take several times longer until autovacuum catches up, so this runs right
+// after an import instead of waiting for it.
+func (s *OVALService) AnalyzeOVALTables(ctx context.Context) error {
+	_, err := s.db.Exec(ctx, `
+		ANALYZE oval_definitions, oval_criteria, oval_criteria_tests,
+		        oval_criteria_extend_definitions, oval_tests, oval_objects, oval_states
+	`)
+	return err
 }
 
 // BeginTx starts a new transaction
