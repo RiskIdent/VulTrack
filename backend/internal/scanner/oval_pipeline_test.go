@@ -6,29 +6,20 @@ package scanner_test
 // single flavour, existence-only package tests next to kernel tests, and objects
 // whose package names come from a constant_variable.
 //
-// Requires a throwaway PostgreSQL:
-//
-//	docker run -d --rm -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \
-//	    -e POSTGRES_DB=test -p 55432:5432 postgres:16-alpine
-//	VULTRACK_TEST_DATABASE_URL='postgres://test:test@127.0.0.1:55432/test' \
-//	    go test ./internal/scanner/ -run TestOVALPipeline
-//
-// The schema of that database is dropped and recreated, so never point it at a
-// database holding real data.
+// Requires a throwaway PostgreSQL; see internal/testdb for the setup command.
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/vultrack/vultrack/internal/database"
 	"github.com/vultrack/vultrack/internal/oval"
 	"github.com/vultrack/vultrack/internal/scanner"
 	"github.com/vultrack/vultrack/internal/services"
+	"github.com/vultrack/vultrack/internal/testdb"
 )
 
 // ovalFixture mirrors com.ubuntu.noble. The numeric parts of the tst/obj/ste IDs
@@ -308,27 +299,7 @@ func (f findingRow) String() string {
 
 func setupPipeline(t *testing.T) (*pgxpool.Pool, context.Context) {
 	t.Helper()
-
-	dsn := os.Getenv("VULTRACK_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("VULTRACK_TEST_DATABASE_URL not set; skipping OVAL pipeline integration test")
-	}
-
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect to test database: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	// Start from an empty schema so repeated runs are independent.
-	if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
-		t.Fatalf("reset test schema: %v", err)
-	}
-	if err := database.Migrate(pool); err != nil {
-		t.Fatalf("migrate test database: %v", err)
-	}
-	return pool, ctx
+	return testdb.Setup(t, "scanner_tests")
 }
 
 // importFixture stores the fixture as the CVE OVAL source for Ubuntu 24.04 and

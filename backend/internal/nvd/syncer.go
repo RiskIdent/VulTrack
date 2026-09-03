@@ -584,10 +584,14 @@ func (s *Syncer) isResumingSync(ctx context.Context) bool {
 func (s *Syncer) updateSyncStatus(ctx context.Context, status, errorMsg string, recordsProcessed int) {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO sync_status (source_type, source_name, status, last_sync_at, synced_until, error_message, records_processed, updated_at)
+		-- $1 is cast in every place it appears. Without the casts Postgres
+		-- deduces character varying from the status column and text from the
+		-- comparisons against untyped literals, and rejects the statement with
+		-- "inconsistent types deduced for parameter $1" (SQLSTATE 42P08).
 		VALUES (
-			'nvd', 'nvd', $1,
-			CASE WHEN $1 = 'success' THEN NOW() END,
-			CASE WHEN $1 = 'success' THEN NOW() END,
+			'nvd', 'nvd', $1::text,
+			CASE WHEN $1::text = 'success' THEN NOW() END,
+			CASE WHEN $1::text = 'success' THEN NOW() END,
 			$2, $3, NOW()
 		)
 		ON CONFLICT (source_type, source_name) DO UPDATE SET

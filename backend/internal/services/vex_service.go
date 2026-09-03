@@ -118,7 +118,11 @@ func (s *VEXService) GetLastSyncTime(ctx context.Context) (*time.Time, error) {
 func (s *VEXService) UpdateSyncStatus(ctx context.Context, status, errorMsg string, recordsProcessed int) {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO sync_status (source_type, source_name, status, last_sync_at, error_message, records_processed, updated_at)
-		VALUES ('vex', 'vex', $1, CASE WHEN $1 = 'success' THEN NOW() END, $2, $3, NOW())
+		-- $1 is cast in both places it appears. Without the casts Postgres
+		-- deduces character varying from the status column and text from the
+		-- comparison against an untyped literal, and rejects the statement with
+		-- "inconsistent types deduced for parameter $1" (SQLSTATE 42P08).
+		VALUES ('vex', 'vex', $1::text, CASE WHEN $1::text = 'success' THEN NOW() END, $2, $3, NOW())
 		ON CONFLICT (source_type, source_name) DO UPDATE SET
 			status            = EXCLUDED.status,
 			last_sync_at      = CASE
