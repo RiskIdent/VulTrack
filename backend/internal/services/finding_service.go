@@ -485,7 +485,7 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 	query := `
 		SELECT 
 			f.id, f.server_id, f.cve_id, f.package_name, COALESCE(f.package_version, ''),
-			COALESCE(f.fix_state, ''), COALESCE(f.fixed_in, ''), f.cvss3_score,
+			COALESCE(f.fix_state, ''), COALESCE(f.fixed_in, ''), COALESCE(f.fix_pocket, ''), f.cvss3_score,
 			COALESCE(f.severity, ''), COALESCE(f.summary, ''), COALESCE(f.source_link, ''),
 			COALESCE(f.source_type, ''),
 			f.first_seen_at, f.last_seen_at, f.resolved_at, f.created_at, f.updated_at,
@@ -716,7 +716,7 @@ func (s *FindingService) GetServersByCVE(ctx context.Context, cveID string) ([]m
 		var f models.Finding
 		err := rows.Scan(
 			&f.ID, &f.ServerID, &f.CVEID, &f.PackageName, &f.PackageVersion,
-			&f.FixState, &f.FixedIn, &f.CVSS3Score, &f.Severity, &f.Summary, &f.SourceLink,
+			&f.FixState, &f.FixedIn, &f.FixPocket, &f.CVSS3Score, &f.Severity, &f.Summary, &f.SourceLink,
 			&f.SourceType,
 			&f.FirstSeenAt, &f.LastSeenAt, &f.ResolvedAt, &f.CreatedAt, &f.UpdatedAt,
 			&f.ServerName,
@@ -727,5 +727,5 @@ func (s *FindingService) GetServersByCVE(ctx context.Context, cveID string) ([]m
 		findings = append(findings, f)
 	}
 
-	return findings, nil
+	return findings, rows.Err()
 }
