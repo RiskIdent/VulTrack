@@ -1310,7 +1310,7 @@ function DataSourcesTab() {
     syncing: boolean;
     lastSync: string | null;
     exploitCount: number;
-    exploitsWithCve: number;
+    withCVECount: number;
   } | null>(null);
   const [vexStatus, setVexStatus] = useState<{
     syncing: boolean;
@@ -1540,7 +1540,7 @@ function DataSourcesTab() {
           </div>
           <div className="bg-[#1a2420] rounded-lg p-4">
             <div className="text-2xl font-bold text-[#e8f5e9]">
-              {formatNumber(exploitStatus?.exploitsWithCve || 0)}
+              {formatNumber(exploitStatus?.withCVECount || 0)}
             </div>
             <div className="text-sm text-[#6b7280]">With CVE links</div>
           </div>

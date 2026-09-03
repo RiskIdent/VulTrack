@@ -670,7 +670,7 @@ export const getExploitDBStatus = () =>
     syncing: boolean;
     lastSync: string | null;
     exploitCount: number;
-    exploitsWithCve: number;
+    withCVECount: number;
   }>('/admin/exploitdb/status');
 
 export const triggerExploitDBSync = () =>
