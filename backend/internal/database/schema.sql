@@ -24,7 +24,11 @@ CREATE TABLE IF NOT EXISTS servers (
 
 -- Findings table
 CREATE TABLE IF NOT EXISTS findings (
-    id SERIAL PRIMARY KEY,
+    -- BIGSERIAL, not SERIAL: an ON CONFLICT upsert consumes a sequence value on
+    -- every call, including the ones that only update, so this sequence advances
+    -- once per finding per scan rather than once per row. See the migration at
+    -- the end of this file.
+    id BIGSERIAL PRIMARY KEY,
     server_id INTEGER REFERENCES servers(id) ON DELETE CASCADE,
     cve_id VARCHAR(30) NOT NULL,
     package_name VARCHAR(255) NOT NULL,
@@ -798,3 +802,38 @@ CREATE OR REPLACE FUNCTION finding_source_rank(p_source_type TEXT) RETURNS INT
         ELSE 0
     END
 $fn$;
+
+-- ============================================================================
+-- findings.id: widen to 64 bit
+-- ============================================================================
+-- INSERT ... ON CONFLICT DO UPDATE evaluates the column default before it
+-- detects the conflict, so every upsert consumes a sequence value even when it
+-- only updates an existing row. The scanner upserts every finding of every
+-- server on every scan, which advanced findings_id_seq by thousands per scan
+-- while the row count barely moved — roughly three orders of magnitude faster
+-- than the table grew.
+--
+-- On a production instance the 32-bit sequence hit its ceiling after a few
+-- months. From that point *no* finding could be written at all, not just new
+-- ones, and the resulting per-row error log filled the disk.
+--
+-- The rewrite takes an ACCESS EXCLUSIVE lock, so it is guarded to run only
+-- while the column is still 32 bit.
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'findings'
+      AND column_name = 'id'
+      AND data_type = 'integer'
+  ) THEN
+    RAISE NOTICE 'Widening findings.id to bigint; this rewrites the table';
+    ALTER TABLE findings ALTER COLUMN id TYPE bigint;
+  END IF;
+END $$;
+
+-- Cheap metadata change, and it must also run when the column was already
+-- widened by hand during an incident.
+ALTER SEQUENCE IF EXISTS findings_id_seq AS bigint MAXVALUE 9223372036854775807;

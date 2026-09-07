@@ -62,6 +62,10 @@ type DBCollector struct {
 	dbTransactions   *prometheus.Desc
 	dbBlocks         *prometheus.Desc
 	dbDeadlocksTotal *prometheus.Desc
+
+	// Sequence headroom. An exhausted sequence stops every write to its table
+	// and is otherwise invisible until it happens.
+	dbSequenceUsage *prometheus.Desc
 }
 
 func NewDBCollector(db *pgxpool.Pool) *DBCollector {
@@ -169,6 +173,14 @@ func NewDBCollector(db *pgxpool.Pool) *DBCollector {
 			"Cumulative deadlocks detected on the application database.",
 			nil, nil,
 		),
+		dbSequenceUsage: prometheus.NewDesc(
+			"vultrack_db_sequence_usage_ratio",
+			"How much of a sequence's range is consumed (0-1). An upsert consumes a "+
+				"value even when it only updates, so a sequence can approach its "+
+				"ceiling while its table barely grows; at 1.0 every insert into that "+
+				"table fails. Alert above 0.8.",
+			[]string{"sequence"}, nil,
+		),
 	}
 }
 
@@ -193,6 +205,7 @@ func (c *DBCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.dbTransactions
 	ch <- c.dbBlocks
 	ch <- c.dbDeadlocksTotal
+	ch <- c.dbSequenceUsage
 }
 
 func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
@@ -207,6 +220,34 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectSyncTimestamps(ctx, ch)
 	c.collectPoolStats(ch)
 	c.collectPostgresStats(ctx, ch)
+	c.collectSequenceUsage(ctx, ch)
+}
+
+// collectSequenceUsage reports how close each sequence is to its ceiling.
+//
+// pg_sequences is read rather than currval() so this needs no write privileges
+// and does not itself consume values. Sequences that have never been used report
+// a NULL last_value and are skipped.
+func (c *DBCollector) collectSequenceUsage(ctx context.Context, ch chan<- prometheus.Metric) {
+	rows, err := c.db.Query(ctx, `
+		SELECT schemaname || '.' || sequencename, last_value, max_value
+		FROM pg_sequences
+		WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+		  AND last_value IS NOT NULL
+		  AND max_value > 0
+	`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var lastValue, maxValue int64
+		if rows.Scan(&name, &lastValue, &maxValue) == nil {
+			ch <- prometheus.MustNewConstMetric(c.dbSequenceUsage, prometheus.GaugeValue,
+				float64(lastValue)/float64(maxValue), name)
+		}
+	}
 }
 
 func (c *DBCollector) collectFindings(ctx context.Context, ch chan<- prometheus.Metric) {
@@ -343,11 +384,11 @@ func (c *DBCollector) collectPoolStats(ch chan<- prometheus.Metric) {
 // collectPostgresStats reports server-side stats for the current database from pg_stat_database.
 func (c *DBCollector) collectPostgresStats(ctx context.Context, ch chan<- prometheus.Metric) {
 	var (
-		numbackends                    int64
-		xactCommit, xactRollback       int64
-		blksRead, blksHit              int64
-		deadlocks                      int64
-		dbSize                         int64
+		numbackends              int64
+		xactCommit, xactRollback int64
+		blksRead, blksHit        int64
+		deadlocks                int64
+		dbSize                   int64
 	)
 	err := c.db.QueryRow(ctx, `
 		SELECT

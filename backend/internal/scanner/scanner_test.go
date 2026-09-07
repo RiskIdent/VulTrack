@@ -1,8 +1,10 @@
 package scanner
 
 import (
+	"errors"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/vultrack/vultrack/internal/models"
@@ -405,5 +407,47 @@ func TestClassifyCriterionComment(t *testing.T) {
 		if got := classifyCriterionComment(comment); got != want {
 			t.Errorf("classifyCriterionComment(%q) = %q, want %q", comment, got, want)
 		}
+	}
+}
+
+// TestWriteErrorsBudget covers the guard that keeps a systemic database failure
+// from filling the disk: a scan writes thousands of findings, and before this
+// each failure produced a log line.
+func TestWriteErrorsBudget(t *testing.T) {
+	failure := errors.New("nextval: reached maximum value of sequence")
+	w := &writeErrors{}
+
+	// Only the first few failures are worth logging; they are all the same one.
+	logged := 0
+	for i := 0; i < 50; i++ {
+		if w.record(failure) {
+			logged++
+		}
+	}
+	if logged != writeErrorsLogged {
+		t.Errorf("logged %d failures, want %d", logged, writeErrorsLogged)
+	}
+
+	if !w.exhausted() {
+		t.Error("50 failures must exhaust the budget")
+	}
+	if w.err() == nil {
+		t.Fatal("err() must describe the accumulated failures")
+	}
+	if got := w.err().Error(); !strings.Contains(got, "50 finding writes failed") ||
+		!errors.Is(w.err(), failure) {
+		t.Errorf("err() = %q, want the count and the wrapped first cause", got)
+	}
+
+	// A single odd row must not abort a whole scan.
+	few := &writeErrors{}
+	few.record(failure)
+	if few.exhausted() {
+		t.Error("one failure must not exhaust the budget")
+	}
+
+	// And a clean scan reports nothing.
+	if (&writeErrors{}).err() != nil {
+		t.Error("err() must be nil when nothing failed")
 	}
 }

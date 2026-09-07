@@ -136,12 +136,16 @@ func (s *Scanner) ScanServer(ctx context.Context, serverID int64) (*ScanResult, 
 
 	kernelFilter := s.newKernelFeedFilter(ctx, serverID, sources, packageMap, kernel, server.PackageManager)
 	suppressedKernelFindings := 0
+	writeFailures := &writeErrors{}
 
 	// Process each source. Findings from a weaker source never overwrite a
 	// stronger one (see models.SourceTypeRank), so the order does not matter.
 	for _, source := range sources {
 		if source.SourceType == models.SourceTypePkg {
-			if err := s.scanPkgFeedSource(ctx, serverID, source, server, currentFindings, result); err != nil {
+			if err := s.scanPkgFeedSource(ctx, serverID, source, server, currentFindings, result, writeFailures); err != nil {
+				if writeFailures.exhausted() {
+					return nil, fmt.Errorf("scan of server %d aborted: %w", serverID, writeFailures.err())
+				}
 				// The package feed is supplementary: a release without it, or a
 				// source that has not synced yet, must not fail the whole scan.
 				log.Warn().Err(err).
@@ -220,15 +224,20 @@ func (s *Scanner) ScanServer(ctx context.Context, serverID int64) (*ScanResult, 
 						// Fixed version and fix_state come directly from the matching test/criterion
 						err := s.upsertFinding(ctx, serverID, cveID, pkgInfo.Package, def, pkgInfo.FixedIn, pkgInfo.FixState, server.OSFamily, source.SourceType)
 						if err != nil {
-							log.Warn().Err(err).
-								Str("cve", cveID).
-								Str("package", pkgInfo.Package.Name).
-								Str("fixState", pkgInfo.FixState).
-								Str("sourceType", source.SourceType).
-								Msg("Failed to upsert finding")
-						} else {
-							result.NewFindings++
+							if writeFailures.record(err) {
+								log.Warn().Err(err).
+									Str("cve", cveID).
+									Str("package", pkgInfo.Package.Name).
+									Str("fixState", pkgInfo.FixState).
+									Str("sourceType", source.SourceType).
+									Msg("Failed to upsert finding")
+							}
+							if writeFailures.exhausted() {
+								return nil, fmt.Errorf("scan of server %d aborted: %w", serverID, writeFailures.err())
+							}
+							continue
 						}
+						result.NewFindings++
 					}
 				}
 				continue
@@ -258,13 +267,18 @@ func (s *Scanner) ScanServer(ctx context.Context, serverID int64) (*ScanResult, 
 					}
 					err := s.upsertFinding(ctx, serverID, cveID, kernelPkg, def, "", "affected", server.OSFamily, source.SourceType)
 					if err != nil {
-						log.Warn().Err(err).
-							Str("cve", cveID).
-							Str("sourceType", source.SourceType).
-							Msg("Failed to upsert kernel finding")
-					} else {
-						result.NewFindings++
+						if writeFailures.record(err) {
+							log.Warn().Err(err).
+								Str("cve", cveID).
+								Str("sourceType", source.SourceType).
+								Msg("Failed to upsert kernel finding")
+						}
+						if writeFailures.exhausted() {
+							return nil, fmt.Errorf("scan of server %d aborted: %w", serverID, writeFailures.err())
+						}
+						continue
 					}
+					result.NewFindings++
 				}
 			}
 		}
@@ -954,6 +968,47 @@ func (s *Scanner) evaluateExtendDefinition(ctx context.Context, sourceID int64, 
 	return s.evaluateCriteriaNode(ctx, sourceID, rootCriteria, packages, tests, packageManager, kernel)
 }
 
+// writeErrorBudget bounds how many finding write failures one scan tolerates.
+//
+// A systemic database failure fails on every single row, and a scan writes
+// thousands. Logging each one has filled an 86 GB container log and taken the
+// disk — and with it the database — down before now. Past the budget the scan
+// gives up and reports the cause once, so the scan queue surfaces a failure
+// instead of the log doing it.
+const writeErrorBudget = 10
+
+// writeErrorsLogged caps how many individual failures are logged with detail.
+const writeErrorsLogged = 3
+
+// writeErrors accumulates finding write failures during one scan.
+type writeErrors struct {
+	count int
+	first error
+}
+
+// record notes a failure and reports whether the caller should log it. Only the
+// first few are worth logging: beyond that they are all the same failure.
+func (w *writeErrors) record(err error) bool {
+	w.count++
+	if w.first == nil {
+		w.first = err
+	}
+	return w.count <= writeErrorsLogged
+}
+
+// exhausted reports whether the scan should stop rather than keep failing.
+func (w *writeErrors) exhausted() bool {
+	return w.count > writeErrorBudget
+}
+
+// err describes the accumulated failures, or nil when there were none.
+func (w *writeErrors) err() error {
+	if w.first == nil {
+		return nil
+	}
+	return fmt.Errorf("%d finding writes failed, first was: %w", w.count, w.first)
+}
+
 // kernelFeedFilter decides whether a kernel finding really applies to the
 // kernel a server runs.
 //
@@ -1110,7 +1165,7 @@ func (s *Scanner) resolveKernelSource(ctx context.Context, feedSourceID int64, p
 // packages are excluded at the query level: OVAL evaluates the kernel against
 // the *running* kernel, which is both more precise and vastly less noisy than
 // reporting every installed kernel's binary packages.
-func (s *Scanner) scanPkgFeedSource(ctx context.Context, serverID int64, source *models.OVALSource, server *models.Server, currentFindings map[string]bool, result *ScanResult) error {
+func (s *Scanner) scanPkgFeedSource(ctx context.Context, serverID int64, source *models.OVALSource, server *models.Server, currentFindings map[string]bool, result *ScanResult, writeFailures *writeErrors) error {
 	if s.pkgFeedService == nil {
 		return fmt.Errorf("package vulnerability feed support is not configured")
 	}
@@ -1162,10 +1217,15 @@ func (s *Scanner) scanPkgFeedSource(ctx context.Context, serverID int64, source 
 
 		if err := s.upsertFindingWithPocket(ctx, serverID, candidate.CVEID, pkg, def,
 			fixedIn, fixState, &pocket, server.OSFamily, source.SourceType); err != nil {
-			log.Warn().Err(err).
-				Str("cve", candidate.CVEID).
-				Str("package", candidate.PackageName).
-				Msg("Failed to upsert package feed finding")
+			if writeFailures.record(err) {
+				log.Warn().Err(err).
+					Str("cve", candidate.CVEID).
+					Str("package", candidate.PackageName).
+					Msg("Failed to upsert package feed finding")
+			}
+			if writeFailures.exhausted() {
+				return writeFailures.err()
+			}
 			continue
 		}
 		result.NewFindings++
@@ -1304,16 +1364,18 @@ func (s *Scanner) resolveOldFindings(ctx context.Context, serverID int64, curren
 		}
 	}
 
-	// Mark as resolved
-	now := time.Now()
-	for _, id := range toResolve {
-		_, err := s.db.Exec(ctx, `
-			UPDATE findings SET resolved_at = $1, updated_at = $1 WHERE id = $2
-		`, now, id)
-		if err != nil {
-			log.Warn().Err(err).Int64("findingId", id).Msg("Failed to resolve finding")
-		}
+	if len(toResolve) == 0 {
+		return 0, nil
 	}
 
-	return len(toResolve), nil
+	// One statement rather than one per finding: a scan resolves thousands, and
+	// a per-row loop turned a database failure into thousands of log lines.
+	tag, err := s.db.Exec(ctx, `
+		UPDATE findings SET resolved_at = $1, updated_at = $1 WHERE id = ANY($2)
+	`, time.Now(), toResolve)
+	if err != nil {
+		return 0, fmt.Errorf("failed to resolve %d findings: %w", len(toResolve), err)
+	}
+
+	return int(tag.RowsAffected()), nil
 }
