@@ -38,6 +38,7 @@ INSERT INTO settings (key, value, description) VALUES
     ('triage_vendor_severities', 'critical,high', 'Comma-separated vendor severity levels for triage queue'),
     ('triage_include_unrated', 'false', 'Include findings without vendor severity in triage queue'),
     ('triage_hide_vex_not_affected', 'true', 'Hide findings where VEX status is not_affected from the triage queue'),
+    ('triage_hide_vendor_accepted', 'true', 'Hide findings the vendor will not fix or has deferred from the triage queue'),
     
     -- Sync intervals
     ('oval_sync_interval_hours', '24', 'Hours between OVAL feed syncs'),

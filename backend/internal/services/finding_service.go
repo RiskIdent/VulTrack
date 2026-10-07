@@ -22,19 +22,32 @@ func NewFindingService(db *pgxpool.Pool) *FindingService {
 	return &FindingService{db: db}
 }
 
+// vendorActionableCondition keeps only findings the vendor still means to fix
+// or already has: 'affected' and 'fix_available'. It drops 'will_not_fix'
+// (Canonical decided to ignore the CVE, from OVAL or VEX) and 'deferred'.
+// Rows without a fix_state predate the column and count as 'affected'.
+//
+// It deliberately looks at fix_state rather than vex_status: the scan rewrites
+// fix_state on every run, so a finding reappears as soon as the vendor changes
+// its mind, whereas vex_status is never cleared once set.
+const vendorActionableCondition = `COALESCE(NULLIF(f.fix_state, ''), 'affected') IN ('affected', 'fix_available')`
+
 // FindingFilter defines filter options for querying findings
 type FindingFilter struct {
-	ServerID        *int64
-	CVEID           *string
-	Severity        *string
-	MinCVSS         *float64
-	VexStatus       *string // filter by vex_status value (e.g. 'not_affected')
-	Search          string  // free-text search across cve_id, package_name, server_name
-	IncludeResolved bool
-	SortBy          string // column to sort by (cveId, serverName, packageName, cvss3Score, severity, fixState, fixedIn, firstSeenAt)
-	SortOrder       string // asc or desc
-	Limit           int
-	Offset          int
+	ServerID  *int64
+	CVEID     *string
+	Severity  *string
+	MinCVSS   *float64
+	VexStatus *string // filter by vex_status value (e.g. 'not_affected')
+	// HideVendorAccepted drops findings the vendor will not fix or has deferred
+	// (see vendorActionableCondition).
+	HideVendorAccepted bool
+	Search             string // free-text search across cve_id, package_name, server_name
+	IncludeResolved    bool
+	SortBy             string // column to sort by (cveId, serverName, packageName, cvss3Score, severity, fixState, fixedIn, firstSeenAt)
+	SortOrder          string // asc or desc
+	Limit              int
+	Offset             int
 }
 
 // GetAll returns findings with optional filters (lightweight list view, no exploit/description data).
@@ -71,6 +84,9 @@ func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]mo
 		baseWhere += ` AND f.vex_status = $` + strconv.Itoa(argIndex)
 		args = append(args, *filter.VexStatus)
 		argIndex++
+	}
+	if filter.HideVendorAccepted {
+		baseWhere += ` AND ` + vendorActionableCondition
 	}
 	if filter.Search != "" {
 		searchPattern := "%" + filter.Search + "%"
@@ -183,6 +199,9 @@ func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter
 		baseWhere += ` AND f.vex_status = $` + strconv.Itoa(argIndex)
 		args = append(args, *filter.VexStatus)
 		argIndex++
+	}
+	if filter.HideVendorAccepted {
+		baseWhere += ` AND ` + vendorActionableCondition
 	}
 	if filter.Search != "" {
 		searchPattern := "%" + filter.Search + "%"
@@ -367,6 +386,7 @@ type TriageFilterOptions struct {
 	VendorSeverities   []string // Used when Mode == "vendor_severity"
 	IncludeUnrated     bool     // Include findings without vendor severity
 	HideVexNotAffected bool     // When true, exclude findings with vex_status = 'not_affected'
+	HideVendorAccepted bool     // When true, only findings the vendor still means to fix count (see vendorActionableCondition)
 	Limit              int
 	Offset             int
 }
@@ -412,6 +432,11 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 	notAffectedClause := ""
 	if opts.HideVexNotAffected {
 		notAffectedClause = "\n\t\tAND (f.vex_status IS NULL OR f.vex_status != 'not_affected')"
+	}
+	// Applied per finding, before the queue groups by CVE: a CVE stays in the
+	// queue as long as any one of its findings is still actionable.
+	if opts.HideVendorAccepted {
+		notAffectedClause += "\n\t\tAND " + vendorActionableCondition
 	}
 
 	baseQuery := fmt.Sprintf(`

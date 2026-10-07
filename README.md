@@ -311,8 +311,8 @@ docker compose up -d postgres
 - `DELETE /api/v1/admin/servers/:id` - Delete server
 
 ### Findings
-- `GET /api/v1/findings` - List findings with filters (supports `vexStatus` query param: `not_affected`, `will_not_fix`, `under_investigation`)
-- `GET /api/v1/findings/triage` - Get triage queue (supports `hideVexNotAffected=false` to include not-affected findings; default is `true`)
+- `GET /api/v1/findings` - List findings with filters (supports `vexStatus` query param: `not_affected`, `will_not_fix`, `under_investigation`; `hideVendorAccepted=true` keeps only fix states `affected` and `fix_available`)
+- `GET /api/v1/findings/triage` - Get triage queue (supports `hideVexNotAffected=false` to include not-affected findings and `hideVendorAccepted=false` to include findings the vendor will not fix or has deferred; both default to the admin setting, which is `true`)
 - `GET /api/v1/findings/:id` - Get finding details
 
 ### CVEs

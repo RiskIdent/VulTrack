@@ -28,6 +28,7 @@ export default function Findings() {
   const [minCvss, setMinCvss] = useState(0);
   const [includeResolved, setIncludeResolved] = useState(false);
   const [vexStatusFilter, setVexStatusFilter] = useState('');
+  const [hideVendorAccepted, setHideVendorAccepted] = useState(false);
 
   // View mode: group rows by (server, CVE) — default ON, persisted in localStorage.
   const [groupByCve, setGroupByCve] = useState<boolean>(() => {
@@ -88,7 +89,7 @@ export default function Findings() {
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [severity, minCvss, includeResolved, vexStatusFilter]);
+  }, [severity, minCvss, includeResolved, vexStatusFilter, hideVendorAccepted]);
 
   // Fetch findings from server
   const fetchData = useCallback(async () => {
@@ -105,6 +106,7 @@ export default function Findings() {
         limit: ITEMS_PER_PAGE,
         offset: (currentPage - 1) * ITEMS_PER_PAGE,
         vexStatus: vexStatusFilter || undefined,
+        hideVendorAccepted,
       };
       if (groupByCve) {
         const data = await getFindingsGrouped(params);
@@ -122,7 +124,7 @@ export default function Findings() {
     } finally {
       setLoading(false);
     }
-  }, [severity, minCvss, includeResolved, debouncedSearch, sortField, sortDirection, currentPage, vexStatusFilter, groupByCve]);
+  }, [severity, minCvss, includeResolved, debouncedSearch, sortField, sortDirection, currentPage, vexStatusFilter, hideVendorAccepted, groupByCve]);
 
   useEffect(() => {
     fetchData();
@@ -300,6 +302,20 @@ export default function Findings() {
                 onChange={(e) => setIncludeResolved(e.target.checked)}
               />
               <span className="text-sm text-[#a5d6a7]">Include resolved</span>
+            </label>
+          </div>
+          <div className="flex items-end">
+            <label
+              className="flex items-center gap-2 cursor-pointer"
+              title="Hide findings the vendor will not fix or has deferred. Only fix states 'affected' and 'fix available' remain."
+            >
+              <input
+                type="checkbox"
+                className="w-4 h-4 rounded border-[#2d3f36] bg-[#0a0f0d] text-[#4ade80] focus:ring-[#4ade80]"
+                checked={hideVendorAccepted}
+                onChange={(e) => setHideVendorAccepted(e.target.checked)}
+              />
+              <span className="text-sm text-[#a5d6a7]">Hide vendor-accepted</span>
             </label>
           </div>
           <div className="flex items-end ml-auto">

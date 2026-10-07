@@ -117,6 +117,7 @@ func triageFilterInfo(opts services.TriageFilterOptions) map[string]any {
 	info := map[string]any{
 		"mode":               opts.Mode,
 		"hideVexNotAffected": opts.HideVexNotAffected,
+		"hideVendorAccepted": opts.HideVendorAccepted,
 	}
 	if opts.Mode == "vendor_severity" {
 		info["vendorSeverities"] = opts.VendorSeverities
@@ -136,15 +137,16 @@ type getServerInput struct {
 }
 
 type listFindingsInput struct {
-	ServerID        int64   `json:"serverId,omitempty" jsonschema:"filter by server ID (0 = all servers)"`
-	CVEID           string  `json:"cveId,omitempty" jsonschema:"filter by CVE ID, e.g. CVE-2024-1234"`
-	Severity        string  `json:"severity,omitempty" jsonschema:"filter by severity: critical, high, medium, low, negligible"`
-	MinCVSS         float64 `json:"minCvss,omitempty" jsonschema:"only findings with CVSS score >= this value"`
-	VexStatus       string  `json:"vexStatus,omitempty" jsonschema:"filter by VEX status: not_affected, will_not_fix, under_investigation"`
-	Search          string  `json:"search,omitempty" jsonschema:"free-text search across CVE, package and server name"`
-	IncludeResolved bool    `json:"includeResolved,omitempty" jsonschema:"include resolved findings (default false)"`
-	Limit           int     `json:"limit,omitempty" jsonschema:"max results per call (default 50, max 500)"`
-	Offset          int     `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
+	ServerID           int64   `json:"serverId,omitempty" jsonschema:"filter by server ID (0 = all servers)"`
+	CVEID              string  `json:"cveId,omitempty" jsonschema:"filter by CVE ID, e.g. CVE-2024-1234"`
+	Severity           string  `json:"severity,omitempty" jsonschema:"filter by severity: critical, high, medium, low, negligible"`
+	MinCVSS            float64 `json:"minCvss,omitempty" jsonschema:"only findings with CVSS score >= this value"`
+	VexStatus          string  `json:"vexStatus,omitempty" jsonschema:"filter by VEX status: not_affected, will_not_fix, under_investigation"`
+	HideVendorAccepted bool    `json:"hideVendorAccepted,omitempty" jsonschema:"hide findings the vendor will not fix or has deferred; only fix states affected and fix_available remain (default false)"`
+	Search             string  `json:"search,omitempty" jsonschema:"free-text search across CVE, package and server name"`
+	IncludeResolved    bool    `json:"includeResolved,omitempty" jsonschema:"include resolved findings (default false)"`
+	Limit              int     `json:"limit,omitempty" jsonschema:"max results per call (default 50, max 500)"`
+	Offset             int     `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
 }
 
 type getFindingInput struct {
@@ -239,6 +241,7 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		if in.VexStatus != "" {
 			filter.VexStatus = &in.VexStatus
 		}
+		filter.HideVendorAccepted = in.HideVendorAccepted
 		findings, total, err := d.FindingService.GetAll(ctx, filter)
 		if err != nil {
 			return nil, nil, err
@@ -262,6 +265,9 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		}
 		if filter.VexStatus != nil {
 			applied["vexStatus"] = *filter.VexStatus
+		}
+		if filter.HideVendorAccepted {
+			applied["hideVendorAccepted"] = true
 		}
 		if filter.Search != "" {
 			applied["search"] = filter.Search
@@ -347,7 +353,8 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		Name: "list_triage_queue",
 		Description: "List the triage queue exactly as configured in VulTrack's admin settings. " +
 			"The queue composition is admin-controlled: filter mode (vendor severities or CVSS threshold), " +
-			"whether unrated findings are included, and whether VEX 'not affected' findings are hidden. " +
+			"whether unrated findings are included, whether VEX 'not affected' findings are hidden, and whether " +
+			"findings the vendor will not fix or has deferred are hidden. " +
 			"The response `filter` object reports the exact settings that produced the result, so the count " +
 			"can be reconciled with the UI. Returns the same findings as the UI. " +
 			"Paginated: returns at most `limit` findings per call (default 50, max 500) plus the full `total`. " +
@@ -412,7 +419,8 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		Name: "get_triage_config",
 		Description: "Get the admin-configured triage settings that determine which findings appear in the " +
 			"triage queue: filter mode (cvss or vendor_severity), vendor severities or CVSS threshold, whether " +
-			"unrated findings are included, and whether VEX 'not affected' findings are hidden. Useful for " +
+			"unrated findings are included, whether VEX 'not affected' findings are hidden, and whether findings " +
+			"the vendor will not fix or has deferred are hidden. Useful for " +
 			"explaining or reconciling the triage queue count with the UI.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ emptyInput) (*mcpsdk.CallToolResult, any, error) {
 		opts, err := d.SettingsService.BuildTriageOptions(ctx)

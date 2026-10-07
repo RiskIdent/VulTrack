@@ -313,6 +313,22 @@ function TriageSettingsTab() {
               When enabled, findings where Canonical's VEX data marks the package as not affected are excluded from the triage queue.
             </p>
           </div>
+
+          {/* Vendor-accepted filter */}
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editedValues['triage_hide_vendor_accepted'] !== 'false'}
+                onChange={(e) => setEditedValues({ ...editedValues, triage_hide_vendor_accepted: e.target.checked ? 'true' : 'false' })}
+                className="w-4 h-4 rounded text-[#4ade80] bg-[#1a2420] border-[#2d3f36] focus:ring-[#4ade80]"
+              />
+              <span className="text-[#e8f5e9]">Hide vendor-accepted (won't fix / deferred)</span>
+            </label>
+            <p className="text-xs text-[#6b7280] mt-1 ml-6">
+              When enabled, only findings with fix state "affected" or "fix available" count towards the triage queue. A CVE stays in the queue as long as any of its findings is still actionable, and returns automatically if the vendor changes its status.
+            </p>
+          </div>
         </div>
 
         <div className="mt-6 pt-4 border-t border-[#2d3f36]">

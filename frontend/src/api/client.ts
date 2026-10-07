@@ -144,6 +144,7 @@ export const getFindings = (params?: {
   limit?: number;
   offset?: number;
   vexStatus?: string;
+  hideVendorAccepted?: boolean;
 }) => {
   const searchParams = new URLSearchParams();
   if (params?.cveId) searchParams.set('cveId', params.cveId);
@@ -156,6 +157,7 @@ export const getFindings = (params?: {
   if (params?.limit) searchParams.set('limit', params.limit.toString());
   if (params?.offset != null) searchParams.set('offset', params.offset.toString());
   if (params?.vexStatus) searchParams.set('vexStatus', params.vexStatus);
+  if (params?.hideVendorAccepted) searchParams.set('hideVendorAccepted', 'true');
   
   return fetchAPI<{
     findings: import('../types').Finding[];
@@ -178,6 +180,7 @@ export const getFindingsGrouped = (params?: {
   limit?: number;
   offset?: number;
   vexStatus?: string;
+  hideVendorAccepted?: boolean;
 }) => {
   const searchParams = new URLSearchParams();
   searchParams.set('grouped', 'true');
@@ -191,6 +194,7 @@ export const getFindingsGrouped = (params?: {
   if (params?.limit) searchParams.set('limit', params.limit.toString());
   if (params?.offset != null) searchParams.set('offset', params.offset.toString());
   if (params?.vexStatus) searchParams.set('vexStatus', params.vexStatus);
+  if (params?.hideVendorAccepted) searchParams.set('hideVendorAccepted', 'true');
 
   return fetchAPI<{
     groups: import('../types').GroupedFinding[];

@@ -518,6 +518,8 @@ func (h *Handler) getFindings(c *fiber.Ctx) error {
 		filter.VexStatus = &vexStatus
 	}
 
+	filter.HideVendorAccepted = c.QueryBool("hideVendorAccepted", false)
+
 	ctx := c.Context()
 
 	if c.QueryBool("grouped", false) {
@@ -556,10 +558,12 @@ func (h *Handler) getTriageQueue(c *fiber.Ctx) error {
 	opts.Limit = c.QueryInt("limit", 50)
 	opts.Offset = c.QueryInt("offset", 0)
 	opts.HideVexNotAffected = c.QueryBool("hideVexNotAffected", opts.HideVexNotAffected)
+	opts.HideVendorAccepted = c.QueryBool("hideVendorAccepted", opts.HideVendorAccepted)
 
 	// Build response info
 	filterInfo := make(map[string]interface{})
 	filterInfo["mode"] = opts.Mode
+	filterInfo["hideVendorAccepted"] = opts.HideVendorAccepted
 
 	if opts.Mode == "vendor_severity" {
 		filterInfo["severities"] = opts.VendorSeverities

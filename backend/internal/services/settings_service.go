@@ -160,7 +160,7 @@ func (s *SettingsService) GetTriageCVSSThreshold(ctx context.Context) (float64, 
 // settings (filter mode, vendor severities / CVSS threshold, include-unrated).
 // It is the single source of truth shared by the REST API and the MCP interface
 // so both produce exactly the same triage queue, including the VEX
-// "not affected" filter. Limit/Offset are left zero for the caller to set.
+// "not affected" and the vendor-accepted filters. Limit/Offset are left zero for the caller to set.
 func (s *SettingsService) BuildTriageOptions(ctx context.Context) (TriageFilterOptions, error) {
 	mode, _ := s.GetValue(ctx, "triage_filter_mode")
 	if mode == "" {
@@ -173,6 +173,11 @@ func (s *SettingsService) BuildTriageOptions(ctx context.Context) (TriageFilterO
 	// Mirrors the UI, which treats settings['triage_hide_vex_not_affected'] !== 'false'.
 	hideVex, _ := s.GetValue(ctx, "triage_hide_vex_not_affected")
 	opts.HideVexNotAffected = hideVex != "false"
+
+	// Hide findings the vendor will not fix or has deferred, unless explicitly
+	// disabled. Mirrors the UI, which treats settings['triage_hide_vendor_accepted'] !== 'false'.
+	hideAccepted, _ := s.GetValue(ctx, "triage_hide_vendor_accepted")
+	opts.HideVendorAccepted = hideAccepted != "false"
 
 	if mode == "vendor_severity" {
 		severitiesStr, _ := s.GetValue(ctx, "triage_vendor_severities")
