@@ -14,7 +14,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/rs/zerolog v1.35.1
-	github.com/ulikunitz/xz v0.5.15
+	github.com/ulikunitz/xz v0.5.17
 	github.com/wcharczuk/go-chart/v2 v2.1.2
 	golang.org/x/oauth2 v0.36.0
 )
