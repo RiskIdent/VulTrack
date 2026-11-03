@@ -171,7 +171,16 @@ func (s *VEXService) GetStatementCount(ctx context.Context) (int64, error) {
 
 // EnrichFindings updates vex_status and vex_justification for all active
 // findings on a server in a single SQL statement. distro is the Ubuntu codename
-// (e.g. "focal", "jammy"). Returns the number of rows enriched.
+// (e.g. "focal", "jammy"). Returns the number of findings it changed.
+//
+// The statement starts from the server's findings and looks up each one's VEX
+// statement through idx_vex_lookup (cve_id, package_name, distro). Starting
+// from vex_statements instead meant a sequential scan of the whole table (90
+// million rows across every Ubuntu release) and a sort of the distro's
+// statements on every scan of every server.
+//
+// Rows whose VEX data and fix_state are already current are left untouched, so
+// an hourly rescan does not rewrite thousands of unchanged findings.
 func (s *VEXService) EnrichFindings(ctx context.Context, serverID int64, distro string) (int64, error) {
 	if distro == "" {
 		return 0, nil
@@ -188,24 +197,31 @@ func (s *VEXService) EnrichFindings(ctx context.Context, serverID int64, distro 
 				ELSE f.fix_state
 			END,
 			updated_at        = NOW()
-		FROM (
-			SELECT DISTINCT ON (cve_id, package_name)
-				cve_id, package_name, status, justification
-			FROM vex_statements
-			WHERE distro = $2
-			  AND status != 'fixed'
-			ORDER BY cve_id, package_name,
-				CASE status
+		FROM findings src
+		CROSS JOIN LATERAL (
+			-- The most decisive statement wins when the CVE and USN sources disagree.
+			SELECT vs.status, vs.justification
+			FROM vex_statements vs
+			WHERE vs.cve_id       = src.cve_id
+			  AND vs.package_name = src.package_name
+			  AND vs.distro       = $2
+			  AND vs.status      != 'fixed'
+			ORDER BY
+				CASE vs.status
 					WHEN 'not_affected'        THEN 0
 					WHEN 'under_investigation' THEN 1
 					WHEN 'will_not_fix'        THEN 2
 					ELSE 3
-				END
+				END,
+				vs.source_type
+			LIMIT 1
 		) v
-		WHERE f.server_id  = $1
-		  AND f.resolved_at IS NULL
-		  AND f.cve_id       = v.cve_id
-		  AND f.package_name = v.package_name
+		WHERE f.id = src.id
+		  AND src.server_id = $1
+		  AND src.resolved_at IS NULL
+		  AND (f.vex_status IS DISTINCT FROM v.status
+		       OR f.vex_justification IS DISTINCT FROM v.justification
+		       OR (v.status = 'will_not_fix' AND f.fix_state = 'affected'))
 	`, serverID, distro)
 	if err != nil {
 		return 0, err
