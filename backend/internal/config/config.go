@@ -1,7 +1,8 @@
 package config
 
 import (
-	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 
@@ -153,16 +154,20 @@ func (c *Config) AIConfigured() bool {
 	return c.AIAPIKey != ""
 }
 
-// DatabaseURL returns the PostgreSQL connection string
+// DatabaseURL returns the PostgreSQL connection string.
+//
+// User, password and database name are percent-encoded: a password containing
+// '@', '/', '#', '%' or spaces would otherwise be split or decoded wrongly by
+// pgx's libpq-compatible URI parser.
 func (c *Config) DatabaseURL() string {
-	return fmt.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		c.PostgresUser,
-		c.PostgresPassword,
-		c.PostgresHost,
-		c.PostgresPort,
-		c.PostgresDB,
-	)
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(c.PostgresUser, c.PostgresPassword),
+		Host:     net.JoinHostPort(c.PostgresHost, strconv.Itoa(c.PostgresPort)),
+		Path:     "/" + c.PostgresDB,
+		RawQuery: "sslmode=disable",
+	}
+	return u.String()
 }
 
 // Helper functions to read environment variables with defaults
