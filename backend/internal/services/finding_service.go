@@ -391,11 +391,11 @@ type TriageFilterOptions struct {
 	Offset             int
 }
 
-// GetTriageQueue returns findings that need assessment based on filter options
-func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOptions) ([]models.Finding, int, error) {
-	// Build the filter condition based on mode
+// triageQueueFrom builds the FROM/WHERE part shared by the triage queue and its
+// count, and the arguments it binds. ok is false when the options select
+// nothing at all (vendor-severity mode with no severity and no unrated).
+func triageQueueFrom(opts TriageFilterOptions) (from string, args []any, ok bool) {
 	var filterCondition string
-	var args []interface{}
 	argIndex := 1
 
 	if opts.Mode == "vendor_severity" {
@@ -419,14 +419,13 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 			// Only unrated
 			filterCondition = "(f.severity IS NULL OR f.severity = '')"
 		} else {
-			// No severities selected and not including unrated - return empty
-			return []models.Finding{}, 0, nil
+			// No severities selected and not including unrated
+			return "", nil, false
 		}
 	} else {
 		// CVSS mode (default) - use NVD CVSS score with fallback
 		filterCondition = fmt.Sprintf("COALESCE(cve.cvss3_score, f.cvss3_score) >= $%d", argIndex)
 		args = append(args, opts.CVSSThreshold)
-		argIndex++
 	}
 
 	notAffectedClause := ""
@@ -439,7 +438,7 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 		notAffectedClause += "\n\t\tAND " + vendorActionableCondition
 	}
 
-	baseQuery := fmt.Sprintf(`
+	from = fmt.Sprintf(`
 		FROM findings f
 		JOIN servers srv ON f.server_id = srv.id
 		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id
@@ -448,10 +447,34 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 		AND %s
 		AND (a.id IS NULL OR a.status = 'pending')%s
 	`, filterCondition, notAffectedClause)
+	return from, args, true
+}
 
-	// Count total
+// CountTriageQueue returns the number of CVEs in the triage queue, the same
+// number GetTriageQueue reports as its total.
+func (s *FindingService) CountTriageQueue(ctx context.Context, opts TriageFilterOptions) (int, error) {
+	return countTriageQueue(ctx, s.db, opts)
+}
+
+func countTriageQueue(ctx context.Context, db *pgxpool.Pool, opts TriageFilterOptions) (int, error) {
+	baseQuery, args, ok := triageQueueFrom(opts)
+	if !ok {
+		return 0, nil
+	}
 	var total int
-	err := s.db.QueryRow(ctx, `SELECT COUNT(DISTINCT f.cve_id) `+baseQuery, args...).Scan(&total)
+	err := db.QueryRow(ctx, `SELECT COUNT(DISTINCT f.cve_id) `+baseQuery, args...).Scan(&total)
+	return total, err
+}
+
+// GetTriageQueue returns findings that need assessment based on filter options
+func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOptions) ([]models.Finding, int, error) {
+	baseQuery, args, ok := triageQueueFrom(opts)
+	if !ok {
+		return []models.Finding{}, 0, nil
+	}
+	argIndex := len(args) + 1
+
+	total, err := countTriageQueue(ctx, s.db, opts)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -24,12 +24,14 @@ type DashboardStats struct {
 	ResolvedFindings   int            `json:"resolvedFindings"`
 	CriticalFindings   int            `json:"criticalFindings"`
 	HighFindings       int            `json:"highFindings"`
-	PendingAssessments int            `json:"pendingAssessments"`
+	PendingAssessments int            `json:"pendingAssessments"` // CVEs in the triage queue
 	SeverityBreakdown  map[string]int `json:"severityBreakdown"`
 }
 
-// GetDashboardStats returns overview statistics
-func (s *StatsService) GetDashboardStats(ctx context.Context) (*DashboardStats, error) {
+// GetDashboardStats returns overview statistics. PendingAssessments is the size
+// of the triage queue under the given options (see BuildTriageOptions); it stays
+// zero when triage is nil.
+func (s *StatsService) GetDashboardStats(ctx context.Context, triage *TriageFilterOptions) (*DashboardStats, error) {
 	stats := &DashboardStats{
 		SeverityBreakdown: make(map[string]int),
 	}
@@ -68,17 +70,13 @@ func (s *StatsService) GetDashboardStats(ctx context.Context) (*DashboardStats, 
 		return nil, err
 	}
 
-	// Get pending assessments count (CVEs with high score that haven't been assessed)
-	err = s.db.QueryRow(ctx, `
-		SELECT COUNT(DISTINCT f.cve_id)
-		FROM findings f
-		LEFT JOIN assessments a ON f.cve_id = a.cve_id
-		WHERE f.resolved_at IS NULL
-		AND f.cvss3_score >= 7.0
-		AND (a.id IS NULL OR a.status = 'pending')
-	`).Scan(&stats.PendingAssessments)
-	if err != nil {
-		return nil, err
+	// Pending assessments: the CVEs in the triage queue, filtered exactly as the
+	// Triage page filters them. Callers that only need the other numbers pass nil.
+	if triage != nil {
+		stats.PendingAssessments, err = countTriageQueue(ctx, s.db, *triage)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Get severity breakdown (normalize to lowercase)

@@ -129,6 +129,46 @@ export const getServerPackages = (id: number) =>
     activeCount: number;
   }>(`/servers/${id}/packages`);
 
+// Installed packages across all servers. Every text filter is a
+// case-insensitive substring match on its column.
+export interface InstalledPackageFilters {
+  name?: string;
+  version?: string;
+  arch?: string;
+  sourcePackage?: string;
+  server?: string;
+  os?: string;
+}
+
+type PackageQuery = InstalledPackageFilters & {
+  sortBy?: string;
+  sortOrder?: string;
+  limit?: number;
+  offset?: number;
+};
+
+function packageQuery(params: PackageQuery): URLSearchParams {
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') searchParams.set(key, String(value));
+  }
+  return searchParams;
+}
+
+// Each installed package once, across all servers.
+export const getPackageSummaries = (params: PackageQuery) =>
+  fetchAPI<{
+    packages: import('../types').PackageSummary[];
+    total: number;
+  }>(`/packages?${packageQuery(params)}`);
+
+// The servers one package is installed on.
+export const getPackageInstallations = (name: string, params: PackageQuery) =>
+  fetchAPI<{
+    installations: import('../types').InstalledPackage[];
+    total: number;
+  }>(`/packages/${encodeURIComponent(name)}/installations?${packageQuery(params)}`);
+
 export const triggerServerScan = (id: number) =>
   fetchAPI<{ message: string }>(`/servers/${id}/scan`, { method: 'POST' });
 

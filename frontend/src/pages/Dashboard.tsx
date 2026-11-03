@@ -245,7 +245,7 @@ export default function Dashboard() {
             </div>
             <div>
               <h3 className="font-semibold text-[#e8f5e9]">Start Triage</h3>
-              <p className="text-sm text-[#a5d6a7]">{stats?.pendingAssessments || 0} findings need review</p>
+              <p className="text-sm text-[#a5d6a7]">{stats?.pendingAssessments || 0} CVEs need review</p>
             </div>
           </div>
         </Link>

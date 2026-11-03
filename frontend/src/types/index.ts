@@ -30,6 +30,31 @@ export interface ServerPackage {
   removedAt: string | null;
 }
 
+// A package installed on one server (APT Packages page)
+export interface InstalledPackage {
+  id: number;
+  serverId: number;
+  serverName: string;
+  os: string;
+  name: string;
+  version: string;
+  previousVersion?: string;
+  arch: string;
+  sourcePackage: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+// One package across all servers (APT Packages list)
+export interface PackageSummary {
+  name: string;
+  sourcePackages: string[];
+  versions: string[];
+  archs: string[];
+  serverCount: number;
+  lastSeenAt: string;
+}
+
 // Finding types
 export interface Finding {
   id: number;

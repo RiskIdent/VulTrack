@@ -38,6 +38,7 @@ func (h *Handler) registerMCPRoutes(app *fiber.App) {
 		StatsService:        h.statsService,
 		ServerGroupService:  h.serverGroupService,
 		SettingsService:     h.settingsService,
+		PackageService:      h.packageService,
 		ScanQueue:           h.scanQueue,
 		UpsertAssessment:    h.upsertAssessment,
 		AssessorFromContext: h.mcpAssessor,

@@ -11,6 +11,7 @@ The VulTrack Agent can be found in [this repository](https://github.com/RiskIden
 - **Dashboard**: Overview of your vulnerability landscape with key metrics and charts
 - **Server Management**: View all monitored servers and their vulnerability status
 - **Findings Browser**: Search and filter vulnerability findings across all servers
+- **APT Packages**: Every installed package once, with its versions and server count; a package's page shows the servers it is installed on, in which version. Filterable by every column
 - **Triage Queue**: Efficiently assess and categorize high-severity vulnerabilities
 - **Statistics**: Trend analysis and detailed reports
 - **Agent Management**: Manage agents and enrollment keys
@@ -298,7 +299,7 @@ docker compose up -d postgres
 - `GET /api/v1/auth/me` - Current user info (returns `authEnabled: false` when OIDC is disabled)
 
 ### Dashboard
-- `GET /api/v1/dashboard` - Dashboard statistics
+- `GET /api/v1/dashboard` - Dashboard statistics (`pendingAssessments` is the number of CVEs in the triage queue, using the configured triage filter)
 
 ### Servers
 - `GET /api/v1/servers` - List all servers
@@ -314,6 +315,12 @@ docker compose up -d postgres
 - `GET /api/v1/findings` - List findings with filters (supports `vexStatus` query param: `not_affected`, `will_not_fix`, `under_investigation`; `hideVendorAccepted=true` keeps only fix states `affected` and `fix_available`)
 - `GET /api/v1/findings/triage` - Get triage queue (supports `hideVexNotAffected=false` to include not-affected findings and `hideVendorAccepted=false` to include findings the vendor will not fix or has deferred; both default to the admin setting, which is `true`)
 - `GET /api/v1/findings/:id` - Get finding details
+
+### Packages
+- `GET /api/v1/packages` - Each package currently installed on any server, once, with its distinct versions, architectures and source packages and the number of servers (`serverCount`). `sortBy`: `name`, `sourcePackage`, `versionCount`, `serverCount`, `lastSeenAt`
+- `GET /api/v1/packages/:name/installations` - The servers one package is installed on, with version, arch, OS, first and last seen. `sortBy`: `serverName`, `version`, `arch`, `os`, `firstSeenAt`, `lastSeenAt`
+
+Both accept the filters `name`, `version`, `arch`, `sourcePackage`, `server` and `os` (case-insensitive substring matches, applied before grouping), plus `sortOrder`, `limit` (max 500) and `offset`.
 
 ### CVEs
 - `GET /api/v1/cves/:id` - Get CVE details
@@ -450,14 +457,14 @@ Deleting a token revokes it immediately. All write actions are logged with the a
 ### Tools
 
 **Read tools** (available to every token):
-`list_servers`, `get_server`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `get_ai_assessment`, `list_triage_queue`, `get_triage_config`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
+`list_servers`, `get_server`, `list_installed_packages`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `get_ai_assessment`, `list_triage_queue`, `get_triage_config`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
 
 **Write tools** (only available to non-read-only tokens):
 `upsert_assessment`, `delete_assessment`, `trigger_server_scan`, `create_server_group`, `update_server_group`, `delete_server_group`, `set_server_group_members`
 
 All MCP tools share the same logic as the REST API / UI, including admin-configured settings. In particular, `list_triage_queue` honours the configured triage filter (vendor severities or CVSS threshold) and returns the same findings as the UI, and `upsert_assessment` creates a Jira ticket when the status is set to `relevant` and Jira is enabled — just like the UI.
 
-The list tools (`list_findings`, `list_triage_queue`, `list_assessments`) are paginated: each call returns at most `limit` items (and the full `total`) along with a `hasMore` flag. To retrieve every entry, the agent repeats the call with `offset` increased by `limit` while `hasMore` is true.
+The list tools (`list_findings`, `list_installed_packages`, `list_triage_queue`, `list_assessments`) are paginated: each call returns at most `limit` items (and the full `total`) along with a `hasMore` flag. To retrieve every entry, the agent repeats the call with `offset` increased by `limit` while `hasMore` is true.
 
 To make results self-describing, the responses also report which filter produced them: `list_triage_queue` returns a `filter` object with the admin-configured settings (mode, vendor severities or CVSS threshold, include-unrated, hide-VEX-not-affected), and `list_findings` / `list_assessments` echo the effective filter (including defaults like `includeResolved` and sort order) in `appliedFilter`. The `get_triage_config` tool exposes the same triage settings directly.
 

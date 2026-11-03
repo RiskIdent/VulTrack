@@ -7,6 +7,8 @@ import Dashboard from './pages/Dashboard';
 import Servers from './pages/Servers';
 import ServerDetail from './pages/ServerDetail';
 import Findings from './pages/Findings';
+import Packages from './pages/Packages';
+import PackageDetail from './pages/PackageDetail';
 import Triage from './pages/Triage';
 import TriageDetail from './pages/TriageDetail';
 import Assessments from './pages/Assessments';
@@ -45,6 +47,8 @@ export default function App() {
           <Route path="servers/:id" element={<ServerDetail />} />
           <Route path="scans" element={<Scans />} />
           <Route path="findings" element={<Findings />} />
+          <Route path="packages" element={<Packages />} />
+          <Route path="packages/:name" element={<PackageDetail />} />
           <Route path="triage" element={<Triage />} />
           <Route path="triage/:cveId" element={<TriageDetail />} />
           <Route path="assessments" element={<Assessments />} />

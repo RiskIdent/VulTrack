@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -308,4 +310,211 @@ func (s *PackageService) SearchPackages(ctx context.Context, namePattern string,
 	}
 
 	return packages, nil
+}
+
+// InstalledPackage is one package installed on one server, as listed on the
+// APT Packages page.
+type InstalledPackage struct {
+	ID              int64     `json:"id"`
+	ServerID        int64     `json:"serverId"`
+	ServerName      string    `json:"serverName"`
+	OS              string    `json:"os"` // e.g. "ubuntu 24.04 (noble)"
+	Name            string    `json:"name"`
+	Version         string    `json:"version"`
+	PreviousVersion string    `json:"previousVersion,omitempty"`
+	Arch            string    `json:"arch"`
+	SourcePackage   string    `json:"sourcePackage"`
+	FirstSeenAt     time.Time `json:"firstSeenAt"`
+	LastSeenAt      time.Time `json:"lastSeenAt"`
+}
+
+// InstalledPackageFilter narrows ListInstalled. Every text field is a
+// case-insensitive substring match on its column; empty fields are ignored.
+type InstalledPackageFilter struct {
+	ExactName     string // the package name exactly, e.g. for one package's detail page
+	Name          string
+	Version       string
+	Arch          string
+	SourcePackage string
+	Server        string
+	OS            string
+	SortBy        string // name, version, arch, sourcePackage, serverName, os, firstSeenAt, lastSeenAt
+	SortOrder     string // asc (default) or desc
+	Limit         int
+	Offset        int
+}
+
+// installedPackageOS renders a server's OS the same way for display and filter.
+const installedPackageOS = `TRIM(CONCAT_WS(' ', srv.os_family, srv.os_release,
+	CASE WHEN COALESCE(srv.os_codename, '') <> '' THEN '(' || srv.os_codename || ')' END))`
+
+// escapeLike makes s match literally inside a LIKE pattern.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// installedPackagesFrom builds the FROM/WHERE clause over the installed
+// packages that match f's filters, and the arguments it binds.
+func installedPackagesFrom(f InstalledPackageFilter) (string, []any) {
+	where := []string{"sp.removed_at IS NULL"}
+	var args []any
+	if f.ExactName != "" {
+		args = append(args, f.ExactName)
+		where = append(where, fmt.Sprintf("sp.name = $%d", len(args)))
+	}
+	contains := func(expr, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		args = append(args, "%"+escapeLike(value)+"%")
+		where = append(where, fmt.Sprintf("%s ILIKE $%d", expr, len(args)))
+	}
+	contains("sp.name", f.Name)
+	contains("sp.version", f.Version)
+	contains("COALESCE(sp.arch, '')", f.Arch)
+	contains("COALESCE(sp.source_package, '')", f.SourcePackage)
+	contains("srv.name", f.Server)
+	contains(installedPackageOS, f.OS)
+
+	return `
+		FROM server_packages sp
+		JOIN servers srv ON srv.id = sp.server_id
+		WHERE ` + strings.Join(where, " AND "), args
+}
+
+// normalizePage applies the default and ceiling to a page request.
+func normalizePage(limit, offset int) (int, int) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	return limit, max(offset, 0)
+}
+
+// ListInstalled returns the packages currently installed on any server, one
+// row per server and package, filtered and sorted server-side, and the total
+// number of matching rows.
+func (s *PackageService) ListInstalled(ctx context.Context, f InstalledPackageFilter) ([]InstalledPackage, int, error) {
+	from, args := installedPackagesFrom(f)
+
+	var total int
+	if err := s.db.QueryRow(ctx, "SELECT COUNT(*)"+from, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	columns := map[string]string{
+		"name":          "sp.name",
+		"version":       "sp.version",
+		"arch":          "sp.arch",
+		"sourcePackage": "sp.source_package",
+		"serverName":    "srv.name",
+		"os":            installedPackageOS,
+		"firstSeenAt":   "sp.first_seen_at",
+		"lastSeenAt":    "sp.last_seen_at",
+	}
+	col, ok := columns[f.SortBy]
+	if !ok {
+		col = "sp.name"
+	}
+	dir := "ASC"
+	if f.SortOrder == "desc" {
+		dir = "DESC"
+	}
+	f.Limit, f.Offset = normalizePage(f.Limit, f.Offset)
+	args = append(args, f.Limit, f.Offset)
+
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`
+		SELECT sp.id, sp.server_id, srv.name, %s,
+		       sp.name, sp.version, COALESCE(sp.previous_version, ''),
+		       COALESCE(sp.arch, ''), COALESCE(sp.source_package, ''),
+		       sp.first_seen_at, sp.last_seen_at
+		%s
+		ORDER BY %s %s NULLS LAST, sp.name, srv.name, sp.id
+		LIMIT $%d OFFSET $%d
+	`, installedPackageOS, from, col, dir, len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	packages := []InstalledPackage{}
+	for rows.Next() {
+		var p InstalledPackage
+		if err := rows.Scan(&p.ID, &p.ServerID, &p.ServerName, &p.OS,
+			&p.Name, &p.Version, &p.PreviousVersion, &p.Arch, &p.SourcePackage,
+			&p.FirstSeenAt, &p.LastSeenAt); err != nil {
+			return nil, 0, err
+		}
+		packages = append(packages, p)
+	}
+	return packages, total, rows.Err()
+}
+
+// PackageSummary is one package name across all servers, as listed on the APT
+// Packages page. Counts cover only the installations that match the filter.
+type PackageSummary struct {
+	Name           string    `json:"name"`
+	SourcePackages []string  `json:"sourcePackages"`
+	Versions       []string  `json:"versions"`
+	Archs          []string  `json:"archs"`
+	ServerCount    int       `json:"serverCount"`
+	LastSeenAt     time.Time `json:"lastSeenAt"`
+}
+
+// ListPackageSummaries returns each installed package once, with its distinct
+// versions, architectures and source packages and the number of servers it is
+// installed on. The filters work as in ListInstalled; SortBy takes name,
+// sourcePackage, versionCount, serverCount or lastSeenAt.
+func (s *PackageService) ListPackageSummaries(ctx context.Context, f InstalledPackageFilter) ([]PackageSummary, int, error) {
+	from, args := installedPackagesFrom(f)
+
+	var total int
+	if err := s.db.QueryRow(ctx, "SELECT COUNT(DISTINCT sp.name)"+from, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	columns := map[string]string{
+		"name":          "sp.name",
+		"sourcePackage": "MIN(sp.source_package)",
+		"versionCount":  "COUNT(DISTINCT sp.version)",
+		"serverCount":   "COUNT(DISTINCT sp.server_id)",
+		"lastSeenAt":    "MAX(sp.last_seen_at)",
+	}
+	col, ok := columns[f.SortBy]
+	if !ok {
+		col = "sp.name"
+	}
+	dir := "ASC"
+	if f.SortOrder == "desc" {
+		dir = "DESC"
+	}
+	f.Limit, f.Offset = normalizePage(f.Limit, f.Offset)
+	args = append(args, f.Limit, f.Offset)
+
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`
+		SELECT sp.name,
+		       ARRAY_REMOVE(ARRAY_AGG(DISTINCT NULLIF(sp.source_package, '')), NULL),
+		       ARRAY_AGG(DISTINCT sp.version),
+		       ARRAY_REMOVE(ARRAY_AGG(DISTINCT NULLIF(sp.arch, '')), NULL),
+		       COUNT(DISTINCT sp.server_id),
+		       MAX(sp.last_seen_at)
+		%s
+		GROUP BY sp.name
+		ORDER BY %s %s NULLS LAST, sp.name
+		LIMIT $%d OFFSET $%d
+	`, from, col, dir, len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	summaries := []PackageSummary{}
+	for rows.Next() {
+		var p PackageSummary
+		if err := rows.Scan(&p.Name, &p.SourcePackages, &p.Versions, &p.Archs, &p.ServerCount, &p.LastSeenAt); err != nil {
+			return nil, 0, err
+		}
+		summaries = append(summaries, p)
+	}
+	return summaries, total, rows.Err()
 }

@@ -15,6 +15,7 @@ import {
   User,
   Radar,
   Sparkles,
+  Package,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -27,6 +28,7 @@ const navItems = [
   { path: '/servers', label: 'Servers', icon: Server },
   { path: '/scans', label: 'Scans', icon: Radar },
   { path: '/findings', label: 'Findings', icon: Shield },
+  { path: '/packages', label: 'APT Packages', icon: Package },
   { path: '/triage', label: 'Triage', icon: ClipboardCheck },
   { path: '/assessments', label: 'Assessments', icon: FileCheck },
   { path: '/ai-assessments', label: 'AI Assessments', icon: Sparkles },
@@ -64,7 +66,8 @@ export default function Layout({ children }: LayoutProps) {
             {navItems
               .filter((item) => !item.adminOnly || user?.isAdmin)
               .map((item) => {
-              const isActive = location.pathname === item.path;
+              const isActive = location.pathname === item.path
+                || (item.path !== '/' && location.pathname.startsWith(item.path + '/'));
               const Icon = item.icon;
               
               return (

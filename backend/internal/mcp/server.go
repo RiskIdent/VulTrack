@@ -41,6 +41,7 @@ type Deps struct {
 	StatsService        *services.StatsService
 	ServerGroupService  *services.ServerGroupService
 	SettingsService     *services.SettingsService
+	PackageService      *services.PackageService
 	ScanQueue           *scanqueue.Queue
 
 	// UpsertAssessment performs the same create-or-update assessment logic as the
@@ -149,6 +150,19 @@ type listFindingsInput struct {
 	Offset             int     `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
 }
 
+type listPackagesInput struct {
+	Name          string `json:"name,omitempty" jsonschema:"package name contains this text (case-insensitive), e.g. openssl"`
+	Version       string `json:"version,omitempty" jsonschema:"installed version contains this text (case-insensitive)"`
+	Arch          string `json:"arch,omitempty" jsonschema:"architecture contains this text, e.g. amd64"`
+	SourcePackage string `json:"sourcePackage,omitempty" jsonschema:"source package contains this text (case-insensitive)"`
+	Server        string `json:"server,omitempty" jsonschema:"server name contains this text (case-insensitive)"`
+	OS            string `json:"os,omitempty" jsonschema:"operating system contains this text, e.g. 24.04 or noble"`
+	SortBy        string `json:"sortBy,omitempty" jsonschema:"name (default), version, arch, sourcePackage, serverName, os, firstSeenAt, lastSeenAt"`
+	SortOrder     string `json:"sortOrder,omitempty" jsonschema:"asc (default) or desc"`
+	Limit         int    `json:"limit,omitempty" jsonschema:"max results per call (default 50, max 500)"`
+	Offset        int    `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
+}
+
 type getFindingInput struct {
 	FindingID int64 `json:"findingId" jsonschema:"the numeric ID of the finding"`
 }
@@ -193,6 +207,25 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 			return nil, nil, err
 		}
 		return jsonResult(map[string]any{"servers": servers, "total": len(servers)})
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "list_installed_packages",
+		Description: "List the packages currently installed on the monitored servers: package, version, architecture, source package, server and OS. " +
+			"All text filters are case-insensitive substring matches and combine with AND. Use it to find which servers run a given package or version. " +
+			"Paginated: returns at most `limit` packages per call (default 50, max 500) plus the full `total`. " +
+			"When `hasMore` is true, call again with `offset` increased by `limit` to fetch all results.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in listPackagesInput) (*mcpsdk.CallToolResult, any, error) {
+		filter := services.InstalledPackageFilter{
+			Name: in.Name, Version: in.Version, Arch: in.Arch, SourcePackage: in.SourcePackage,
+			Server: in.Server, OS: in.OS, SortBy: in.SortBy, SortOrder: in.SortOrder,
+			Limit: clampLimit(in.Limit, 50, 500), Offset: max(in.Offset, 0),
+		}
+		packages, total, err := d.PackageService.ListInstalled(ctx, filter)
+		if err != nil {
+			return nil, nil, err
+		}
+		return paginatedResult(map[string]any{"packages": packages}, total, filter.Limit, filter.Offset)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -432,9 +465,13 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "get_dashboard_stats",
-		Description: "Get the dashboard overview statistics for the whole vulnerability landscape.",
+		Description: "Get the dashboard overview statistics for the whole vulnerability landscape. pendingAssessments is the number of CVEs in the triage queue, filtered by the configured triage settings (same as list_triage_queue's total).",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ emptyInput) (*mcpsdk.CallToolResult, any, error) {
-		stats, err := d.StatsService.GetDashboardStats(ctx)
+		triage, err := d.SettingsService.BuildTriageOptions(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		stats, err := d.StatsService.GetDashboardStats(ctx, &triage)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -445,7 +482,7 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		Name:        "get_severity_stats",
 		Description: "Get the breakdown of findings by severity.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ emptyInput) (*mcpsdk.CallToolResult, any, error) {
-		stats, err := d.StatsService.GetDashboardStats(ctx)
+		stats, err := d.StatsService.GetDashboardStats(ctx, nil)
 		if err != nil {
 			return nil, nil, err
 		}

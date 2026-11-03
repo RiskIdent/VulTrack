@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net/mail"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -264,6 +265,10 @@ func New(
 	protected.Get("/findings/triage", h.getTriageQueue)
 	protected.Get("/findings/:id", h.getFinding)
 
+	// Installed packages across all servers
+	protected.Get("/packages", h.getPackageSummaries)
+	protected.Get("/packages/:name/installations", h.getPackageInstallations)
+
 	// CVEs
 	protected.Get("/cves/:id", h.getCVE)
 	protected.Get("/cves/:id/servers", h.getCVEServers)
@@ -429,7 +434,11 @@ func (h *Handler) healthCheck(c *fiber.Ctx) error {
 // Dashboard
 func (h *Handler) getDashboard(c *fiber.Ctx) error {
 	ctx := c.Context()
-	stats, err := h.statsService.GetDashboardStats(ctx)
+	triage, err := h.settingsService.BuildTriageOptions(ctx)
+	if err != nil {
+		return err
+	}
+	stats, err := h.statsService.GetDashboardStats(ctx, &triage)
 	if err != nil {
 		return err
 	}
@@ -546,6 +555,49 @@ func (h *Handler) getFindings(c *fiber.Ctx) error {
 		"limit":    filter.Limit,
 		"offset":   filter.Offset,
 	})
+}
+
+// installedPackageFilter reads the shared package filters from the query.
+// Each text filter is a case-insensitive substring match on its column.
+func installedPackageFilter(c *fiber.Ctx) services.InstalledPackageFilter {
+	return services.InstalledPackageFilter{
+		Name:          c.Query("name"),
+		Version:       c.Query("version"),
+		Arch:          c.Query("arch"),
+		SourcePackage: c.Query("sourcePackage"),
+		Server:        c.Query("server"),
+		OS:            c.Query("os"),
+		SortBy:        c.Query("sortBy"),
+		SortOrder:     c.Query("sortOrder"),
+		Limit:         c.QueryInt("limit", 50),
+		Offset:        c.QueryInt("offset", 0),
+	}
+}
+
+// getPackageSummaries lists each installed package once, across all servers.
+func (h *Handler) getPackageSummaries(c *fiber.Ctx) error {
+	filter := installedPackageFilter(c)
+	packages, total, err := h.packageService.ListPackageSummaries(c.Context(), filter)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"packages": packages, "total": total, "limit": filter.Limit, "offset": filter.Offset})
+}
+
+// getPackageInstallations lists the servers one package is installed on.
+func (h *Handler) getPackageInstallations(c *fiber.Ctx) error {
+	name, err := url.PathUnescape(c.Params("name"))
+	if err != nil || name == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid package name")
+	}
+	filter := installedPackageFilter(c)
+	filter.ExactName = name
+	filter.Name = ""
+	installations, total, err := h.packageService.ListInstalled(c.Context(), filter)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"installations": installations, "total": total, "limit": filter.Limit, "offset": filter.Offset})
 }
 
 func (h *Handler) getTriageQueue(c *fiber.Ctx) error {
@@ -923,7 +975,7 @@ func (h *Handler) deleteAssessment(c *fiber.Ctx) error {
 // Statistics
 func (h *Handler) getSeverityStats(c *fiber.Ctx) error {
 	ctx := c.Context()
-	stats, err := h.statsService.GetDashboardStats(ctx)
+	stats, err := h.statsService.GetDashboardStats(ctx, nil)
 	if err != nil {
 		return err
 	}
