@@ -56,11 +56,11 @@ const navItems: NavEntry[] = [
     icon: ClipboardCheck,
     children: [
       { path: '/triage', label: 'Queue', icon: ClipboardCheck },
+      { path: '/assessments', label: 'Assessments', icon: FileCheck },
       { path: '/auto-decisions', label: 'Auto Decisions', icon: Bot },
+      { path: '/ai-assessments', label: 'AI Assessments', icon: Sparkles },
     ],
   },
-  { path: '/assessments', label: 'Assessments', icon: FileCheck },
-  { path: '/ai-assessments', label: 'AI Assessments', icon: Sparkles },
   { path: '/statistics', label: 'Statistics', icon: BarChart3 },
   { path: '/reports', label: 'Reports', icon: FileText },
   { path: '/oval-database', label: 'OVAL Database', icon: Database },
