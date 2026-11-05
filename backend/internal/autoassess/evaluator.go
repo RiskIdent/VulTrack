@@ -286,12 +286,12 @@ func writeDecision(ctx context.Context, tx pgx.Tx, serverID int64, d Decision, e
 	ev := d.EvidenceJSON()
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO auto_decisions (server_id, cve_id, verdict, source, rule_ids, guards, reason, evidence, decided_at, updated_at)
-		VALUES ($1, $2, $3, 'rule', $4, $5, $6, $7, NOW(), NOW())
+		VALUES ($1, $2, $3, $8, $4, $5, $6, $7, NOW(), NOW())
 		ON CONFLICT (server_id, cve_id) DO UPDATE SET
 			verdict = EXCLUDED.verdict, source = EXCLUDED.source, rule_ids = EXCLUDED.rule_ids,
 			guards = EXCLUDED.guards, reason = EXCLUDED.reason, evidence = EXCLUDED.evidence,
 			updated_at = NOW()
-	`, serverID, d.CVEID, d.Verdict, d.RuleIDs, d.Guards, d.Reason, ev); err != nil {
+	`, serverID, d.CVEID, d.Verdict, d.RuleIDs, d.Guards, d.Reason, ev, decisionSource(d)); err != nil {
 		return fmt.Errorf("store decision %s: %w", d.CVEID, err)
 	}
 	_, err := tx.Exec(ctx, `
@@ -299,6 +299,14 @@ func writeDecision(ctx context.Context, tx pgx.Tx, serverID int64, d Decision, e
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, serverID, d.CVEID, event, d.Verdict, d.RuleIDs, d.Guards, d.Reason, ev)
 	return err
+}
+
+// decisionSource is "ai" when the AI precondition analysis took part.
+func decisionSource(d Decision) string {
+	if slices.Contains(d.RuleIDs, "AI-PRE") {
+		return "ai"
+	}
+	return "rule"
 }
 
 // EvaluateAll re-evaluates every server. Used after a KEV/EPSS sync, a settings

@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Bot, RefreshCw, ShieldAlert, Save, ExternalLink, Sparkles, Cpu } from 'lucide-react';
+import { Bot, RefreshCw, ShieldAlert, Save, ExternalLink, Sparkles, Cpu, Route } from 'lucide-react';
 import { ConfirmModal } from './ConfirmModal';
+import { PreconditionSettings } from './Preconditions';
 import {
   getAutoAssessmentStats,
   updateAutoAssessmentConfig,
@@ -506,7 +507,7 @@ function KernelDataCard({ settleMinutes, unusedDays, kmodMode, saving, onSaveSet
   );
 }
 
-type AutomationSection = 'rules' | 'ai';
+type AutomationSection = 'rules' | 'preconditions' | 'ai';
 const SECTION_STORAGE_KEY = 'vultrack.admin.automationSection';
 
 // AssessmentAutomationTab is the Admin tab for everything that assesses
@@ -517,11 +518,11 @@ export function AssessmentAutomationTab({ aiSettings }: { aiSettings: ReactNode 
   const [params] = useSearchParams();
   const [section, setSection] = useState<AutomationSection>(() => {
     const fromUrl = params.get('section');
-    if (fromUrl === 'rules' || fromUrl === 'ai') return fromUrl;
+    if (fromUrl === 'rules' || fromUrl === 'preconditions' || fromUrl === 'ai') return fromUrl;
     if (params.get('tab') === 'ai') return 'ai';
     try {
       const stored = window.localStorage.getItem(SECTION_STORAGE_KEY);
-      if (stored === 'rules' || stored === 'ai') return stored;
+      if (stored === 'rules' || stored === 'preconditions' || stored === 'ai') return stored;
     } catch {
       // storage unavailable
     }
@@ -538,6 +539,7 @@ export function AssessmentAutomationTab({ aiSettings }: { aiSettings: ReactNode 
 
   const sections: { id: AutomationSection; icon: typeof Bot; title: string }[] = [
     { id: 'rules', icon: Bot, title: 'Rules & Guards' },
+    { id: 'preconditions', icon: Route, title: 'AI Preconditions' },
     { id: 'ai', icon: Sparkles, title: 'AI Advisor' },
   ];
 
@@ -564,7 +566,7 @@ export function AssessmentAutomationTab({ aiSettings }: { aiSettings: ReactNode 
           );
         })}
       </div>
-      {section === 'rules' ? <AutoAssessmentSettings /> : aiSettings}
+      {section === 'rules' ? <AutoAssessmentSettings /> : section === 'preconditions' ? <PreconditionSettings /> : aiSettings}
     </div>
   );
 }

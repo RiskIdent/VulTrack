@@ -560,6 +560,54 @@ CREATE TABLE IF NOT EXISTS package_usage_observation (
 );
 
 -- ============================================================================
+-- AI PRECONDITION ANALYSIS (docs/AUTO_ASSESSMENT_PLAN.md §8)
+-- ============================================================================
+
+-- The current analysis per CVE. It is redone when the CVE data (input_hash),
+-- the prompt or the model (prompt_hash) changes.
+CREATE TABLE IF NOT EXISTS precondition_analyses (
+    cve_id        VARCHAR(30) PRIMARY KEY,
+    status        VARCHAR(20) NOT NULL,   -- pending (in a batch), ok, error
+    model         VARCHAR(60) NOT NULL,
+    prompt_hash   VARCHAR(64) NOT NULL,
+    input_hash    VARCHAR(64) NOT NULL,
+    batch_id      VARCHAR(100),
+    determinable  BOOLEAN,
+    result        JSONB,                  -- paths, reasoning, recommendation
+    error         TEXT,
+    terminal      BOOLEAN NOT NULL DEFAULT false, -- retrying will not help
+    requested_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    analysed_at   TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_precondition_analyses_batch ON precondition_analyses(batch_id) WHERE batch_id IS NOT NULL;
+
+-- Message Batches submitted for the analysis.
+CREATE TABLE IF NOT EXISTS precondition_batches (
+    id            VARCHAR(100) PRIMARY KEY,
+    model         VARCHAR(60) NOT NULL,
+    requests      INTEGER NOT NULL,
+    status        VARCHAR(20) NOT NULL,   -- in_progress, ended
+    created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+    ended_at      TIMESTAMP
+);
+
+-- Every model call that cost money, for the budget and statistics.
+CREATE TABLE IF NOT EXISTS ai_usage (
+    id                    BIGSERIAL PRIMARY KEY,
+    stage                 VARCHAR(30) NOT NULL,   -- preconditions
+    model                 VARCHAR(60) NOT NULL,
+    cve_id                VARCHAR(30),
+    batch                 BOOLEAN NOT NULL DEFAULT false,
+    input_tokens          BIGINT NOT NULL DEFAULT 0,
+    output_tokens         BIGINT NOT NULL DEFAULT 0,
+    cache_read_tokens     BIGINT NOT NULL DEFAULT 0,
+    cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
+    cost_usd              NUMERIC(12,6) NOT NULL DEFAULT 0,
+    created_at            TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_stage_time ON ai_usage(stage, created_at);
+
+-- ============================================================================
 -- KERNEL CODE MAP FOR R-KMOD (docs/AUTO_ASSESSMENT_PLAN.md §7)
 -- ============================================================================
 

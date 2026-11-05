@@ -562,3 +562,53 @@ export interface ServerRuntime {
   unknown: string[];
 }
 
+
+// AI precondition analysis
+export interface PreconditionCondition {
+  type: string;
+  package: string;
+  unit: string;
+  path: string;
+  scope: string;
+  necessary: boolean;
+  confidence: 'low' | 'medium' | 'high';
+  reason: string;
+}
+
+export interface PreconditionResult {
+  determinable: boolean;
+  paths: { requires: PreconditionCondition[] }[];
+  reasoning: string;
+  recommended_status_if_reachable: string;
+}
+
+export interface PreconditionAnalysis {
+  cveId: string;
+  status: 'pending' | 'ok' | 'error';
+  model: string;
+  current: boolean;
+  result?: PreconditionResult;
+  error?: string;
+  analysedAt?: string;
+}
+
+export interface PreconditionConfig {
+  enabled: boolean;
+  model: string;
+  useBatch: boolean;
+  budgetUsd: number;
+  dailyMax: number;
+}
+
+export interface PreconditionStatus {
+  config: PreconditionConfig;
+  models: string[];
+  configured: boolean;
+  running: boolean;
+  spentMonth: number;
+  spentTotal: number;
+  avgCost: number;
+  analyses: { ok: number; determinable: number; pending: number; errors: number };
+  batchesInProgress: number;
+  lastError?: string;
+}

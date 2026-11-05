@@ -345,12 +345,18 @@ Both accept the filters `name`, `version`, `arch`, `sourcePackage`, `server` and
 - `DELETE /api/v1/servers/:id/cves/:cveId/assessment` - Remove that per-server decision
 - `PUT /api/v1/admin/auto-assessment/config` - Set `mode`, `ruleModes`, `guardExploit`, `guardEpss`, `factSettleMinutes`, `unusedDays` (re-evaluates all servers)
 - `POST /api/v1/admin/auto-assessment/reevaluate` - Re-evaluate all servers now
+- `GET /api/v1/admin/ai-preconditions/status` - AI precondition analysis: configuration, spend this month, analysis counts
+- `PUT /api/v1/admin/ai-preconditions/config` - Set `enabled`, `model`, `useBatch`, `budgetUsd`, `dailyMax`
+- `POST /api/v1/admin/ai-preconditions/run` - Collect finished batches and start analyses now
+- `GET /api/v1/cves/:id/preconditions` - The AI precondition analysis of a CVE
 - `GET /api/v1/admin/kernel-intel/status` - Kernel data for R-KMOD: CVE records with affected source files, mapped kernel builds
 - `POST /api/v1/admin/kernel-intel/sync` - Fetch missing kernel data now
 
 Decisions are re-evaluated after every scan of a server, after each KEV/EPSS sync, after new kernel data, after configuration changes and at start-up. With mode `off` the triage queue behaves exactly as before.
 
 **R-KMOD** (kernel CVEs in modules that cannot be loaded) needs agents that report runtime facts and outbound HTTPS from the backend to `cveawg.mitre.org` (CVE records listing the affected kernel source files) and `launchpad.net` / `launchpadlibrarian.net` (Ubuntu kernel headers and module packages, to map each source file to built-in code or a module). Both are fetched in the background, hourly, only while automated assessment and R-KMOD are not off. A new decision based on runtime facts waits until the facts have been unchanged for the settle time (default 120 minutes); it is revoked at once when, for example, the module gets loaded.
+
+**AI-PRE** (AI precondition analysis, off by default) needs `ANTHROPIC_API_KEY`. For CVEs of the triage queue that no rule decided, a model (Claude Sonnet 5.5 by default) lists the attack paths and their conditions; VulTrack checks them per server against the runtime facts and dismisses a server only when every path has a necessary, high-confidence condition that is definitely false there. Runs through the Message Batches API by default, with a monthly budget and a daily limit (Admin → Assessment Automation → AI Preconditions).
 
 **R-UNUSED** (libraries nothing can use) needs agents that report `packageInfo` (entry points and dependencies per package). It dismisses a package only when it has no programs, services, plugins or hooks, no installed package with such entry points depends on it, and no process used it during a gap-free observation period (default 14 days, counted from the start of the observation, not from the finding).
 

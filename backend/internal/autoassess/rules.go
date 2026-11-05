@@ -43,7 +43,7 @@ type FactReader interface {
 
 // Rules is the rule catalogue in evaluation order. The first rule that
 // dismisses a finding is recorded for it.
-var Rules = []Rule{vexNotAffected{}, headersAndDocs{}, kernelModules{}, unusedPackage{}}
+var Rules = []Rule{vexNotAffected{}, headersAndDocs{}, kernelModules{}, unusedPackage{}, aiPreconditions{}}
 
 // RuleByID returns the rule with the given ID, or nil.
 func RuleByID(id string) Rule {

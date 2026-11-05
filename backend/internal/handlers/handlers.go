@@ -28,6 +28,7 @@ import (
 	"github.com/vultrack/vultrack/internal/nvd"
 	"github.com/vultrack/vultrack/internal/oidc"
 	"github.com/vultrack/vultrack/internal/oval"
+	"github.com/vultrack/vultrack/internal/preconditions"
 	"github.com/vultrack/vultrack/internal/scanner"
 	"github.com/vultrack/vultrack/internal/scanqueue"
 	"github.com/vultrack/vultrack/internal/services"
@@ -71,6 +72,7 @@ type Handler struct {
 	autoEvaluator         *autoassess.Evaluator
 	runtimeFactsService   *services.RuntimeFactsService
 	kernelSyncer          *kernelintel.Syncer
+	preconditionAnalyzer  *preconditions.Analyzer
 
 	// VEX service + syncer
 	vexService *services.VEXService
@@ -154,6 +156,8 @@ func New(
 	threatIntelSyncer *threatintel.Syncer,
 	// Kernel code map for R-KMOD
 	kernelSyncer *kernelintel.Syncer,
+	// AI precondition analysis
+	preconditionAnalyzer *preconditions.Analyzer,
 ) *Handler {
 	// Resolve the JWT signing secret.
 	// If JWT_SECRET is not configured we generate a random one and warn — tokens
@@ -204,6 +208,7 @@ func New(
 		runtimeFactsService:   runtimeFactsService,
 		threatIntelSyncer:     threatIntelSyncer,
 		kernelSyncer:          kernelSyncer,
+		preconditionAnalyzer:  preconditionAnalyzer,
 		jwtSecret:             jwtSecret,
 	}
 
@@ -303,6 +308,7 @@ func New(
 	protected.Get("/auto-assessment/decisions", h.getAutoDecisions)
 	protected.Get("/auto-assessment/events", h.getDecisionEvents)
 	protected.Get("/cves/:id/server-status", h.getCVEServerStatus)
+	protected.Get("/cves/:id/preconditions", h.getCVEPreconditions)
 	protected.Put("/servers/:id/cves/:cveId/assessment", h.setServerAssessment)
 	protected.Delete("/servers/:id/cves/:cveId/assessment", h.deleteServerAssessment)
 
@@ -426,6 +432,9 @@ func New(
 	admin.Put("/auto-assessment/config", h.updateAutoAssessmentConfig)
 	admin.Post("/auto-assessment/reevaluate", h.reevaluateAutoAssessment)
 	admin.Get("/kernel-intel/status", h.getKernelIntelStatus)
+	admin.Get("/ai-preconditions/status", h.getPreconditionStatus)
+	admin.Put("/ai-preconditions/config", h.updatePreconditionConfig)
+	admin.Post("/ai-preconditions/run", h.runPreconditionAnalysis)
 	admin.Post("/kernel-intel/sync", h.triggerKernelIntelSync)
 	admin.Post("/threat-intel/:source/sync", h.triggerThreatIntelSync)
 

@@ -906,3 +906,16 @@ export const deleteServerAssessment = (serverId: number, cveId: string, assessed
 export const getServerRuntime = (id: number) =>
   fetchAPI<import('../types').ServerRuntime>(`/servers/${id}/runtime`);
 
+
+// AI precondition analysis
+export const getPreconditionStatus = () =>
+  fetchAPI<import('../types').PreconditionStatus>('/admin/ai-preconditions/status');
+
+export const updatePreconditionConfig = (data: Partial<import('../types').PreconditionConfig>) =>
+  fetchAPI<import('../types').PreconditionStatus>('/admin/ai-preconditions/config', { method: 'PUT', body: JSON.stringify(data) });
+
+export const runPreconditionAnalysis = () =>
+  fetchAPI<{ message: string }>('/admin/ai-preconditions/run', { method: 'POST' });
+
+export const getCVEPreconditions = (cveId: string) =>
+  fetchAPI<{ analysis: import('../types').PreconditionAnalysis | null }>(`/cves/${encodeURIComponent(cveId)}/preconditions`);

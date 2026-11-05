@@ -2,6 +2,8 @@ package autoassess
 
 import (
 	"path"
+
+	"github.com/vultrack/vultrack/internal/ai"
 	"strings"
 	"time"
 
@@ -17,6 +19,11 @@ type Host struct {
 	// Packages is the agent's packageInfo with the usage observation. Nil
 	// when packageInfo is unknown or truncated.
 	Packages *PackageHost
+	// Runtime is the listeners, services and sysctls (for AI-PRE); nil when
+	// AI-PRE is off.
+	Runtime *RuntimeHost
+	// Preconditions holds the AI precondition analyses of the server's CVEs.
+	Preconditions map[string]PreconditionAnalysis
 	// FactHashes holds the snapshot hash of each fact category the host
 	// context was built from; recorded as evidence by rules that read them.
 	FactHashes map[string]string
@@ -79,4 +86,41 @@ func ModulePath(p string) string {
 // ("kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko" → "vmw_vsock_virtio_transport").
 func ModuleName(p string) string {
 	return strings.ReplaceAll(strings.TrimSuffix(path.Base(ModulePath(p)), ".ko"), "-", "_")
+}
+
+// RuntimeHost holds the runtime facts AI-PRE checks. A category that is
+// unknown or truncated is marked not known.
+type RuntimeHost struct {
+	ListenersKnown bool
+	Listeners      []Listener
+	ServicesKnown  bool
+	Services       []Service
+	Sysctls        map[string]string // nil when kernel facts are unknown
+}
+
+// Listener is one listening socket.
+type Listener struct {
+	Protocol  string `json:"protocol"`
+	Address   string `json:"address"`
+	Port      int    `json:"port"`
+	Process   string `json:"process"`
+	Exe       string `json:"exe"`
+	Package   string `json:"package"`
+	Unit      string `json:"unit"`
+	HostNetns bool   `json:"hostNetns"`
+}
+
+// Service is one systemd service unit.
+type Service struct {
+	Unit          string `json:"unit"`
+	ActiveState   string `json:"activeState"`
+	UnitFileState string `json:"unitFileState"`
+	Package       string `json:"package"`
+}
+
+// PreconditionAnalysis is a stored AI analysis of one CVE.
+type PreconditionAnalysis struct {
+	Model  string
+	Short  string // first characters of the input hash, shown in evidence
+	Result ai.PreconditionResult
 }

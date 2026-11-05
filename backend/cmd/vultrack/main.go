@@ -24,6 +24,7 @@ import (
 	"github.com/vultrack/vultrack/internal/nvd"
 	"github.com/vultrack/vultrack/internal/oidc"
 	"github.com/vultrack/vultrack/internal/oval"
+	"github.com/vultrack/vultrack/internal/preconditions"
 	"github.com/vultrack/vultrack/internal/scanner"
 	"github.com/vultrack/vultrack/internal/scanqueue"
 	"github.com/vultrack/vultrack/internal/scheduler"
@@ -151,6 +152,10 @@ func main() {
 	}
 	aiQueue := aiqueue.New(aiClient, aiAssessmentService, findingService, settingsService, cfg)
 
+	// AI precondition analysis (inactive without API key or when disabled)
+	preconditionAnalyzer := preconditions.New(db, settingsService, findingService, aiClient)
+	preconditionAnalyzer.AfterChange = autoEvaluator.TriggerAll
+
 	// OIDC auth (provider is nil when OIDC disabled)
 	var oidcProvider *oidc.Provider
 	if cfg.OIDCEnabled {
@@ -227,6 +232,9 @@ func main() {
 	// Start AI assessment queue (no-op when not configured)
 	aiQueue.Start()
 
+	// Start AI precondition analysis (no-op without API key)
+	preconditionAnalyzer.Start()
+
 	// Start report scheduler
 	go reportScheduler.Start()
 
@@ -266,6 +274,7 @@ func main() {
 		threatIntelService,
 		threatIntelSyncer,
 		kernelSyncer,
+		preconditionAnalyzer,
 	)
 
 	// Start server
@@ -289,6 +298,7 @@ func main() {
 	exploitDBSyncer.Stop()
 	threatIntelSyncer.Stop()
 	kernelSyncer.Stop()
+	preconditionAnalyzer.Stop()
 	vexSyncer.Stop()
 	handler.Shutdown()
 }

@@ -19,6 +19,7 @@ import (
 
 	"github.com/vultrack/vultrack/internal/autoassess"
 	"github.com/vultrack/vultrack/internal/models"
+	"github.com/vultrack/vultrack/internal/preconditions"
 	"github.com/vultrack/vultrack/internal/scanqueue"
 	"github.com/vultrack/vultrack/internal/services"
 )
@@ -47,6 +48,8 @@ type Deps struct {
 	AutoAssessment      *services.AutoAssessmentService
 	RuntimeFacts        *services.RuntimeFactsService
 	ScanQueue           *scanqueue.Queue
+	// Preconditions is the AI precondition analysis; nil in tests.
+	Preconditions *preconditions.Analyzer
 
 	// UpsertAssessment performs the same create-or-update assessment logic as the
 	// REST API — status validation plus Jira ticket creation when relevant. It is
@@ -232,7 +235,8 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		Name: "get_auto_assessment",
 		Description: "Get the automated assessment configuration and statistics: the global mode (off, shadow, active), every rule with its version, " +
 			"description and mode, the guards that block automated dismissal (CISA KEV, verified exploits, EPSS threshold), and decision counts " +
-			"per rule including agreement with human assessments. Automation only ever dismisses findings as not_relevant; anything else stays for a human.",
+			"per rule including agreement with human assessments, and the AI precondition analysis (aiPreconditions: enabled, model, batch mode, " +
+			"monthly budget and spend, analysis counts). Automation only ever dismisses findings as not_relevant; anything else stays for a human.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ emptyInput) (*mcpsdk.CallToolResult, any, error) {
 		cfg, err := d.SettingsService.LoadAutoAssessmentConfig(ctx)
 		if err != nil {
@@ -242,7 +246,15 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return jsonResult(map[string]any{"config": autoassess.Info(cfg), "stats": st})
+		out := map[string]any{"config": autoassess.Info(cfg), "stats": st}
+		if d.Preconditions != nil {
+			pst, err := d.Preconditions.GetStatus(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			out["aiPreconditions"] = pst
+		}
+		return jsonResult(out)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -413,7 +425,8 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		Description: "Get details for a CVE including the affected servers, any existing assessment, its exploitation signals " +
 			"(CISA KEV listing, FIRST EPSS score) and serverStatus: the effective status of every affected server " +
 			"(open, not_relevant, relevant, accepted_risk) and where it comes from (override = decided for that server, " +
-			"binding = binding CVE assessment, auto = applied automated decision, assessment = CVE assessment, none = open).",
+			"binding = binding CVE assessment, auto = applied automated decision, assessment = CVE assessment, none = open), " +
+			"and preconditions: the AI precondition analysis (attack paths with their conditions) if one exists.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in cveInput) (*mcpsdk.CallToolResult, any, error) {
 		findings, err := d.FindingService.GetServersByCVE(ctx, in.CVEID)
 		if err != nil {
@@ -442,6 +455,15 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 			"assessment":   assessment,
 			"threatIntel":  threatIntel,
 			"serverStatus": serverStatus,
+		}
+		// The AI precondition analysis: attack paths and their conditions, which
+		// rule AI-PRE checks per server (nil when never analysed).
+		if d.Preconditions != nil {
+			an, err := d.Preconditions.GetAnalysis(ctx, in.CVEID)
+			if err != nil {
+				return nil, nil, err
+			}
+			result["preconditions"] = an
 		}
 		// Include the advisory AI assessment when available (nil when never assessed).
 		if d.AIAssessmentService != nil {

@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { CVSSBadge, VendorSeverityBadge, FixStateBadge, KEVBadge, EPSSBadge } from '../components/SeverityBadge';
 import { AIAssessmentCard } from '../components/AIAssessmentCard';
+import { PreconditionCard } from '../components/Preconditions';
 import { getTriageQueue, getFindings, getFinding, createAssessment, getReasonTemplates, getCVEServerStatus } from '../api/client';
 import { CVEServerStatusCard } from '../components/AutoDecision';
 import { useAuth } from '../context/AuthContext';
@@ -424,6 +425,7 @@ export default function TriageDetail() {
 
       {/* AI assessment (advisory) */}
       <AIAssessmentCard cveId={currentFinding.cveId} />
+      <PreconditionCard cveId={currentFinding.cveId} />
 
       {/* Affected servers with their effective status */}
       <CVEServerStatusCard cveId={currentFinding.cveId} servers={serverStatus} onChanged={() => setStatusKey((k) => k + 1)} />

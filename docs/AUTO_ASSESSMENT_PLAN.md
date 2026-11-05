@@ -192,7 +192,7 @@ version, which re-evaluates its decisions.
 | R-VEX | 2 | Canonical VEX says `not_affected` | not_relevant |
 | R-HDR | 2 | package ships only kernel headers, kernel sources or documentation: `linux-libc-dev`, `linux-headers-*`, `linux-*-headers-*`, `linux-source-*`, `linux-doc`, `*-doc`; not `-dev` packages (static libraries end up in programs built on the host) | not_relevant |
 | R-KMOD | 4 | kernel CVE whose affected code lies only in modules that are neither loaded nor built-in, **and** cannot be loaded (`modules_disabled=1`, blacklisted with `install … /bin/false`, or not present in the module index at all) | not_relevant |
-| R-NET | 4 | network-only CVE (CVSS `AV:N`) in a package whose processes listen on loopback only, and the package has no other attack surface per its precondition analysis | open, with a hint to the AI stage |
+| R-NET | 4 | network-only CVE (CVSS `AV:N`) in a package whose processes listen on loopback only, and the package has no other attack surface per its precondition analysis | covered by AI-PRE (`network_listener`, scope `non_loopback`), see §18 |
 | R-UNUSED | 4 | library CVE; the package has not been in use for the observation period (default 14 days, gap-free), has no entry points of its own (programs, services, plugins, hooks) and no installed package with entry points depends on it, directly or transitively | not_relevant; shadow until the comparison with human assessments is reviewed (see §17) |
 
 R-KRN-IDLE (a kernel package installed but not running) was dropped while
@@ -507,3 +507,39 @@ wait for the settle time like R-KMOD; a package seen in use revokes them at
 once. On a typical Ubuntu 24.04 server almost every library is reachable from a
 package with entry points, so hits are rare by design; old releases upgraded
 in place carry most of the orphaned libraries.
+
+## 18. Implementation notes (phase 5: AI precondition analysis)
+
+- **Scope.** `internal/preconditions` analyses CVEs of the triage queue (same
+  filters as the queue, queue order: KEV, EPSS, CVSS) that still have a server
+  no rule has decided. CVEs with a human CVE assessment are not in the queue
+  and are never analysed. Off by default (`ai_precondition_enabled`).
+- **Model and cost.** `claude-sonnet-5-5` by default, `claude-opus-5-5`
+  selectable. Message Batches API by default (half price, results within
+  hours; collected every 15 minutes), synchronous calls optional. The
+  instruction is prompt-cached. Every call is logged in `ai_usage` with tokens
+  and cost; a monthly budget (`ai_precondition_budget_usd`, default 20 USD,
+  pending batch requests counted at the average cost) and a daily limit
+  (`ai_precondition_daily_limit`, default 200) stop new analyses. The infra
+  context of the advisory stage is deliberately not used: the analysis is
+  per CVE, the server check uses facts.
+- **Reuse.** An analysis is redone when the CVE input (description, CVSS,
+  affected packages), the prompt or the model changes; failures are retried
+  after a day unless terminal (refusal, invalid output, 4xx).
+- **Rule AI-PRE.** Checks the conditions per server (see
+  `internal/autoassess/rule_aipre.go`): `network_listener` (socket-activation
+  holders such as systemd or inetd and host processes without package count
+  as unknown owners), `package_in_use` (same safeguards as R-UNUSED),
+  `service_active` (no unit of the package, or all masked; any installed unit
+  of unknown origin keeps it open), `unprivileged_userns`, `unprivileged_bpf`.
+  `kernel_code`, `local_user`, `physical_access`, `user_interaction`,
+  `config_dependent` are never false. Decisions have `source = 'ai'`, name
+  the model and analysis, record the facts and wait for the settle time.
+  Shadow by default like every rule.
+- **R-NET** is not a separate rule: its case (a network-only CVE in a
+  package that listens on loopback only) is exactly a necessary
+  `network_listener` condition with scope `non_loopback`, which AI-PRE checks.
+- **Not yet built:** the model comparison on CVEs humans already assessed
+  (§8.2). It spends money and needs an explicit run.
+- **Refusals** (e.g. the cyber safety classifier) are stored as terminal
+  errors; the CVE stays open. No model fallback is configured.

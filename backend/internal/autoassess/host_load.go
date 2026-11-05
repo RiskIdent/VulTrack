@@ -89,14 +89,106 @@ func (e *Evaluator) loadHost(ctx context.Context, tx pgx.Tx, serverID int64, fin
 	if _, err := loadKernelHost(ctx, e, tx, serverID, findings, rules, h); err != nil {
 		return nil, err
 	}
+	needPackages, needRuntime := false, false
 	for _, r := range rules {
-		if r.ID() == "R-UNUSED" {
-			if err := loadPackageHost(ctx, tx, serverID, h, unusedWindow); err != nil {
-				return nil, err
-			}
+		switch r.ID() {
+		case "R-UNUSED":
+			needPackages = true
+		case "AI-PRE":
+			needPackages, needRuntime = true, true
+		}
+	}
+	if needPackages {
+		if err := loadPackageHost(ctx, tx, serverID, h, unusedWindow); err != nil {
+			return nil, err
+		}
+	}
+	if needRuntime {
+		if err := loadRuntimeHost(ctx, tx, serverID, findings, h); err != nil {
+			return nil, err
 		}
 	}
 	return h, nil
+}
+
+// loadRuntimeHost reads listeners, services, sysctls and the precondition
+// analyses of the server's CVEs. Without any analysis nothing else is read.
+func loadRuntimeHost(ctx context.Context, tx pgx.Tx, serverID int64, findings []Finding, h *Host) error {
+	cves := make([]string, 0, len(findings))
+	seen := map[string]bool{}
+	for _, f := range findings {
+		if !seen[f.CVEID] {
+			seen[f.CVEID] = true
+			cves = append(cves, f.CVEID)
+		}
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT cve_id, model, input_hash, result FROM precondition_analyses
+		WHERE cve_id = ANY($1) AND status = 'ok' AND determinable
+	`, cves)
+	if err != nil {
+		return err
+	}
+	analyses := map[string]PreconditionAnalysis{}
+	for rows.Next() {
+		var id, model, inputHash string
+		var raw []byte
+		if err := rows.Scan(&id, &model, &inputHash, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		var a PreconditionAnalysis
+		if json.Unmarshal(raw, &a.Result) != nil {
+			continue
+		}
+		a.Model, a.Short = model, inputHash[:min(8, len(inputHash))]
+		analyses[id] = a
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(analyses) == 0 {
+		return nil
+	}
+	h.Preconditions = analyses
+
+	rt := &RuntimeHost{}
+	rows, err = tx.Query(ctx, `
+		SELECT sf.category, sf.hash, sf.truncated, EXTRACT(EPOCH FROM NOW() - sf.stable_since)::float8, snap.data
+		FROM server_facts sf JOIN fact_snapshots snap ON snap.hash = sf.hash
+		WHERE sf.server_id = $1 AND sf.category IN ('listeners', 'services', 'kernel')
+	`, serverID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cat, hash string
+		var truncated bool
+		var age float64
+		var data []byte
+		if err := rows.Scan(&cat, &hash, &truncated, &age, &data); err != nil {
+			return err
+		}
+		h.FactHashes[cat] = hash
+		h.FactsAge[cat] = time.Duration(age * float64(time.Second))
+		switch cat {
+		case "listeners":
+			rt.ListenersKnown = !truncated && json.Unmarshal(data, &rt.Listeners) == nil
+		case "services":
+			rt.ServicesKnown = !truncated && json.Unmarshal(data, &rt.Services) == nil
+		case "kernel":
+			var k struct {
+				Sysctls map[string]string `json:"sysctls"`
+			}
+			if json.Unmarshal(data, &k) == nil && k.Sysctls != nil {
+				rt.Sysctls = k.Sysctls
+			}
+		}
+	}
+	h.Runtime = rt
+	return rows.Err()
 }
 
 // loadPackageHost reads packageInfo and the usage observation. A truncated

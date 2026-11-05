@@ -35,15 +35,24 @@ func (unusedPackage) Dismiss(f Finding, h *Host) (bool, string) {
 	if h == nil || h.Packages == nil {
 		return false, ""
 	}
-	p := h.Packages
-	if f.Package == "kernel" || p.Window <= 0 || p.ObservedFor < p.Window {
+	if f.Package == "kernel" {
 		return false, ""
 	}
-	info, listed := p.Info[f.Package]
-	if !listed || len(info.EntryPoints) > 0 || p.Reachable[f.Package] {
+	return h.Packages.Unused(f.Package)
+}
+
+// Unused reports whether nothing on the server can use pkg: no entry points,
+// not reachable from a package with entry points, and not in use during a
+// gap-free observation of the configured period.
+func (p *PackageHost) Unused(pkg string) (bool, string) {
+	if p == nil || p.Window <= 0 || p.ObservedFor < p.Window {
 		return false, ""
 	}
-	if ago, seen := p.LastInUse[f.Package]; seen && ago < p.Window {
+	info, listed := p.Info[pkg]
+	if !listed || len(info.EntryPoints) > 0 || p.Reachable[pkg] {
+		return false, ""
+	}
+	if ago, seen := p.LastInUse[pkg]; seen && ago < p.Window {
 		return false, ""
 	}
 	days := int(p.Window / (24 * time.Hour))

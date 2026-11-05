@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/vultrack/vultrack/internal/models"
@@ -911,4 +912,32 @@ func (s *FindingService) GetServersByCVE(ctx context.Context, cveID string) ([]m
 	}
 
 	return findings, rows.Err()
+}
+
+// TriageQueueCVEIDs returns up to limit CVEs of the triage queue in queue
+// order (KEV, EPSS, CVSS) that still have a server no rule has decided:
+// candidates for the AI precondition analysis. Decisions of excludeRule (the
+// AI stage itself) and decisions blocked by a guard do not count as decided.
+func (s *FindingService) TriageQueueCVEIDs(ctx context.Context, opts TriageFilterOptions, excludeRule string, limit int) ([]string, error) {
+	baseQuery, args, ok := triageQueueFrom(opts)
+	if !ok {
+		return []string{}, nil
+	}
+	args = append(args, excludeRule, limit)
+	q := fmt.Sprintf(`
+		SELECT q.cve_id FROM (
+			SELECT DISTINCT ON (f.cve_id) f.cve_id, COALESCE(cve.cvss3_score, f.cvss3_score) AS priority_cvss
+			%s
+			  AND NOT EXISTS (SELECT 1 FROM auto_decisions d
+			                  WHERE d.server_id = f.server_id AND d.cve_id = f.cve_id
+			                    AND cardinality(d.guards) = 0 AND NOT ($%d = ANY(d.rule_ids)))
+			ORDER BY f.cve_id
+		) q`+strings.ReplaceAll(threatIntelJoins, "f.cve_id", "q.cve_id")+`
+		ORDER BY (kev.cve_id IS NOT NULL) DESC, ep.epss DESC NULLS LAST, q.priority_cvss DESC NULLS LAST, q.cve_id
+		LIMIT $%d`, baseQuery, len(args)-1, len(args))
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
 }

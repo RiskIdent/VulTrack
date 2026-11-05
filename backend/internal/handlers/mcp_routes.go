@@ -31,6 +31,7 @@ import (
 // for this check anyway.
 func (h *Handler) registerMCPRoutes(app *fiber.App) {
 	roServer, rwServer := vtmcp.BuildServers(vtmcp.Deps{
+		Preconditions:       h.preconditionAnalyzer,
 		ServerService:       h.serverService,
 		FindingService:      h.findingService,
 		AssessmentService:   h.assessmentService,
