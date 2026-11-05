@@ -182,7 +182,13 @@ export function PreconditionSettings() {
           <div className="flex items-center gap-3">
             <Route className="w-6 h-6 text-sky-300" />
             <div>
-              <h2 className="text-lg font-semibold text-[#e8f5e9]">AI Preconditions</h2>
+              <h2 className="text-lg font-semibold text-[#e8f5e9] flex items-center gap-2">
+                AI Preconditions
+                <span className={`px-2 py-0.5 rounded text-xs font-medium border ${c.enabled
+                  ? 'bg-[#4ade80]/20 text-[#4ade80] border-[#4ade80]/40' : 'bg-gray-600/20 text-gray-400 border-gray-600/40'}`}>
+                  {c.enabled ? 'enabled' : 'off'}
+                </span>
+              </h2>
               <p className="text-sm text-[#6b7280]">
                 <span className="text-sky-300">Prepares decisions.</span> For CVEs in the triage queue that no rule has decided, a model lists the
                 attack paths and their conditions. VulTrack checks those conditions on every server; rule{' '}
@@ -202,9 +208,17 @@ export function PreconditionSettings() {
         )}
 
         <div className="space-y-4">
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input type="checkbox" checked={c.enabled} disabled={saving} onChange={(e) => save({ enabled: e.target.checked }, e.target.checked ? 'Analysis enabled.' : 'Analysis disabled.')} className="w-4 h-4" />
-            <span className="text-[#e8f5e9]">Analyse CVEs automatically</span>
+          <label className={`flex items-start gap-3 cursor-pointer p-3 rounded-lg border ${c.enabled ? 'border-[#4ade80] bg-[#4ade80]/10' : 'border-[#2d3f36] bg-[#1a2420]'}`}>
+            <input type="checkbox" checked={c.enabled} disabled={saving || !status.configured}
+              onChange={(e) => save({ enabled: e.target.checked }, e.target.checked ? 'AI precondition analysis enabled.' : 'AI precondition analysis disabled.')}
+              className="w-4 h-4 mt-1" />
+            <div>
+              <div className="font-semibold text-[#e8f5e9]">Enable AI precondition analysis</div>
+              <div className="text-xs text-[#a5d6a7]">
+                Sends CVEs of the triage queue to the model below, within the monthly budget and daily limit. Off: no API calls, no cost;
+                existing analyses are kept. Whether the results dismiss servers is decided by the mode of rule AI-PRE.
+              </div>
+            </div>
           </label>
           <div className="flex flex-wrap items-center gap-6">
             <label className="flex items-center gap-3">
