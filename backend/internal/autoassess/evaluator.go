@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,7 +25,7 @@ type Evaluator struct {
 	// allMu serialises full re-evaluations; triggers that arrive while one runs
 	// are coalesced into one more run.
 	allMu      sync.Mutex
-	allPending bool
+	allPending []string // triggers that arrived while a run was in progress
 	allRunning bool
 }
 
@@ -279,7 +280,9 @@ func writeDecision(ctx context.Context, tx pgx.Tx, serverID int64, d Decision, e
 func (e *Evaluator) EvaluateAll(ctx context.Context, trigger string) {
 	e.allMu.Lock()
 	if e.allRunning {
-		e.allPending = true
+		if !slices.Contains(e.allPending, trigger) {
+			e.allPending = append(e.allPending, trigger)
+		}
 		e.allMu.Unlock()
 		return
 	}
@@ -289,12 +292,13 @@ func (e *Evaluator) EvaluateAll(ctx context.Context, trigger string) {
 	for {
 		e.evaluateAllOnce(ctx, trigger)
 		e.allMu.Lock()
-		if !e.allPending {
+		if len(e.allPending) == 0 {
 			e.allRunning = false
 			e.allMu.Unlock()
 			return
 		}
-		e.allPending = false
+		trigger = strings.Join(e.allPending, ", ")
+		e.allPending = nil
 		e.allMu.Unlock()
 	}
 }
