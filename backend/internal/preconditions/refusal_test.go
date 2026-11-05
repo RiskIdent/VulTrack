@@ -134,9 +134,9 @@ func TestRefusalFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if st.Analyses.OK != 1 || st.Analyses.Refused != 1 || len(st.Refusals) != 1 ||
-				!strings.Contains(st.Refusals[0].Error, `category "cyber"`) {
-				t.Fatalf("after refusal: %+v %+v", st.Analyses, st.Refusals)
+			if st.Analyses.OK != 1 || st.Analyses.Refused != 1 || len(st.Failures) != 1 || !st.Failures[0].Refused ||
+				!strings.Contains(st.Failures[0].Error, `category "cyber"`) {
+				t.Fatalf("after refusal: %+v %+v", st.Analyses, st.Failures)
 			}
 			calls := len(fake.calls)
 			an.RunOnce(context.Background())
@@ -149,8 +149,8 @@ func TestRefusalFallback(t *testing.T) {
 			an.RunOnce(context.Background())
 			an.RunOnce(context.Background())
 			st, _ = an.GetStatus(ctx)
-			if st.Analyses.OK != 2 || st.Analyses.ByFallback != 1 || len(st.Refusals) != 0 {
-				t.Fatalf("after fallback: %+v %+v (calls %v)", st.Analyses, st.Refusals, fake.calls)
+			if st.Analyses.OK != 2 || st.Analyses.ByFallback != 1 || len(st.Failures) != 0 {
+				t.Fatalf("after fallback: %+v %+v (calls %v)", st.Analyses, st.Failures, fake.calls)
 			}
 			a1, err := an.GetAnalysis(ctx, "CVE-2026-0001")
 			if err != nil {

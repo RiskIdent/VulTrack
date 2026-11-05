@@ -613,7 +613,7 @@ export interface PreconditionStatus {
   spentTotal: number;
   avgCost: number;
   analyses: { ok: number; determinable: number; pending: number; errors: number; refused: number; byFallback: number };
-  refusals: { cveId: string; model: string; fallback: boolean; error: string; at: string }[];
+  failures: { cveId: string; model: string; refused: boolean; fallback: boolean; terminal: boolean; error: string; at: string }[];
   batchesInProgress: number;
   lastError?: string;
 }

@@ -281,23 +281,44 @@ export function PreconditionSettings() {
           <Tile label={`Declined (${status.analyses.byFallback} by fallback)`} value={status.analyses.refused} />
           <Tile label="Spent in total" text={usd(status.spentTotal)} />
         </div>
-        {status.refusals.length > 0 && (
+        {status.failures.length > 0 && (
           <div className="mt-4">
-            <h4 className="text-sm font-semibold text-[#a5d6a7] mb-2">Declined and still open</h4>
-            <table className="w-full">
-              <tbody>
-                {status.refusals.map((r) => (
-                  <tr key={r.cveId} className="table-row">
-                    <td className="py-1.5 px-2 font-mono text-sm">
-                      <Link to={`/triage/${encodeURIComponent(r.cveId)}`} className="text-[#e8f5e9] hover:underline">{r.cveId}</Link>
-                    </td>
-                    <td className="py-1.5 px-2 text-sm text-[#a5d6a7]">{MODEL_NAMES[r.model] || r.model}{r.fallback ? ' (fallback)' : ''}</td>
-                    <td className="py-1.5 px-2 text-xs text-[#6b7280] max-w-xl truncate" title={r.error}>{r.error}</td>
-                    <td className="py-1.5 px-2 text-xs text-[#6b7280] whitespace-nowrap">{new Date(r.at).toLocaleString()}</td>
+            <h4 className="text-sm font-semibold text-[#a5d6a7] mb-1">Failed analyses</h4>
+            <p className="text-xs text-[#6b7280] mb-2">
+              These CVEs stay open for a human. Declined ones are retried by the fallback model if one is set; other errors are retried
+              after a day unless they are permanent (invalid output, rejected request).
+            </p>
+            <div className="max-h-96 overflow-y-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-[#2d3f36]">
+                    <th className="table-header text-left py-2 px-2">CVE</th>
+                    <th className="table-header text-left py-2 px-2">Model</th>
+                    <th className="table-header text-left py-2 px-2">Kind</th>
+                    <th className="table-header text-left py-2 px-2">Error</th>
+                    <th className="table-header text-left py-2 px-2">When</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {status.failures.map((f) => (
+                    <tr key={f.cveId} className="table-row align-top">
+                      <td className="py-1.5 px-2 font-mono text-sm whitespace-nowrap">
+                        <Link to={`/triage/${encodeURIComponent(f.cveId)}`} className="text-[#e8f5e9] hover:underline">{f.cveId}</Link>
+                      </td>
+                      <td className="py-1.5 px-2 text-sm text-[#a5d6a7] whitespace-nowrap">{MODEL_NAMES[f.model] || f.model}{f.fallback ? ' (fallback)' : ''}</td>
+                      <td className="py-1.5 px-2 text-xs whitespace-nowrap">
+                        {f.refused ? <span className="text-yellow-400">declined</span> : f.terminal ? <span className="text-red-400">permanent</span> : <span className="text-[#a5d6a7]">retried</span>}
+                      </td>
+                      <td className="py-1.5 px-2 text-xs text-[#6b7280] break-all">{f.error}</td>
+                      <td className="py-1.5 px-2 text-xs text-[#6b7280] whitespace-nowrap">{new Date(f.at).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {status.failures.length < status.analyses.errors && (
+              <p className="text-xs text-[#6b7280] mt-1">Showing the latest {status.failures.length} of {status.analyses.errors}.</p>
+            )}
           </div>
         )}
         {status.lastError && <p className="text-xs text-red-400 mt-3">Last error: {status.lastError}</p>}

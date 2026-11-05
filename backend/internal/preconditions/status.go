@@ -32,17 +32,19 @@ type Status struct {
 		Refused      int `json:"refused"`    // declined by the main model
 		ByFallback   int `json:"byFallback"` // analysed by the fallback model after a refusal
 	} `json:"analyses"`
-	// Refusals lists the latest CVEs a model declined.
-	Refusals          []Refusal `json:"refusals"`
+	// Failures lists the latest failed analyses (refusals included).
+	Failures          []Failure `json:"failures"`
 	BatchesInProgress int       `json:"batchesInProgress"`
 	LastError         string    `json:"lastError,omitempty"`
 }
 
-// Refusal is a CVE a model declined to analyse.
-type Refusal struct {
+// Failure is a CVE whose analysis failed, including refusals.
+type Failure struct {
 	CVEID    string    `json:"cveId"`
-	Model    string    `json:"model"`    // the model that declined last
-	Fallback bool      `json:"fallback"` // the fallback model declined too
+	Model    string    `json:"model"`    // the model of the failed attempt
+	Refused  bool      `json:"refused"`  // the model declined (safety classifier)
+	Fallback bool      `json:"fallback"` // the attempt was the fallback model's
+	Terminal bool      `json:"terminal"` // will not be retried until the CVE data or the model changes
 	Error    string    `json:"error"`
 	At       time.Time `json:"at"`
 }
@@ -54,7 +56,7 @@ func (a *Analyzer) GetStatus(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	st := &Status{Config: cfg, Models: services.PreconditionModels, FallbackModels: services.PreconditionFallbackModels,
-		Configured: a.client != nil, Refusals: []Refusal{}}
+		Configured: a.client != nil, Failures: []Failure{}}
 	a.mu.Lock()
 	st.Running, st.LastError = a.running, a.lastErr
 	a.mu.Unlock()
@@ -76,20 +78,21 @@ func (a *Analyzer) GetStatus(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	rows, err := a.db.Query(ctx, `
-		SELECT cve_id, model, model <> refused_by, COALESCE(error, ''), COALESCE(analysed_at, requested_at)
-		FROM precondition_analyses WHERE status = 'error' AND refused_by IS NOT NULL
-		ORDER BY COALESCE(analysed_at, requested_at) DESC LIMIT 20
+		SELECT cve_id, model, refused_by IS NOT NULL, COALESCE(model <> refused_by, false), terminal,
+		       COALESCE(error, ''), COALESCE(analysed_at, requested_at)
+		FROM precondition_analyses WHERE status = 'error'
+		ORDER BY COALESCE(analysed_at, requested_at) DESC LIMIT 200
 	`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var r Refusal
-		if err := rows.Scan(&r.CVEID, &r.Model, &r.Fallback, &r.Error, &r.At); err != nil {
+		var f Failure
+		if err := rows.Scan(&f.CVEID, &f.Model, &f.Refused, &f.Fallback, &f.Terminal, &f.Error, &f.At); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		st.Refusals = append(st.Refusals, r)
+		st.Failures = append(st.Failures, f)
 	}
 	rows.Close()
 	err = a.db.QueryRow(ctx, `SELECT COUNT(*) FROM precondition_batches WHERE status = 'in_progress'`).Scan(&st.BatchesInProgress)
