@@ -7,6 +7,7 @@ package services_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -81,11 +82,24 @@ func TestPackageUsage(t *testing.T) {
 		t.Errorf("after a gap the observation restarts: %v", u.ObservedFor)
 	}
 
-	// Truncated, missing or no runtime at all: observation ends.
+	// Only process lists cut (20 per package): the package list is complete,
+	// so the observation continues and the packages count as in use.
+	exec(`UPDATE package_usage_observation SET observed_since = NOW() - interval '20 days', last_observed_at = NOW()`)
+	ingest(`{"schemaVersion": 1, "packagesInUse": [{"package": "libc6", "processes": ["a"]}], "truncated": ["packagesInUse"]}`)
+	if u = usage(); u.ObservedFor < 19*24*time.Hour || u.LastInUse["libc6"] > time.Minute {
+		t.Errorf("cut process lists must not end the observation: %v, %v", u.ObservedFor, u.LastInUse)
+	}
+
+	// Entries dropped at the cap, missing or no runtime at all: observation ends.
+	many := make([]map[string]any, 3000)
+	for i := range many {
+		many[i] = map[string]any{"package": fmt.Sprintf("p%d", i), "processes": []string{"x"}}
+	}
+	capped, _ := json.Marshal(map[string]any{"schemaVersion": 1, "packagesInUse": many, "truncated": []string{"packagesInUse"}})
 	for name, rt := range map[string]string{
-		"truncated":  `{"schemaVersion": 1, "packagesInUse": [{"package": "a", "processes": ["x"]}], "truncated": ["packagesInUse"]}`,
-		"missing":    `{"schemaVersion": 1, "listeners": []}`,
-		"no runtime": ``,
+		"entries cut": string(capped),
+		"missing":     `{"schemaVersion": 1, "listeners": []}`,
+		"no runtime":  ``,
 	} {
 		exec(`UPDATE package_usage_observation SET observed_since = NOW() - interval '20 days', last_observed_at = NOW()`)
 		ingest(rt)
@@ -100,7 +114,7 @@ func TestPackageUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rt.PackageUsage == nil || rt.PackageUsage.TrackedPackages != 2 {
+	if rt.PackageUsage == nil || rt.PackageUsage.TrackedPackages != 3 {
 		t.Errorf("runtime API: %+v", rt.PackageUsage)
 	}
 }

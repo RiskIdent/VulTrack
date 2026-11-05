@@ -254,6 +254,10 @@ func (s *RuntimeFactsService) Ingest(ctx context.Context, serverID int64, raw js
 	return res, tx.Commit(ctx)
 }
 
+// maxPackagesInUse is the agent's cap on packagesInUse entries
+// (docs/AGENT_RUNTIME_FACTS_PROMPT.md §5).
+const maxPackagesInUse = 3000
+
 // UsageGap is the longest pause between two reports with complete
 // packagesInUse that still counts as continuous observation.
 const UsageGap = 6 * time.Hour
@@ -261,12 +265,19 @@ const UsageGap = 6 * time.Hour
 // recordPackageUsage updates when each package was last seen in use and since
 // when usage has been observed without a gap. A missing, unreadable or
 // truncated packagesInUse ends the observation: packages beyond the cut could
-// have been in use.
+// have been in use (see below for truncated process lists).
 func recordPackageUsage(ctx context.Context, tx pgx.Tx, serverID int64, raw json.RawMessage, truncated bool) error {
 	var entries []struct {
 		Package string `json:"package"`
 	}
-	if !present(raw) || truncated || json.Unmarshal(raw, &entries) != nil {
+	if !present(raw) || json.Unmarshal(raw, &entries) != nil {
+		return endUsageObservation(ctx, tx, serverID)
+	}
+	// The agent sets "truncated" both when it drops entries (cap of
+	// maxPackagesInUse) and when it only shortens the process list of an entry
+	// (20 per package). Only the first loses packages; with fewer entries than
+	// the cap, every package in use is listed.
+	if truncated && len(entries) >= maxPackagesInUse {
 		return endUsageObservation(ctx, tx, serverID)
 	}
 	pkgs := make([]string, 0, len(entries))
