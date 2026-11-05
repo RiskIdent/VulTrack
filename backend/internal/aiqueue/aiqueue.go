@@ -167,6 +167,11 @@ func (q *Queue) process(cveID string, retryCount int) {
 	infra, _ := q.settings.GetValue(ctx, services.SettingAISystemPrompt)
 
 	result, meta, err := q.client.Assess(ctx, in, ai.AssessOptions{Model: model, InfraContext: infra})
+	usage := ai.Usage{InputTokens: int64(meta.InputTokens), OutputTokens: int64(meta.OutputTokens)}
+	if uerr := q.aiService.RecordUsage(ctx, "advisory", meta.Model, cveID, meta.InputTokens, meta.OutputTokens,
+		ai.Cost(meta.Model, usage, false)); uerr != nil {
+		log.Warn().Err(uerr).Str("cve", cveID).Msg("Failed to record AI usage")
+	}
 	if err != nil {
 		q.handleError(ctx, cveID, retryCount, meta, err)
 		return

@@ -458,6 +458,25 @@ Decisions are re-evaluated after every scan of a server, after each KEV/EPSS syn
 ### Monitoring
 - `GET /metrics` - Prometheus metrics endpoint (no authentication required)
 
+Metrics of the assessment automation:
+
+| Metric | Meaning |
+|---|---|
+| `vultrack_auto_decisions{rule,state}` | Stored automated decisions by rule and state (applied, shadow, blocked, rejected, overridden) |
+| `vultrack_auto_decision_changes_total{change}` | Decisions created, changed and revoked |
+| `vultrack_auto_assessment_mode{mode}`, `vultrack_auto_assessment_rule_mode{rule,mode}` | Configured global mode and effective mode per rule (1 = current) |
+| `vultrack_ai_calls_total{stage,model,batch}` | Model calls per AI stage (`advisory`, `preconditions`) |
+| `vultrack_ai_tokens_total{stage,model,type}` | Tokens: input, output, cache_read, cache_write |
+| `vultrack_ai_cost_usd_total{stage,model}`, `vultrack_ai_cost_month_usd{stage}` | Estimated cost at list prices, in total and in the current month |
+| `vultrack_ai_preconditions_enabled`, `vultrack_ai_preconditions_budget_usd` | Switch and monthly budget of the precondition analysis |
+| `vultrack_ai_preconditions_analyses{state}` | ok, determinable, pending, error, refused, by_fallback |
+| `vultrack_ai_preconditions_batches_in_progress` | Message Batches still processing |
+| `vultrack_kernel_cve_records{status}`, `vultrack_kernel_builds{status}` | Kernel data for R-KMOD |
+| `vultrack_runtime_fact_servers{category,complete}` | Servers reporting each runtime fact category |
+| `vultrack_package_usage_observed_servers` | Servers whose package usage is observed without a gap (R-UNUSED) |
+
+AI cost is recorded per call from v1.6.8 on; advisory calls before that are not included.
+
 ## MCP Interface (AI Agents)
 
 VulTrack exposes a [Model Context Protocol](https://modelcontextprotocol.io) server so that AI agents can query the vulnerability landscape and perform triage actions. It is built into the backend and served at:

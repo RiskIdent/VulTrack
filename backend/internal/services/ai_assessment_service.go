@@ -308,3 +308,16 @@ func (s *AIAssessmentService) BuildInput(ctx context.Context, cveID string) (ai.
 	}
 	return in, nil
 }
+
+// RecordUsage logs one model call in ai_usage, the cost record shared by all
+// AI stages (statistics and Prometheus).
+func (s *AIAssessmentService) RecordUsage(ctx context.Context, stage, model, cveID string, inputTokens, outputTokens int, costUSD float64) error {
+	if inputTokens == 0 && outputTokens == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO ai_usage (stage, model, cve_id, input_tokens, output_tokens, cost_usd)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, stage, model, cveID, inputTokens, outputTokens, costUSD)
+	return err
+}

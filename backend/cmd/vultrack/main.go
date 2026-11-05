@@ -118,6 +118,9 @@ func main() {
 	autoAssessmentService := services.NewAutoAssessmentService(db)
 	runtimeFactsService := services.NewRuntimeFactsService(db)
 	autoEvaluator := autoassess.New(db, settingsService)
+	for _, r := range autoassess.Rules {
+		metrics.RuleIDs = append(metrics.RuleIDs, r.ID())
+	}
 	threatIntelSyncer.SetAfterSync(func(src threatintel.Source) {
 		autoEvaluator.TriggerAll(string(src) + " sync")
 	})
