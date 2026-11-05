@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net/mail"
 	"net/url"
@@ -449,6 +450,10 @@ func (h *Handler) Shutdown() error {
 
 // Error handler
 func (h *Handler) errorHandler(c *fiber.Ctx, err error) error {
+	var coded *codedError
+	if errors.As(err, &coded) {
+		return c.Status(coded.status).JSON(fiber.Map{"error": coded.message, "code": coded.code})
+	}
 	code := fiber.StatusInternalServerError
 	if e, ok := err.(*fiber.Error); ok {
 		code = e.Code
@@ -457,6 +462,22 @@ func (h *Handler) errorHandler(c *fiber.Ctx, err error) error {
 		"error": err.Error(),
 	})
 }
+
+// codedError is an API error with a machine-readable code next to the message,
+// rendered as {"error": ..., "code": ...}. Clients branch on the code.
+type codedError struct {
+	status  int
+	message string
+	code    string
+}
+
+func (e *codedError) Error() string { return e.message }
+
+// Agent registration states reported to agents (docs/AGENT_API.md).
+var (
+	errAgentPending = &codedError{fiber.StatusForbidden, "Agent is pending admin approval", "agent_pending"}
+	errAgentRevoked = &codedError{fiber.StatusForbidden, "Agent was revoked by an administrator", "agent_revoked"}
+)
 
 // Health check
 func (h *Handler) healthCheck(c *fiber.Ctx) error {

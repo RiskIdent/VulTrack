@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS registered_agents (
     token_hash VARCHAR(64) NOT NULL,          -- SHA-256 hash of the token
     token_prefix VARCHAR(8) NOT NULL,         -- First 8 chars for identification
     enrolled_via INTEGER REFERENCES enrollment_keys(id) ON DELETE SET NULL,
-    status VARCHAR(20) DEFAULT 'pending',     -- pending, active, revoked
+    status VARCHAR(20) DEFAULT 'pending',     -- pending, active, revoked (by an admin), superseded (replaced by a forced re-enrollment)
     last_seen_at TIMESTAMP,
     last_ip VARCHAR(45),
     agent_version VARCHAR(20),                -- Agent software version
@@ -207,6 +207,32 @@ CREATE INDEX IF NOT EXISTS idx_registered_agents_token_prefix
 
 CREATE INDEX IF NOT EXISTS idx_registered_agents_status 
     ON registered_agents(status);
+
+CREATE INDEX IF NOT EXISTS idx_registered_agents_hostname
+    ON registered_agents(hostname, created_at DESC);
+
+-- One-time data migrations, recorded so they never run twice.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name       VARCHAR(100) PRIMARY KEY,
+    applied_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Forced re-enrollments used to mark the replaced registration 'revoked',
+-- exactly like an admin revocation. They are now 'superseded'. Existing rows:
+-- a revoked registration for which a newer one of the same host exists was
+-- replaced; any other revoked registration was revoked by an admin. Runs once,
+-- because after it an admin-revoked row can legitimately have newer rows.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE name = '2026-11-agents-superseded') THEN
+    UPDATE registered_agents ra
+    SET status = 'superseded'
+    WHERE ra.status = 'revoked'
+      AND EXISTS (SELECT 1 FROM registered_agents n
+                  WHERE n.hostname = ra.hostname AND n.created_at > ra.created_at);
+    INSERT INTO schema_migrations (name) VALUES ('2026-11-agents-superseded');
+  END IF;
+END $$;
 
 -- ============================================================================
 -- OVAL DEFINITIONS (NEW)

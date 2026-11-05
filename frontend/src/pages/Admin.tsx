@@ -1962,6 +1962,8 @@ function AgentsTab() {
         return <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-600/20 text-yellow-400">Pending</span>;
       case 'revoked':
         return <span className="px-2 py-1 rounded text-xs font-medium bg-red-600/20 text-red-400">Revoked</span>;
+      case 'superseded':
+        return <span className="px-2 py-1 rounded text-xs font-medium bg-gray-600/20 text-gray-400" title="Replaced by a newer registration of the same host">Replaced</span>;
       default:
         return <span className="px-2 py-1 rounded text-xs font-medium bg-gray-600/20 text-gray-400">{status}</span>;
     }
@@ -2012,7 +2014,7 @@ function AgentsTab() {
         break;
       case 'status':
         // Sort order: pending, active, revoked
-        const statusOrder: Record<string, number> = { pending: 0, active: 1, revoked: 2 };
+        const statusOrder: Record<string, number> = { pending: 0, active: 1, revoked: 2, superseded: 3 };
         aVal = statusOrder[a.status] ?? 3;
         bVal = statusOrder[b.status] ?? 3;
         break;

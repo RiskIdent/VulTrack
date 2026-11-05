@@ -24,6 +24,29 @@ v2 uses a two-token model:
 - **Access token** — short-lived signed JWT (HS256). Passed as `Authorization: Bearer <jwt>` on every report request. No database lookup is required on the server to validate it.
 - **Refresh token** — long-lived opaque token (`rt_…`). Used exclusively to obtain a new access token. Each use **rotates** the refresh token (old token is revoked, new one is issued atomically).
 
+### Error format and registration states
+
+Errors are JSON with a human-readable `error`. Errors about the state of the
+agent's registration also carry a machine-readable `code`:
+
+```json
+{"error": "Agent is pending admin approval", "code": "agent_pending"}
+```
+
+| Code | Status | Meaning | What the agent should do |
+|---|---|---|---|
+| `agent_pending` | `403` | The registration exists and waits for admin approval. | Keep its tokens, retry on the next cycle. **Do not re-enroll.** |
+| `agent_revoked` | `403` | An administrator revoked the registration. | Stop reporting. **Do not re-enroll.** The host is let back in by an admin deleting the registration. |
+
+`401` keeps meaning "token invalid, expired or unknown"; the agent re-enrolls
+on it. Agents up to 1.2.1 treat any `403` as a non-retryable error; agents from
+1.2.2 on wait (`agent_pending`) or stop (`agent_revoked`) without re-enrolling.
+
+A registration replaced by a forced re-enrollment (`force: true`) is
+*superseded*: its tokens are revoked and it answers `401`, so the old copy of an
+agent enrolls again. Superseded registrations are not listed as agents in the
+Admin UI.
+
 ### v2.1 Enrollment
 
 Agents must enroll once before they can submit reports.
@@ -84,7 +107,8 @@ Agents must enroll once before they can submit reports.
 |--------|-------------|
 | `400 Bad Request` | Missing `hostname` or invalid JSON |
 | `401 Unauthorized` | Missing, invalid, expired, or inactive enrollment key |
-| `409 Conflict` | Hostname already registered. Set `force: true` to re-enroll. |
+| `403 Forbidden`, code `agent_revoked` | The host's latest registration was revoked by an administrator; with or without `force`. An admin lets the host back in by deleting that registration (`DELETE /api/v1/admin/agents/:id`). |
+| `409 Conflict` | Hostname already registered (active or pending). Set `force: true` to re-enroll; the old registration is superseded. |
 
 ---
 
@@ -117,7 +141,14 @@ The agent **must replace both stored tokens** after a successful refresh.
 
 | Status | Description |
 |--------|-------------|
-| `401 Unauthorized` | Refresh token not found, already revoked, or expired |
+| `401 Unauthorized` | Refresh token not found, already revoked, or expired; or its registration was superseded |
+| `403 Forbidden`, code `agent_pending` | The registration waits for admin approval. The refresh token is **not** rotated; keep using it. |
+| `403 Forbidden`, code `agent_revoked` | The registration was revoked by an administrator (also when the refresh token itself has expired). The token is not rotated. |
+
+The registration state is checked before the token's own validity, in this
+order: unknown token → `401`; revoked by an admin → `403 agent_revoked`;
+pending → `403 agent_pending`; superseded → `401`; token revoked or expired →
+`401`; otherwise the tokens are rotated.
 
 ---
 
@@ -156,7 +187,9 @@ Identical to v1 — see [Request Body](#report-request-body) below.
 | Status | Description |
 |--------|-------------|
 | `400 Bad Request` | Missing required field or invalid JSON |
-| `401 Unauthorized` | Missing, invalid, or expired access token; or agent has been revoked |
+| `401 Unauthorized` | Missing, invalid, or expired access token; or the registration was superseded or deleted |
+| `403 Forbidden`, code `agent_pending` | Valid token, but the registration waits for admin approval |
+| `403 Forbidden`, code `agent_revoked` | Valid token, but an administrator revoked the registration |
 
 ---
 
@@ -190,6 +223,9 @@ Identical to v1 — see [Request Body](#report-request-body) below.
 │                                                         │
 │  If 401 on token refresh: refresh token expired →       │
 │    Re-enroll using enrollment key from config           │
+│                                                         │
+│  If 403 agent_pending: wait for approval, retry later   │
+│  If 403 agent_revoked: stop; never re-enroll on 403     │
 └─────────────────────────────────────────────────────────┘
 ```
 

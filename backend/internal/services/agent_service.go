@@ -157,6 +157,10 @@ func (s *AgentService) GetAll(ctx context.Context, statusFilter string) ([]model
 	if statusFilter != "" {
 		query += " WHERE ra.status = $1"
 		args = append(args, statusFilter)
+	} else {
+		// Registrations replaced by a forced re-enrollment are history, not
+		// agents; they are listed only when asked for explicitly.
+		query += " WHERE ra.status <> '" + models.AgentStatusSuperseded + "'"
 	}
 	query += " ORDER BY ra.created_at DESC"
 
@@ -291,6 +295,35 @@ func (s *AgentService) Revoke(ctx context.Context, id int64) error {
 	return nil
 }
 
+// Supersede marks a registration as replaced by a forced re-enrollment of the
+// same host and revokes its refresh tokens. Unlike Revoke (an admin action) it
+// does not block the host from enrolling.
+func (s *AgentService) Supersede(ctx context.Context, id int64) error {
+	if _, err := s.db.Exec(ctx, `
+		UPDATE registered_agents SET status = $2 WHERE id = $1
+	`, id, models.AgentStatusSuperseded); err != nil {
+		return err
+	}
+	return s.RevokeAllRefreshTokens(ctx, id)
+}
+
+// LatestRegistrationStatus returns the status of the host's most recent
+// registration that is active, pending or revoked by an admin ("" if none).
+// Superseded registrations are ignored.
+func (s *AgentService) LatestRegistrationStatus(ctx context.Context, hostname string) (string, error) {
+	var status string
+	err := s.db.QueryRow(ctx, `
+		SELECT status FROM registered_agents
+		WHERE hostname = $1 AND status IN ($2, $3, $4)
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, hostname, models.AgentStatusActive, models.AgentStatusPending, models.AgentStatusRevoked).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return status, err
+}
+
 // Delete deletes an agent
 func (s *AgentService) Delete(ctx context.Context, id int64) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM registered_agents WHERE id = $1`, id)
@@ -305,10 +338,10 @@ func (s *AgentService) GetByHostname(ctx context.Context, hostname string) (*mod
 		SELECT id, server_id, hostname, token_prefix, enrolled_via, status, 
 		       last_seen_at, last_ip, agent_version, created_at
 		FROM registered_agents
-		WHERE hostname = $1 AND status != $2
+		WHERE hostname = $1 AND status IN ($2, $3)
 		ORDER BY created_at DESC
 		LIMIT 1
-	`, hostname, models.AgentStatusRevoked).Scan(
+	`, hostname, models.AgentStatusActive, models.AgentStatusPending).Scan(
 		&agent.ID,
 		&agent.ServerID,
 		&agent.Hostname,
@@ -395,6 +428,14 @@ func (s *AgentService) GetAgentStats(ctx context.Context) (map[string]interface{
 // V2 REFRESH TOKEN METHODS
 // ============================================================================
 
+// Errors of ValidateAndRotateRefreshToken. ErrAgentPending and ErrAgentRevoked
+// come with the agent, so the caller can record that it is alive.
+var (
+	ErrRefreshTokenInvalid = errors.New("invalid or expired refresh token")
+	ErrAgentPending        = errors.New("agent is pending admin approval")
+	ErrAgentRevoked        = errors.New("agent was revoked by an administrator")
+)
+
 // CreateRefreshToken creates and persists a new refresh token for the given agent.
 // Returns the stored record and the full (unhashed) token to return to the caller once.
 func (s *AgentService) CreateRefreshToken(ctx context.Context, agentID int64, ttlDays int) (*models.AgentRefreshToken, string, error) {
@@ -424,7 +465,7 @@ func (s *AgentService) CreateRefreshToken(ctx context.Context, agentID int64, tt
 // This implements refresh-token rotation: each token can only be used once.
 func (s *AgentService) ValidateAndRotateRefreshToken(ctx context.Context, token string, ttlDays int) (*models.RegisteredAgent, string, error) {
 	if !auth.ValidateRefreshToken(token) {
-		return nil, "", errors.New("invalid refresh token format")
+		return nil, "", fmt.Errorf("%w: invalid refresh token format", ErrRefreshTokenInvalid)
 	}
 	tokenHash := auth.HashKey(token)
 
@@ -444,19 +485,28 @@ func (s *AgentService) ValidateAndRotateRefreshToken(ctx context.Context, token 
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, "", errors.New("invalid refresh token")
+			return nil, "", fmt.Errorf("%w: unknown refresh token", ErrRefreshTokenInvalid)
 		}
 		return nil, "", err
 	}
 
+	// The registration's state decides before the token's own validity, so an
+	// agent that is pending or revoked by an admin learns that instead of
+	// re-enrolling (docs/AGENT_API.md). Its token is neither rotated nor revoked.
+	switch agent.Status {
+	case models.AgentStatusRevoked:
+		return &agent, "", ErrAgentRevoked
+	case models.AgentStatusPending:
+		return &agent, "", ErrAgentPending
+	case models.AgentStatusActive:
+	default: // superseded or unknown
+		return nil, "", fmt.Errorf("%w: registration is %s", ErrRefreshTokenInvalid, agent.Status)
+	}
 	if revokedAt != nil {
-		return nil, "", errors.New("refresh token has been revoked")
+		return nil, "", fmt.Errorf("%w: refresh token has been revoked", ErrRefreshTokenInvalid)
 	}
 	if time.Now().After(rt.ExpiresAt) {
-		return nil, "", errors.New("refresh token has expired")
-	}
-	if agent.Status != models.AgentStatusActive {
-		return nil, "", fmt.Errorf("agent status is %s, not active", agent.Status)
+		return nil, "", fmt.Errorf("%w: refresh token has expired", ErrRefreshTokenInvalid)
 	}
 
 	// Atomic rotation: revoke old token, insert new one

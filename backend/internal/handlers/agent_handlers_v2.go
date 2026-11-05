@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/vultrack/vultrack/internal/auth"
 	"github.com/vultrack/vultrack/internal/metrics"
 	"github.com/vultrack/vultrack/internal/models"
+	"github.com/vultrack/vultrack/internal/services"
 )
 
 // extractBearerToken extracts the token from an "Authorization: Bearer <token>" header.
@@ -57,6 +59,17 @@ func (h *Handler) enrollAgentV2(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusUnauthorized, "Invalid enrollment key")
 	}
 
+	// A host whose latest registration an administrator revoked stays out,
+	// with or without force, until the admin deletes that registration.
+	latest, err := h.agentService.LatestRegistrationStatus(ctx, req.Hostname)
+	if err != nil {
+		return err
+	}
+	if latest == models.AgentStatusRevoked {
+		log.Warn().Str("hostname", req.Hostname).Msg("Enrollment refused: host was revoked by an administrator (v2)")
+		return errAgentRevoked
+	}
+
 	// Check for an existing active/pending agent with the same hostname
 	existing, err := h.agentService.GetByHostname(ctx, req.Hostname)
 	if err != nil {
@@ -67,12 +80,10 @@ func (h *Handler) enrollAgentV2(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusConflict,
 				"Agent already registered for this hostname. Set force=true to re-enroll.")
 		}
-		// Forceful re-enrollment: revoke old agent and its refresh tokens
-		if err := h.agentService.RevokeAllRefreshTokens(ctx, existing.ID); err != nil {
-			log.Warn().Err(err).Int64("agentId", existing.ID).Msg("Failed to revoke old refresh tokens during re-enrollment")
-		}
-		if err := h.agentService.Revoke(ctx, existing.ID); err != nil {
-			log.Warn().Err(err).Int64("agentId", existing.ID).Msg("Failed to revoke old agent during re-enrollment")
+		// Forced re-enrollment: the old registration is superseded (not
+		// admin-revoked) and its refresh tokens are revoked.
+		if err := h.agentService.Supersede(ctx, existing.ID); err != nil {
+			log.Warn().Err(err).Int64("agentId", existing.ID).Msg("Failed to supersede old agent during re-enrollment")
 		}
 	}
 
@@ -140,9 +151,21 @@ func (h *Handler) refreshAgentToken(c *fiber.Ctx) error {
 	accessTTLHours := h.settingsService.GetIntWithDefault(ctx, "agent_access_token_ttl_hours", 24)
 
 	agent, newRefreshToken, err := h.agentService.ValidateAndRotateRefreshToken(ctx, refreshToken, refreshTTLDays)
-	if err != nil {
+	switch {
+	case errors.Is(err, services.ErrAgentPending), errors.Is(err, services.ErrAgentRevoked):
+		// The token stays as it is; record that the agent is alive.
+		if lsErr := h.agentService.UpdateLastSeen(ctx, agent.ID, getClientIP(c), ""); lsErr != nil {
+			log.Warn().Err(lsErr).Int64("agentId", agent.ID).Msg("Failed to update agent last seen")
+		}
+		if errors.Is(err, services.ErrAgentPending) {
+			return errAgentPending
+		}
+		return errAgentRevoked
+	case errors.Is(err, services.ErrRefreshTokenInvalid):
 		log.Warn().Err(err).Msg("Token refresh failed (v2)")
 		return fiber.NewError(fiber.StatusUnauthorized, "Invalid or expired refresh token")
+	case err != nil:
+		return err
 	}
 
 	accessToken, err := auth.CreateAgentJWT(
@@ -212,7 +235,16 @@ func (h *Handler) receiveAgentReportV2(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if agent != nil {
+		switch agent.Status {
+		case models.AgentStatusPending:
+			return errAgentPending
+		case models.AgentStatusRevoked:
+			return errAgentRevoked
+		}
+	}
 	if agent == nil || agent.Status != models.AgentStatusActive {
+		// Deleted or superseded: the agent should enroll again.
 		return fiber.NewError(fiber.StatusUnauthorized, "Agent not found or not active")
 	}
 

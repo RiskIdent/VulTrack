@@ -373,7 +373,11 @@ type RegisteredAgent struct {
 const (
 	AgentStatusPending = "pending"
 	AgentStatusActive  = "active"
-	AgentStatusRevoked = "revoked"
+	AgentStatusRevoked = "revoked" // revoked by an administrator
+	// AgentStatusSuperseded marks a registration replaced by a forced
+	// re-enrollment of the same host. Unlike an admin revocation it does not
+	// block the host; it is hidden from the agent list by default.
+	AgentStatusSuperseded = "superseded"
 )
 
 // ============================================================================
