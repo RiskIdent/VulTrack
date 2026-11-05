@@ -471,6 +471,7 @@ Metrics of the assessment automation:
 | `vultrack_ai_preconditions_enabled`, `vultrack_ai_preconditions_budget_usd` | Switch and monthly budget of the precondition analysis |
 | `vultrack_ai_preconditions_analyses{state}` | ok, determinable, pending, error, refused, by_fallback |
 | `vultrack_ai_preconditions_batches_in_progress` | Message Batches still processing |
+| `vultrack_ai_preconditions_backlog` | CVEs of the triage queue without a current analysis (refreshed at most once a minute) |
 | `vultrack_kernel_cve_records{status}`, `vultrack_kernel_builds{status}` | Kernel data for R-KMOD |
 | `vultrack_runtime_fact_servers{category,complete}` | Servers reporting each runtime fact category |
 | `vultrack_package_usage_observed_servers` | Servers whose package usage is observed without a gap (R-UNUSED) |

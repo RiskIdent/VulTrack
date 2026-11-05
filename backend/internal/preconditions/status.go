@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/vultrack/vultrack/internal/ai"
 	"github.com/vultrack/vultrack/internal/services"
@@ -141,4 +142,36 @@ func (a *Analyzer) GetAnalysis(ctx context.Context, cveID string) (*Analysis, er
 		}
 	}
 	return &an, nil
+}
+
+// Backlog counts the CVEs of the triage queue, not yet decided by a rule,
+// that have no current analysis: no analysis with the configured model (or,
+// after a refusal, its fallback), none pending and no failure that will not
+// be retried. A changed CVE input is not detected here; such CVEs are
+// redone on the next run anyway.
+func Backlog(ctx context.Context, db *pgxpool.Pool, settings *services.SettingsService, findings *services.FindingService) (int, error) {
+	cfg, err := settings.LoadPreconditionConfig(ctx)
+	if err != nil {
+		return 0, err
+	}
+	opts, err := settings.BuildTriageOptions(ctx)
+	if err != nil {
+		return 0, err
+	}
+	ids, err := findings.TriageQueueCVEIDs(ctx, opts, RuleID, 1_000_000)
+	if err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	fallbackHash := ""
+	if cfg.FallbackModel != "" {
+		fallbackHash = ai.PreconditionPromptHash(cfg.FallbackModel)
+	}
+	var covered int
+	err = db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM precondition_analyses
+		WHERE cve_id = ANY($1)
+		  AND (prompt_hash = $2 OR (refused_by = $3 AND prompt_hash = $4))
+		  AND (status IN ('ok', 'pending') OR terminal OR refused_by IS NOT NULL)
+	`, ids, ai.PreconditionPromptHash(cfg.Model), cfg.Model, fallbackHash).Scan(&covered)
+	return len(ids) - covered, err
 }

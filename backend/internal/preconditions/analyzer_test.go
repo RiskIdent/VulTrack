@@ -149,6 +149,17 @@ func TestAnalyzer(t *testing.T) {
 	if want := 2 * 0.0226; st.SpentMonth < want-1e-9 || st.SpentMonth > want+1e-9 {
 		t.Errorf("spent %f, want %f", st.SpentMonth, want)
 	}
+	backlog := func() int {
+		t.Helper()
+		n, err := Backlog(ctx, pool, settings, findings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := backlog(); n != 1 {
+		t.Errorf("backlog %d, want 1 (CVE-3; CVE-4 is decided by a rule)", n)
+	}
 	an.RunOnce(context.Background())
 	if fake.calls != 2 {
 		t.Error("the daily limit was exceeded")
@@ -172,6 +183,9 @@ func TestAnalyzer(t *testing.T) {
 	st, _ = an.GetStatus(ctx)
 	if st.Analyses.OK != 3 || st.Analyses.Pending != 0 || st.BatchesInProgress != 0 {
 		t.Errorf("collected batch: %+v", st)
+	}
+	if n := backlog(); n != 0 {
+		t.Errorf("backlog %d after the batch, want 0", n)
 	}
 	if want := 2*0.0226 + 0.0113; st.SpentMonth < want-1e-9 || st.SpentMonth > want+1e-9 {
 		t.Errorf("spent %f, want %f (batch at half price)", st.SpentMonth, want)

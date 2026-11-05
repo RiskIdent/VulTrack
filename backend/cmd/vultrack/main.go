@@ -158,6 +158,9 @@ func main() {
 	// AI precondition analysis (inactive without API key or when disabled)
 	preconditionAnalyzer := preconditions.New(db, settingsService, findingService, aiClient)
 	preconditionAnalyzer.AfterChange = autoEvaluator.TriggerAll
+	metrics.PreconditionBacklog = func(ctx context.Context) (int, error) {
+		return preconditions.Backlog(ctx, db, settingsService, findingService)
+	}
 
 	// OIDC auth (provider is nil when OIDC disabled)
 	var oidcProvider *oidc.Provider

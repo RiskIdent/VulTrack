@@ -272,6 +272,7 @@ func (c *DBCollector) collectHeavy(ctx context.Context, ch chan<- prometheus.Met
 		c.collectFindings(ctx, buf)
 		c.collectAssessments(ctx, buf)
 		c.collectAutoDecisions(ctx, buf)
+		c.collectPreconditionBacklog(ctx, buf)
 		close(buf)
 		<-done
 		// Keep the previous values if this refresh failed entirely (e.g. timeout).

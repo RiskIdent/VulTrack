@@ -44,6 +44,9 @@ var (
 		"Kernel builds mapped for R-KMOD by status (ok, error).", []string{"status"}, nil)
 	runtimeServers = prometheus.NewDesc("vultrack_runtime_fact_servers",
 		"Servers with current runtime facts per category (complete = not truncated).", []string{"category", "complete"}, nil)
+	preBacklog = prometheus.NewDesc("vultrack_ai_preconditions_backlog",
+		"CVEs of the triage queue, not decided by a rule, that have no current precondition analysis yet. "+
+			"Refreshed at most once a minute.", nil, nil)
 	usageObserved = prometheus.NewDesc("vultrack_package_usage_observed_servers",
 		"Servers whose package usage is currently observed without a gap.", nil, nil)
 )
@@ -52,9 +55,13 @@ var (
 // cycle with internal/autoassess.
 var RuleIDs []string
 
+// PreconditionBacklog counts CVEs waiting for an AI precondition analysis;
+// set by main (internal/preconditions), nil disables the metric.
+var PreconditionBacklog func(ctx context.Context) (int, error)
+
 func describeAutomation(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{aiCalls, aiTokens, aiCost, aiCostMonth, preBudget, preEnabled, preAnalyses, preBatches,
-		autoMode, ruleMode, kernelCVEs, kernelBuilds, runtimeServers, usageObserved} {
+		autoMode, ruleMode, kernelCVEs, kernelBuilds, runtimeServers, usageObserved, preBacklog} {
 		ch <- d
 	}
 }
@@ -190,4 +197,17 @@ func (c *DBCollector) collectAutomation(ctx context.Context, ch chan<- prometheu
 	`, services.UsageGap.Seconds()).Scan(&observed) == nil {
 		gauge(usageObserved, float64(observed))
 	}
+}
+
+// collectPreconditionBacklog walks the triage queue, so it runs in the
+// cached heavy collectors.
+func (c *DBCollector) collectPreconditionBacklog(ctx context.Context, ch chan<- prometheus.Metric) {
+	if PreconditionBacklog == nil {
+		return
+	}
+	n, err := PreconditionBacklog(ctx)
+	if err != nil {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(preBacklog, prometheus.GaugeValue, float64(n))
 }
