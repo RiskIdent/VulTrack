@@ -176,7 +176,8 @@ func assessmentOrderBy(sortBy, sortOrder string) string {
 // GetByCVE returns an assessment by CVE ID
 func (s *AssessmentService) GetByCVE(ctx context.Context, cveID string) (*models.Assessment, error) {
 	query := `
-		SELECT id, cve_id, status, comment, COALESCE(ticket_url, ''), assessed_by, assessed_at, created_at, updated_at
+		SELECT id, cve_id, status, comment, COALESCE(ticket_url, ''), assessed_by, assessed_at, created_at, updated_at,
+		       binding_all_servers
 		FROM assessments
 		WHERE cve_id = $1
 	`
@@ -184,7 +185,7 @@ func (s *AssessmentService) GetByCVE(ctx context.Context, cveID string) (*models
 	var a models.Assessment
 	err := s.db.QueryRow(ctx, query, cveID).Scan(
 		&a.ID, &a.CVEID, &a.Status, &a.Comment, &a.TicketURL, &a.AssessedBy,
-		&a.AssessedAt, &a.CreatedAt, &a.UpdatedAt,
+		&a.AssessedAt, &a.CreatedAt, &a.UpdatedAt, &a.BindingAllServers,
 	)
 	if err != nil {
 		return nil, err
@@ -196,11 +197,13 @@ func (s *AssessmentService) GetByCVE(ctx context.Context, cveID string) (*models
 // Upsert creates or updates an assessment
 func (s *AssessmentService) Upsert(ctx context.Context, a *models.Assessment) (*models.Assessment, error) {
 	query := `
-		INSERT INTO assessments (cve_id, status, comment, ticket_url, assessed_by, assessed_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+		INSERT INTO assessments (cve_id, status, comment, ticket_url, assessed_by, assessed_at, updated_at, binding_all_servers)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), COALESCE($6, false))
 		ON CONFLICT (cve_id)
 		DO UPDATE SET
 			status = EXCLUDED.status,
+			-- An update that does not mention the flag keeps it.
+			binding_all_servers = COALESCE($6, assessments.binding_all_servers),
 			comment = EXCLUDED.comment,
 			-- Preserve an existing Jira ticket link when the caller doesn't supply
 			-- one (e.g. updates via the MCP interface or the REST update path),
@@ -209,15 +212,16 @@ func (s *AssessmentService) Upsert(ctx context.Context, a *models.Assessment) (*
 			assessed_by = EXCLUDED.assessed_by,
 			assessed_at = NOW(),
 			updated_at = NOW()
-		RETURNING id, cve_id, status, comment, COALESCE(ticket_url, ''), assessed_by, assessed_at, created_at, updated_at
+		RETURNING id, cve_id, status, comment, COALESCE(ticket_url, ''), assessed_by, assessed_at, created_at, updated_at,
+		          binding_all_servers
 	`
 
 	var result models.Assessment
 	err := s.db.QueryRow(ctx, query,
-		a.CVEID, a.Status, a.Comment, a.TicketURL, a.AssessedBy,
+		a.CVEID, a.Status, a.Comment, a.TicketURL, a.AssessedBy, a.SetBinding,
 	).Scan(
 		&result.ID, &result.CVEID, &result.Status, &result.Comment, &result.TicketURL,
-		&result.AssessedBy, &result.AssessedAt, &result.CreatedAt, &result.UpdatedAt,
+		&result.AssessedBy, &result.AssessedAt, &result.CreatedAt, &result.UpdatedAt, &result.BindingAllServers,
 	)
 	if err != nil {
 		return nil, err

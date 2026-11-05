@@ -2,13 +2,14 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { 
   ArrowLeft, ExternalLink, AlertTriangle, XCircle, CheckCircle, 
-  ChevronLeft, ChevronRight, Server, Package
+  ChevronLeft, ChevronRight, Package
 } from 'lucide-react';
 import { CVSSBadge, VendorSeverityBadge, FixStateBadge, KEVBadge, EPSSBadge } from '../components/SeverityBadge';
 import { AIAssessmentCard } from '../components/AIAssessmentCard';
-import { getTriageQueue, getFindings, getFinding, createAssessment, getReasonTemplates } from '../api/client';
+import { getTriageQueue, getFindings, getFinding, createAssessment, getReasonTemplates, getCVEServerStatus } from '../api/client';
+import { CVEServerStatusCard } from '../components/AutoDecision';
 import { useAuth } from '../context/AuthContext';
-import type { Finding, AssessmentStatus, ReasonTemplate } from '../types';
+import type { Finding, AssessmentStatus, ReasonTemplate, ServerStatus } from '../types';
 
 const MAX_DESCRIPTION_LENGTH = 300;
 
@@ -46,6 +47,10 @@ export default function TriageDetail() {
   const [queue, setQueue] = useState<Finding[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [affectedFindings, setAffectedFindings] = useState<Finding[]>([]);
+  // Effective status per affected server (automation, per-server decisions)
+  const [serverStatus, setServerStatus] = useState<ServerStatus[] | null>(null);
+  const [statusKey, setStatusKey] = useState(0);
+  const [bindingAllServers, setBindingAllServers] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +116,14 @@ export default function TriageDetail() {
     fetchAffected();
   }, [cveId]);
 
+  useEffect(() => {
+    if (!cveId) return;
+    setServerStatus(null);
+    getCVEServerStatus(cveId)
+      .then((d) => setServerStatus(d.servers))
+      .catch(() => setServerStatus([]));
+  }, [cveId, statusKey]);
+
   const currentFinding = queue[currentIndex];
 
   // Load enriched finding details (exploit info, description) for current CVE
@@ -153,6 +166,7 @@ export default function TriageDetail() {
     setComment('');
     setTicketUrl('');
     setSelectedReason('');
+    setBindingAllServers(false);
     setShowModal(true);
   };
 
@@ -168,6 +182,7 @@ export default function TriageDetail() {
         comment: finalComment,
         ticketUrl: modalType === 'relevant' ? ticketUrl : undefined,
         assessedBy: user?.name || user?.email || 'anonymous',
+        bindingAllServers,
       });
       
       // Remove from queue and go to next
@@ -192,7 +207,10 @@ export default function TriageDetail() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (showModal) return; // Don't handle shortcuts when modal is open
-      
+      // Nor while typing, e.g. a reason for a per-server decision
+      const target = e.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+
       switch (e.key.toLowerCase()) {
         case 'r':
           openModal('relevant');
@@ -407,24 +425,11 @@ export default function TriageDetail() {
       {/* AI assessment (advisory) */}
       <AIAssessmentCard cveId={currentFinding.cveId} />
 
-      {/* Affected Servers & Packages */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Affected Servers */}
-        <div className="card">
-          <h2 className="text-lg font-semibold text-[#e8f5e9] mb-4 flex items-center gap-2">
-            <Server className="w-5 h-5" />
-            Affected Servers ({[...new Set(affectedFindings.map(f => f.serverName))].length})
-          </h2>
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {[...new Set(affectedFindings.map(f => f.serverName))].map(server => (
-              <div key={server} className="px-3 py-2 bg-[#1a2420] rounded text-[#a5d6a7]">
-                {server}
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Affected servers with their effective status */}
+      <CVEServerStatusCard cveId={currentFinding.cveId} servers={serverStatus} onChanged={() => setStatusKey((k) => k + 1)} />
 
-        {/* Affected Packages */}
+      {/* Affected Packages */}
+      <div className="grid grid-cols-1 gap-6">
         <div className="card">
           <h2 className="text-lg font-semibold text-[#e8f5e9] mb-4 flex items-center gap-2">
             <Package className="w-5 h-5" />
@@ -535,6 +540,26 @@ export default function TriageDetail() {
                   />
                 </div>
               </div>
+            )}
+
+            {/* Scope: which servers the assessment covers */}
+            {serverStatus && serverStatus.some((st) => st.source === 'auto' || st.source === 'override') && (
+              <label className="flex items-start gap-3 mt-4 p-3 rounded-lg bg-[#1a2420] border border-[#2d3f36] cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4 mt-0.5"
+                  checked={bindingAllServers}
+                  onChange={(e) => setBindingAllServers(e.target.checked)}
+                />
+                <span className="text-sm text-[#a5d6a7]">
+                  Apply to all {serverStatus.length} servers, including{' '}
+                  {serverStatus.filter((st) => st.source === 'auto').length} dismissed automatically and{' '}
+                  {serverStatus.filter((st) => st.source === 'override').length} decided individually.
+                  <span className="block text-xs text-[#6b7280] mt-1">
+                    Without this, the assessment covers only the servers that are still open, and a Jira ticket lists only those.
+                  </span>
+                </span>
+              </label>
             )}
 
             {/* Modal Actions */}

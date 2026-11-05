@@ -39,6 +39,12 @@ INSERT INTO settings (key, value, description) VALUES
     ('triage_include_unrated', 'false', 'Include findings without vendor severity in triage queue'),
     ('triage_hide_vex_not_affected', 'true', 'Hide findings where VEX status is not_affected from the triage queue'),
     ('triage_hide_vendor_accepted', 'true', 'Hide findings the vendor will not fix or has deferred from the triage queue'),
+
+    -- Automated assessment (docs/AUTO_ASSESSMENT_PLAN.md)
+    ('auto_assessment_mode', 'shadow', 'Automated assessment: off, shadow (computed and shown, never applied) or active'),
+    ('auto_assessment_rule_modes', '{}', 'Mode per rule as JSON, e.g. {"R-VEX":"active"}; rules not listed run in shadow mode'),
+    ('auto_assessment_guard_exploit', 'true', 'Block automated dismissal of CVEs with a verified public exploit (ExploitDB)'),
+    ('auto_assessment_guard_epss', '0.1', 'Block automated dismissal of CVEs with an EPSS score at or above this probability; 0 disables the guard'),
     
     -- Sync intervals
     ('oval_sync_interval_hours', '24', 'Hours between OVAL feed syncs'),

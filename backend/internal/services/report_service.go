@@ -52,6 +52,11 @@ type ReportRequest struct {
 	IncludeTrendChart    bool `json:"includeTrendChart"`
 	IncludeTopCVEs       bool `json:"includeTopCVEs"`
 	IncludeFullCVEList   bool `json:"includeFullCVEList"`
+	// IncludeAutoAssessments adds the "Automated assessments" section.
+	IncludeAutoAssessments bool `json:"includeAutoAssessments"`
+	// AutoRuleDescriptions describes the rules for that section (the rule
+	// catalogue lives in package autoassess, which imports this one).
+	AutoRuleDescriptions map[string]string `json:"-"`
 }
 
 // ReportData contains the data for the report
@@ -79,6 +84,8 @@ type ReportData struct {
 	IncludeTrendChart    bool
 	IncludeTopCVEs       bool
 	IncludeFullCVEList   bool
+	// Automated assessments section; nil when not requested
+	AutoAssessment *AutoAssessmentReport
 }
 
 // AssessmentBySeverityStat represents assessment counts for a severity level
@@ -253,6 +260,14 @@ func (s *ReportService) gatherReportData(ctx context.Context, req ReportRequest)
 		return nil, err
 	}
 	data.AssessmentBySeverity = assessmentBySeverity
+
+	if req.IncludeAutoAssessments {
+		auto, err := s.getAutoAssessmentReport(ctx, serverIDs, req.StartDate, req.EndDate, req.AutoRuleDescriptions)
+		if err != nil {
+			return nil, err
+		}
+		data.AutoAssessment = auto
+	}
 
 	// Get VEX status summary
 	vexStats, err := s.getVexStats(ctx, serverIDs, req.StartDate, req.EndDate)
@@ -868,6 +883,11 @@ func (s *ReportService) generatePDF(data *ReportData) ([]byte, error) {
 		// Add top CVEs table if requested
 		if data.IncludeTopCVEs && len(data.TopCVEs) > 0 {
 			s.addTopCVEsTable(m, data)
+		}
+
+		// Automated assessments, if requested
+		if data.AutoAssessment != nil {
+			s.addAutoAssessmentSection(m, data)
 		}
 
 		// Add full CVE list if requested (always on new page)
@@ -1620,9 +1640,9 @@ func formatEPSS(epss *float64) string {
 
 // addThreatIntelLegend explains the KEV marker and the EPSS column.
 func addThreatIntelLegend(m core.Maroto) {
-	m.AddRow(6, col.New(12).Add(text.New(
+	m.AddAutoRow(col.New(12).Add(text.New(
 		"KEV: listed in the CISA Known Exploited Vulnerabilities catalog (exploited in the wild); "+
 			"KEV*: also known to be used in ransomware campaigns. "+
 			"EPSS: probability of exploitation in the next 30 days (FIRST).",
-		props.Text{Size: 7, Color: &props.Color{Red: 100, Green: 100, Blue: 100}})))
+		props.Text{Size: 7, Bottom: 1.5, Color: &props.Color{Red: 100, Green: 100, Blue: 100}})))
 }

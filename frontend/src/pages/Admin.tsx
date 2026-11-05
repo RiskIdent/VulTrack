@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, KeyRound, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw, Sparkles } from 'lucide-react';
+import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, KeyRound, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw, Sparkles, Bot } from 'lucide-react';
+import AutoAssessmentSettings from '../components/AutoAssessmentSettings';
 import { ConfirmModal } from '../components/ConfirmModal';
 import {
   getSettings,
@@ -47,13 +48,14 @@ import type { AdminUser } from '../api/client';
 import type { Setting, ReasonTemplate, ServerGroup, Server as ServerType } from '../types';
 import type { EnrollmentKey, RegisteredAgent, OVALSource, APIToken } from '../api/client';
 
-type TabType = 'triage' | 'ai' | 'templates' | 'groups' | 'oval' | 'agents' | 'keys' | 'apitokens' | 'datasources' | 'users' | 'reset' | 'servers';
+type TabType = 'triage' | 'auto' | 'ai' | 'templates' | 'groups' | 'oval' | 'agents' | 'keys' | 'apitokens' | 'datasources' | 'users' | 'reset' | 'servers';
 
 export default function Admin() {
   const [activeTab, setActiveTab] = useState<TabType>('triage');
 
   const tabs = [
     { id: 'triage' as TabType, label: 'Triage', icon: ClipboardCheck },
+    { id: 'auto' as TabType, label: 'Automated Assessment', icon: Bot },
     { id: 'ai' as TabType, label: 'AI Assessment', icon: Sparkles },
     { id: 'oval' as TabType, label: 'OVAL Sources', icon: Shield },
     { id: 'datasources' as TabType, label: 'Data Sources', icon: Database },
@@ -103,6 +105,7 @@ export default function Admin() {
       {/* Tab Content */}
       <div className="mt-6">
         {activeTab === 'triage' && <TriageSettingsTab />}
+        {activeTab === 'auto' && <AutoAssessmentSettings />}
         {activeTab === 'ai' && <AIAssessmentSettingsTab />}
         {activeTab === 'oval' && <OVALSourcesTab />}
         {activeTab === 'datasources' && <DataSourcesTab />}

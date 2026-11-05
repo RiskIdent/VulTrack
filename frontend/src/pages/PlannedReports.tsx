@@ -90,6 +90,7 @@ export default function PlannedReports() {
   const [includeTrendChart, setIncludeTrendChart] = useState(true);
   const [includeTopCves, setIncludeTopCves] = useState(true);
   const [includeFullCveList, setIncludeFullCveList] = useState(false);
+  const [includeAutoAssessments, setIncludeAutoAssessments] = useState(false);
 
   const [recipientInput, setRecipientInput] = useState('');
   const [recipients, setRecipients] = useState<string[]>([]);
@@ -144,7 +145,7 @@ export default function PlannedReports() {
       timeHour, timeMinute, timezone,
       serverIds: selectedServerIds, groupIds: selectedGroupIds,
       periodType, periodDays,
-      includeSeverityChart, includeTrendChart, includeTopCves, includeFullCveList,
+      includeSeverityChart, includeTrendChart, includeTopCves, includeFullCveList, includeAutoAssessments,
       recipients, enabled: true, createdAt: '', updatedAt: '',
     };
     return formatSchedule(preview);
@@ -186,6 +187,7 @@ export default function PlannedReports() {
     setIncludeTrendChart(true);
     setIncludeTopCves(true);
     setIncludeFullCveList(false);
+    setIncludeAutoAssessments(false);
     setRecipients([]);
     setRecipientInput('');
   };
@@ -209,7 +211,7 @@ export default function PlannedReports() {
         groupIds: selectedGroupIds,
         periodType,
         periodDays: periodType === 'last_n_days' ? periodDays : undefined,
-        includeSeverityChart, includeTrendChart, includeTopCves, includeFullCveList,
+        includeSeverityChart, includeTrendChart, includeTopCves, includeFullCveList, includeAutoAssessments,
         recipients,
         enabled: true,
       };
@@ -462,6 +464,7 @@ export default function PlannedReports() {
                   { label: 'Findings Trend Chart', checked: includeTrendChart, set: setIncludeTrendChart },
                   { label: 'Top 10 CVEs', checked: includeTopCves, set: setIncludeTopCves },
                   { label: 'Complete CVE List', checked: includeFullCveList, set: setIncludeFullCveList },
+                  { label: 'Automated Assessments', checked: includeAutoAssessments, set: setIncludeAutoAssessments },
                 ].map(opt => (
                   <label key={opt.label} className="flex items-center gap-3 cursor-pointer">
                     <input
@@ -804,6 +807,11 @@ export default function PlannedReports() {
                   {detailSchedule.includeFullCveList && (
                     <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 bg-[#1a2420] rounded-full text-[#a5d6a7] border border-[#2d3f36]">
                       <List className="w-3 h-3" /> Complete CVE List
+                    </span>
+                  )}
+                  {detailSchedule.includeAutoAssessments && (
+                    <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 bg-[#1a2420] rounded-full text-[#a5d6a7] border border-[#2d3f36]">
+                      <List className="w-3 h-3" /> Automated Assessments
                     </span>
                   )}
                 </div>

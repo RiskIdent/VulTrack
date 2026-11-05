@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 
+	"github.com/vultrack/vultrack/internal/autoassess"
 	"github.com/vultrack/vultrack/internal/config"
 	"github.com/vultrack/vultrack/internal/exploitdb"
 	"github.com/vultrack/vultrack/internal/jira"
@@ -63,6 +64,9 @@ type Handler struct {
 
 	threatIntelService *services.ThreatIntelService
 	threatIntelSyncer  *threatintel.Syncer
+
+	autoAssessmentService *services.AutoAssessmentService
+	autoEvaluator         *autoassess.Evaluator
 
 	// VEX service + syncer
 	vexService *services.VEXService
@@ -137,6 +141,9 @@ func New(
 	apiTokenService *services.APITokenService,
 	// AI assessment service (queue runs separately; handlers only enqueue/read)
 	aiAssessmentService *services.AIAssessmentService,
+	// Automated assessment
+	autoAssessmentService *services.AutoAssessmentService,
+	autoEvaluator *autoassess.Evaluator,
 	// CISA KEV and FIRST EPSS
 	threatIntelService *services.ThreatIntelService,
 	threatIntelSyncer *threatintel.Syncer,
@@ -185,6 +192,8 @@ func New(
 		userService:           userService,
 		apiTokenService:       apiTokenService,
 		threatIntelService:    threatIntelService,
+		autoAssessmentService: autoAssessmentService,
+		autoEvaluator:         autoEvaluator,
 		threatIntelSyncer:     threatIntelSyncer,
 		jwtSecret:             jwtSecret,
 	}
@@ -277,6 +286,15 @@ func New(
 	// Installed packages across all servers
 	protected.Get("/packages", h.getPackageSummaries)
 	protected.Get("/packages/:name/installations", h.getPackageInstallations)
+
+	// Automated assessment
+	protected.Get("/auto-assessment/config", h.getAutoAssessmentConfig)
+	protected.Get("/auto-assessment/stats", h.getAutoAssessmentStats)
+	protected.Get("/auto-assessment/decisions", h.getAutoDecisions)
+	protected.Get("/auto-assessment/events", h.getDecisionEvents)
+	protected.Get("/cves/:id/server-status", h.getCVEServerStatus)
+	protected.Put("/servers/:id/cves/:cveId/assessment", h.setServerAssessment)
+	protected.Delete("/servers/:id/cves/:cveId/assessment", h.deleteServerAssessment)
 
 	// CVEs
 	protected.Get("/cves/:id", h.getCVE)
@@ -395,6 +413,8 @@ func New(
 	admin.Post("/exploitdb/sync", h.triggerExploitDBSync)
 	admin.Get("/exploitdb/status", h.getExploitDBStatus)
 	admin.Get("/threat-intel/status", h.getThreatIntelStatus)
+	admin.Put("/auto-assessment/config", h.updateAutoAssessmentConfig)
+	admin.Post("/auto-assessment/reevaluate", h.reevaluateAutoAssessment)
 	admin.Post("/threat-intel/:source/sync", h.triggerThreatIntelSync)
 
 	// Admin: VEX Management
@@ -546,9 +566,17 @@ func (h *Handler) getFindings(c *fiber.Ctx) error {
 
 	ctx := c.Context()
 
+	autoCfg, err := h.settingsService.LoadAutoAssessmentConfig(ctx)
+	if err != nil {
+		return err
+	}
+
 	if c.QueryBool("grouped", false) {
 		groups, total, err := h.findingService.GetAllGrouped(ctx, filter)
 		if err != nil {
+			return err
+		}
+		if err := h.autoAssessmentService.AttachToGroups(ctx, autoCfg, groups); err != nil {
 			return err
 		}
 		return c.JSON(fiber.Map{
@@ -561,6 +589,9 @@ func (h *Handler) getFindings(c *fiber.Ctx) error {
 
 	findings, total, err := h.findingService.GetAll(ctx, filter)
 	if err != nil {
+		return err
+	}
+	if err := h.autoAssessmentService.AttachToFindings(ctx, autoCfg, findings); err != nil {
 		return err
 	}
 
@@ -769,6 +800,9 @@ type assessmentRequest struct {
 	Status     string `json:"status"`
 	Comment    string `json:"comment"`
 	AssessedBy string `json:"assessedBy"`
+	// BindingAllServers makes the assessment apply to every server, overriding
+	// automated decisions. Omitted = keep the stored value.
+	BindingAllServers *bool `json:"bindingAllServers"`
 }
 
 // validAssessmentStatuses is the set of accepted assessment status values.
@@ -784,7 +818,7 @@ var validAssessmentStatuses = map[string]bool{
 // single source of truth shared by the REST API and the MCP interface so both
 // behave identically. Validation failures are returned as *fiber.Error so the
 // REST error handler maps them to 4xx; the MCP layer surfaces the message.
-func (h *Handler) upsertAssessment(ctx context.Context, cveID, status, comment, assessedBy string) (*models.Assessment, error) {
+func (h *Handler) upsertAssessment(ctx context.Context, cveID, status, comment, assessedBy string, binding *bool) (*models.Assessment, error) {
 	if cveID == "" || status == "" {
 		return nil, fiber.NewError(fiber.StatusBadRequest, "cveId and status are required")
 	}
@@ -797,11 +831,12 @@ func (h *Handler) upsertAssessment(ctx context.Context, cveID, status, comment, 
 		Status:     status,
 		Comment:    comment,
 		AssessedBy: assessedBy,
+		SetBinding: binding,
 	}
 
 	// Create Jira ticket when status is "relevant" and Jira is enabled
 	if status == models.AssessmentStatusRelevant && h.jiraClient != nil && h.jiraClient.Enabled() {
-		ticketURL, err := h.createJiraTicketForCVE(ctx, cveID, comment)
+		ticketURL, err := h.createJiraTicketForCVE(ctx, cveID, comment, binding != nil && *binding)
 		if err != nil {
 			log.Error().Err(err).Str("cveId", cveID).Msg("Failed to create Jira ticket")
 			// Don't fail the assessment — log the error and continue without ticket
@@ -819,7 +854,7 @@ func (h *Handler) createAssessment(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
 	}
 
-	result, err := h.upsertAssessment(c.Context(), req.CVEID, req.Status, req.Comment, req.AssessedBy)
+	result, err := h.upsertAssessment(c.Context(), req.CVEID, req.Status, req.Comment, req.AssessedBy, req.BindingAllServers)
 	if err != nil {
 		return err
 	}
@@ -828,10 +863,38 @@ func (h *Handler) createAssessment(c *fiber.Ctx) error {
 }
 
 // createJiraTicketForCVE builds a Jira issue with CVE details and returns the ticket URL.
-func (h *Handler) createJiraTicketForCVE(ctx context.Context, cveID, assessmentComment string) (string, error) {
+func (h *Handler) createJiraTicketForCVE(ctx context.Context, cveID, assessmentComment string, binding bool) (string, error) {
 	findings, err := h.findingService.GetServersByCVE(ctx, cveID)
 	if err != nil {
 		return "", fmt.Errorf("fetch findings for %s: %w", cveID, err)
+	}
+
+	// A non-binding assessment does not cover servers that were decided
+	// individually or dismissed by an applied automated decision; the ticket
+	// lists them separately so nobody patches what was assessed as not relevant.
+	cfg, err := h.settingsService.LoadAutoAssessmentConfig(ctx)
+	if err != nil {
+		return "", err
+	}
+	excluded, err := h.autoAssessmentService.ExcludedFromTicket(ctx, cfg, cveID, binding)
+	if err != nil {
+		return "", err
+	}
+	var excludedLines []string
+	if len(excluded) > 0 {
+		kept := findings[:0]
+		seen := map[int64]bool{}
+		for _, f := range findings {
+			if why, ok := excluded[f.ServerID]; ok {
+				if !seen[f.ServerID] {
+					excludedLines = append(excludedLines, f.ServerName+": "+why)
+					seen[f.ServerID] = true
+				}
+				continue
+			}
+			kept = append(kept, f)
+		}
+		findings = kept
 	}
 
 	// Build title
@@ -911,6 +974,15 @@ func (h *Handler) createJiraTicketForCVE(ctx context.Context, cveID, assessmentC
 		content = append(content, jira.ADFBulletList(items...))
 	}
 
+	if len(excludedLines) > 0 {
+		content = append(content, jira.ADFHeading(2, fmt.Sprintf("Not Covered by This Ticket (%d)", len(excludedLines))))
+		items := make([]interface{}, 0, len(excludedLines))
+		for _, l := range excludedLines {
+			items = append(items, jira.ADFListItem(l))
+		}
+		content = append(content, jira.ADFBulletList(items...))
+	}
+
 	// Section: Assessment
 	if assessmentComment != "" {
 		content = append(content, jira.ADFHeading(2, "Assessment"))
@@ -970,6 +1042,7 @@ func (h *Handler) updateAssessment(c *fiber.Ctx) error {
 		Status:     req.Status,
 		Comment:    req.Comment,
 		AssessedBy: req.AssessedBy,
+		SetBinding: req.BindingAllServers,
 	}
 
 	ctx := c.Context()
@@ -1180,6 +1253,12 @@ func (h *Handler) updateSettings(c *fiber.Ctx) error {
 	ctx := c.Context()
 	if err := h.settingsService.SetMultiple(ctx, input); err != nil {
 		return err
+	}
+	for key := range input {
+		if strings.HasPrefix(key, "auto_assessment_") {
+			h.autoEvaluator.TriggerAll("settings changed")
+			break
+		}
 	}
 
 	return c.JSON(fiber.Map{
@@ -1419,15 +1498,16 @@ func (h *Handler) setServerGroups(c *fiber.Ctx) error {
 
 func (h *Handler) generateReport(c *fiber.Ctx) error {
 	var input struct {
-		ServerIDs            []int64 `json:"serverIds"`
-		GroupIDs             []int64 `json:"groupIds"`
-		StartDate            string  `json:"startDate"`
-		EndDate              string  `json:"endDate"`
-		ReportType           string  `json:"reportType"`
-		IncludeSeverityChart bool    `json:"includeSeverityChart"`
-		IncludeTrendChart    bool    `json:"includeTrendChart"`
-		IncludeTopCVEs       bool    `json:"includeTopCVEs"`
-		IncludeFullCVEList   bool    `json:"includeFullCVEList"`
+		ServerIDs              []int64 `json:"serverIds"`
+		GroupIDs               []int64 `json:"groupIds"`
+		StartDate              string  `json:"startDate"`
+		EndDate                string  `json:"endDate"`
+		ReportType             string  `json:"reportType"`
+		IncludeSeverityChart   bool    `json:"includeSeverityChart"`
+		IncludeTrendChart      bool    `json:"includeTrendChart"`
+		IncludeTopCVEs         bool    `json:"includeTopCVEs"`
+		IncludeFullCVEList     bool    `json:"includeFullCVEList"`
+		IncludeAutoAssessments bool    `json:"includeAutoAssessments"`
 	}
 
 	if err := c.BodyParser(&input); err != nil {
@@ -1468,15 +1548,17 @@ func (h *Handler) generateReport(c *fiber.Ctx) error {
 	ctx := c.Context()
 
 	req := services.ReportRequest{
-		ServerIDs:            input.ServerIDs,
-		GroupIDs:             input.GroupIDs,
-		StartDate:            startDate,
-		EndDate:              endDate,
-		ReportType:           input.ReportType,
-		IncludeSeverityChart: input.IncludeSeverityChart,
-		IncludeTrendChart:    input.IncludeTrendChart,
-		IncludeTopCVEs:       input.IncludeTopCVEs,
-		IncludeFullCVEList:   input.IncludeFullCVEList,
+		ServerIDs:              input.ServerIDs,
+		GroupIDs:               input.GroupIDs,
+		StartDate:              startDate,
+		EndDate:                endDate,
+		ReportType:             input.ReportType,
+		IncludeSeverityChart:   input.IncludeSeverityChart,
+		IncludeTrendChart:      input.IncludeTrendChart,
+		IncludeTopCVEs:         input.IncludeTopCVEs,
+		IncludeFullCVEList:     input.IncludeFullCVEList,
+		IncludeAutoAssessments: input.IncludeAutoAssessments,
+		AutoRuleDescriptions:   autoassess.RuleDescriptions(),
 	}
 
 	var pdfBytes []byte

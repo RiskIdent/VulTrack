@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { FileText, Server, FolderTree, Calendar, Search, Check, PieChart, TrendingUp, Table, List, Clock } from 'lucide-react';
+import { FileText, Server, FolderTree, Calendar, Search, Check, PieChart, TrendingUp, Table, List, Clock, Bot } from 'lucide-react';
 import { getServers, getServerGroups, generateReport } from '../api/client';
 import type { Server as ServerType, ServerGroup } from '../types';
 import PlannedReports from './PlannedReports';
@@ -74,6 +74,7 @@ function ReportGenerator() {
   const [includeTrendChart, setIncludeTrendChart] = useState(true);
   const [includeTopCVEs, setIncludeTopCVEs] = useState(true);
   const [includeFullCVEList, setIncludeFullCVEList] = useState(false);
+  const [includeAutoAssessments, setIncludeAutoAssessments] = useState(false);
 
   // Report generation
   const [generating, setGenerating] = useState(false);
@@ -164,6 +165,7 @@ function ReportGenerator() {
         includeTrendChart,
         includeTopCVEs,
         includeFullCVEList,
+        includeAutoAssessments,
       });
 
       // Create download link
@@ -502,6 +504,27 @@ function ReportGenerator() {
             <div>
               <div className="text-[#e8f5e9] font-medium">Complete CVE List</div>
               <div className="text-xs text-[#6b7280]">Full list of all CVEs with summaries (may be long)</div>
+            </div>
+          </label>
+
+          {/* Automated assessments */}
+          <label
+            className={`flex items-center gap-4 p-4 rounded-lg cursor-pointer transition-colors ${
+              includeAutoAssessments
+                ? 'bg-[#4ade80]/20 border border-[#4ade80]/50'
+                : 'bg-[#1a2420] border border-[#2d3f36] hover:border-[#4ade80]/30'
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={includeAutoAssessments}
+              onChange={(e) => setIncludeAutoAssessments(e.target.checked)}
+              className="w-5 h-5 rounded text-[#4ade80] bg-[#1a2420] border-[#2d3f36] focus:ring-[#4ade80]"
+            />
+            <Bot className="w-6 h-6 text-[#4ade80]" />
+            <div>
+              <div className="text-[#e8f5e9] font-medium">Automated Assessments</div>
+              <div className="text-xs text-[#6b7280]">Decisions per rule, CVEs dismissed automatically and per-server human decisions</div>
             </div>
           </label>
         </div>

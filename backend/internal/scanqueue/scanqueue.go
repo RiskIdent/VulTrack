@@ -63,6 +63,15 @@ type Queue struct {
 	// Deduplication: track servers currently queued or running
 	mu          sync.Mutex
 	activeJobs  map[int64]string // serverID -> jobID
+
+	// afterScan runs after every successful scan (automated assessment).
+	afterScan func(ctx context.Context, serverID int64)
+}
+
+// SetAfterScan registers a function that runs after every successful scan, in
+// the scan worker, before the job is reported as done.
+func (q *Queue) SetAfterScan(f func(ctx context.Context, serverID int64)) {
+	q.afterScan = f
 }
 
 // New creates a new scan queue.
@@ -265,6 +274,10 @@ func (q *Queue) processJob(workerID int, job *ScanJob) {
 	metrics.ScanDurationSeconds.WithLabelValues(job.TriggerType).Observe(result.Duration.Seconds())
 
 	q.updateJobCompleted(job.ID, finished, result)
+
+	if q.afterScan != nil {
+		q.afterScan(ctx, job.ServerID)
+	}
 
 	// Remove from active tracking
 	q.mu.Lock()

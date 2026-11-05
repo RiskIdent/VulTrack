@@ -449,6 +449,11 @@ type TriageFilterOptions struct {
 	IncludeUnrated     bool     // Include findings without vendor severity
 	HideVexNotAffected bool     // When true, exclude findings with vex_status = 'not_affected'
 	HideVendorAccepted bool     // When true, only findings the vendor still means to fix count (see vendorActionableCondition)
+	// AutoActiveRules are the rules whose automated decisions take effect
+	// (AutoAssessmentConfig.ActiveRuleIDs). A (server, CVE) pair dismissed by
+	// such a decision, and not blocked by a guard, leaves the queue. Empty when
+	// automation is off or in shadow mode; the queue is then as before.
+	AutoActiveRules []string
 	Limit              int
 	Offset             int
 }
@@ -500,6 +505,23 @@ func triageQueueFrom(opts TriageFilterOptions) (from string, args []any, ok bool
 		notAffectedClause += "\n\t\tAND " + vendorActionableCondition
 	}
 
+	// A human decision for this server takes it out of the queue; 'manual' only
+	// switches automation off and keeps it in. Written as NOT EXISTS so Postgres
+	// runs an anti-join against the (small) decision tables instead of joining
+	// and sorting every finding.
+	decisionClause := `
+		AND NOT EXISTS (SELECT 1 FROM assessment_overrides o
+		                WHERE o.server_id = f.server_id AND o.cve_id = f.cve_id AND o.status <> 'manual')`
+	if len(opts.AutoActiveRules) > 0 {
+		args = append(args, opts.AutoActiveRules)
+		decisionClause += fmt.Sprintf(`
+		AND NOT EXISTS (SELECT 1 FROM auto_decisions d
+		                WHERE d.server_id = f.server_id AND d.cve_id = f.cve_id
+		                  AND cardinality(d.guards) = 0 AND d.rule_ids <@ $%d::text[]
+		                  AND NOT EXISTS (SELECT 1 FROM assessment_overrides o2
+		                                  WHERE o2.server_id = d.server_id AND o2.cve_id = d.cve_id))`, len(args))
+	}
+
 	from = fmt.Sprintf(`
 		FROM findings f
 		JOIN servers srv ON f.server_id = srv.id
@@ -507,8 +529,8 @@ func triageQueueFrom(opts TriageFilterOptions) (from string, args []any, ok bool
 		LEFT JOIN assessments a ON f.cve_id = a.cve_id
 		WHERE f.resolved_at IS NULL
 		AND %s
-		AND (a.id IS NULL OR a.status = 'pending')%s
-	`, filterCondition, notAffectedClause)
+		AND (a.id IS NULL OR a.status = 'pending')%s%s
+	`, filterCondition, notAffectedClause, decisionClause)
 	return from, args, true
 }
 

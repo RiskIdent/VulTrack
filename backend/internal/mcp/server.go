@@ -17,6 +17,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog/log"
 
+	"github.com/vultrack/vultrack/internal/autoassess"
 	"github.com/vultrack/vultrack/internal/models"
 	"github.com/vultrack/vultrack/internal/scanqueue"
 	"github.com/vultrack/vultrack/internal/services"
@@ -43,12 +44,13 @@ type Deps struct {
 	SettingsService     *services.SettingsService
 	PackageService      *services.PackageService
 	ThreatIntelService  *services.ThreatIntelService
+	AutoAssessment      *services.AutoAssessmentService
 	ScanQueue           *scanqueue.Queue
 
 	// UpsertAssessment performs the same create-or-update assessment logic as the
 	// REST API — status validation plus Jira ticket creation when relevant. It is
 	// injected by the handler layer so the MCP write path shares that behaviour.
-	UpsertAssessment func(ctx context.Context, cveID, status, comment, assessedBy string) (*models.Assessment, error)
+	UpsertAssessment func(ctx context.Context, cveID, status, comment, assessedBy string, binding *bool) (*models.Assessment, error)
 
 	// AssessorFromContext resolves the assessor string for an MCP-initiated
 	// assessment from the acting API token in ctx — the user that created the
@@ -120,6 +122,8 @@ func triageFilterInfo(opts services.TriageFilterOptions) map[string]any {
 		"mode":               opts.Mode,
 		"hideVexNotAffected": opts.HideVexNotAffected,
 		"hideVendorAccepted": opts.HideVendorAccepted,
+		// Servers dismissed by automated decisions of these rules are not in the queue.
+		"autoAssessmentActiveRules": opts.AutoActiveRules,
 	}
 	if opts.Mode == "vendor_severity" {
 		info["vendorSeverities"] = opts.VendorSeverities
@@ -166,6 +170,17 @@ type listPackagesInput struct {
 	Offset        int    `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
 }
 
+type listAutoDecisionsInput struct {
+	RuleID   string `json:"ruleId,omitempty" jsonschema:"only decisions a rule took part in, e.g. R-VEX"`
+	State    string `json:"state,omitempty" jsonschema:"applied (in effect), shadow (computed, not in effect), blocked (a guard prevents it), rejected (a human switched automation off for the server) or overridden (a human decided)"`
+	Guard    string `json:"guard,omitempty" jsonschema:"only decisions blocked by this guard: G-KEV, G-EXPLOIT or G-EPSS"`
+	ServerID int64  `json:"serverId,omitempty" jsonschema:"only decisions for this server"`
+	CVEID    string `json:"cveId,omitempty" jsonschema:"only decisions for this CVE"`
+	Search   string `json:"search,omitempty" jsonschema:"CVE ID or server name contains"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"max results per call (default 50, max 500)"`
+	Offset   int    `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
+}
+
 type getFindingInput struct {
 	FindingID int64 `json:"findingId" jsonschema:"the numeric ID of the finding"`
 }
@@ -210,6 +225,42 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 			return nil, nil, err
 		}
 		return jsonResult(map[string]any{"servers": servers, "total": len(servers)})
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "get_auto_assessment",
+		Description: "Get the automated assessment configuration and statistics: the global mode (off, shadow, active), every rule with its version, " +
+			"description and mode, the guards that block automated dismissal (CISA KEV, verified exploits, EPSS threshold), and decision counts " +
+			"per rule including agreement with human assessments. Automation only ever dismisses findings as not_relevant; anything else stays for a human.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ emptyInput) (*mcpsdk.CallToolResult, any, error) {
+		cfg, err := d.SettingsService.LoadAutoAssessmentConfig(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		st, err := d.AutoAssessment.Stats(ctx, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		return jsonResult(map[string]any{"config": autoassess.Info(cfg), "stats": st})
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "list_auto_decisions",
+		Description: "List automated decisions per (server, CVE) with their state, the rules that decided, the guards that block them, " +
+			"the reason and the evidence. Paginated: returns at most `limit` decisions per call (default 50, max 500) plus the full `total`. " +
+			"When `hasMore` is true, call again with `offset` increased by `limit` to fetch all results.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in listAutoDecisionsInput) (*mcpsdk.CallToolResult, any, error) {
+		cfg, err := d.SettingsService.LoadAutoAssessmentConfig(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		f := services.DecisionFilter{RuleID: in.RuleID, State: in.State, Guard: in.Guard, ServerID: in.ServerID,
+			CVEID: in.CVEID, Search: in.Search, Limit: clampLimit(in.Limit, 50, 500), Offset: max(in.Offset, 0)}
+		decisions, total, err := d.AutoAssessment.ListDecisions(ctx, cfg, f)
+		if err != nil {
+			return nil, nil, err
+		}
+		return paginatedResult(map[string]any{"decisions": decisions}, total, f.Limit, f.Offset)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -286,6 +337,13 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		if err != nil {
 			return nil, nil, err
 		}
+		autoCfg, err := d.SettingsService.LoadAutoAssessmentConfig(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := d.AutoAssessment.AttachToFindings(ctx, autoCfg, findings); err != nil {
+			return nil, nil, err
+		}
 		applied := map[string]any{
 			"includeResolved": filter.IncludeResolved,
 			"sortBy":          filter.SortBy,
@@ -336,8 +394,11 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "get_cve",
-		Description: "Get details for a CVE including the affected servers, any existing assessment, and its exploitation signals: CISA KEV listing (inKev, date added, due date, known ransomware use) and FIRST EPSS score and percentile.",
+		Name: "get_cve",
+		Description: "Get details for a CVE including the affected servers, any existing assessment, its exploitation signals " +
+			"(CISA KEV listing, FIRST EPSS score) and serverStatus: the effective status of every affected server " +
+			"(open, not_relevant, relevant, accepted_risk) and where it comes from (override = decided for that server, " +
+			"binding = binding CVE assessment, auto = applied automated decision, assessment = CVE assessment, none = open).",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in cveInput) (*mcpsdk.CallToolResult, any, error) {
 		findings, err := d.FindingService.GetServersByCVE(ctx, in.CVEID)
 		if err != nil {
@@ -351,12 +412,21 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		if err != nil {
 			return nil, nil, err
 		}
+		cfg, err := d.SettingsService.LoadAutoAssessmentConfig(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		serverStatus, err := d.AutoAssessment.CVEServerStatuses(ctx, cfg, in.CVEID)
+		if err != nil {
+			return nil, nil, err
+		}
 		result := map[string]any{
-			"cveId":       in.CVEID,
-			"findings":    findings,
-			"serverCount": len(findings),
-			"assessment":  assessment,
-			"threatIntel": threatIntel,
+			"cveId":        in.CVEID,
+			"findings":     findings,
+			"serverCount":  len(findings),
+			"assessment":   assessment,
+			"threatIntel":  threatIntel,
+			"serverStatus": serverStatus,
 		}
 		// Include the advisory AI assessment when available (nil when never assessed).
 		if d.AIAssessmentService != nil {
@@ -600,9 +670,23 @@ type upsertAssessmentInput struct {
 	CVEID   string `json:"cveId" jsonschema:"the CVE ID to assess, e.g. CVE-2024-1234"`
 	Status  string `json:"status" jsonschema:"assessment status: pending, relevant, not_relevant or accepted_risk"`
 	Comment string `json:"comment,omitempty" jsonschema:"rationale for the assessment"`
+	// BindingAllServers: see the tool description.
+	BindingAllServers *bool `json:"bindingAllServers,omitempty" jsonschema:"true makes the assessment apply to every affected server, overriding automated decisions and per-server exceptions; omitted keeps the stored value (new assessments: false)"`
 	// The assessor is NOT a tool input: it is derived server-side from the user
 	// that owns the acting API token, so the agent cannot attribute an assessment
 	// to an arbitrary identity.
+}
+
+type serverAssessmentInput struct {
+	ServerID int64  `json:"serverId" jsonschema:"the numeric ID of the server"`
+	CVEID    string `json:"cveId" jsonschema:"the CVE ID, e.g. CVE-2024-1234"`
+	Status   string `json:"status" jsonschema:"relevant, not_relevant, accepted_risk, or manual (switch automation off for this server and leave it open for a human)"`
+	Comment  string `json:"comment,omitempty" jsonschema:"rationale"`
+}
+
+type removeServerAssessmentInput struct {
+	ServerID int64  `json:"serverId" jsonschema:"the numeric ID of the server"`
+	CVEID    string `json:"cveId" jsonschema:"the CVE ID"`
 }
 
 type deleteAssessmentInput struct {
@@ -635,7 +719,9 @@ func registerWriteTools(s *mcpsdk.Server, d Deps) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "upsert_assessment",
 		Description: "Create or update the triage assessment for a CVE (relevance status and rationale). " +
-			"When the status is set to \"relevant\" and Jira is enabled, a Jira ticket is created — exactly as in the UI.",
+			"It applies to every affected server that has no decision of its own; unless bindingAllServers is true, " +
+			"servers dismissed by an applied automated decision or decided individually keep their status. " +
+			"When the status is set to \"relevant\" and Jira is enabled, a Jira ticket is created for the servers it covers — exactly as in the UI.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in upsertAssessmentInput) (*mcpsdk.CallToolResult, any, error) {
 		// Attribute the assessment to the token's owning user (resolved server-side)
 		// rather than to a client-supplied string, so MCP triage actions are tied to
@@ -645,7 +731,7 @@ func registerWriteTools(s *mcpsdk.Server, d Deps) {
 			assessedBy = d.AssessorFromContext(ctx)
 		}
 		// Delegate to the shared handler logic (validation + Jira ticket creation).
-		result, err := d.UpsertAssessment(ctx, in.CVEID, in.Status, in.Comment, assessedBy)
+		result, err := d.UpsertAssessment(ctx, in.CVEID, in.Status, in.Comment, assessedBy, in.BindingAllServers)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -653,6 +739,43 @@ func registerWriteTools(s *mcpsdk.Server, d Deps) {
 		log.Info().Str("source", "mcp").Str("tokenPrefix", prefix).Str("tokenDescription", desc).
 			Str("cveId", in.CVEID).Str("status", in.Status).Str("assessedBy", assessedBy).Msg("MCP: assessment upserted")
 		return jsonResult(result)
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "set_server_assessment",
+		Description: "Decide a CVE for one server only, overriding automated decisions and the CVE's assessment for that server — exactly as in the UI. " +
+			"Status manual switches automation off for the server without deciding. Recorded in the audit trail under the token owner's name.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in serverAssessmentInput) (*mcpsdk.CallToolResult, any, error) {
+		actor := ""
+		if d.AssessorFromContext != nil {
+			actor = d.AssessorFromContext(ctx)
+		}
+		o, err := d.AutoAssessment.SetOverride(ctx, in.ServerID, in.CVEID, in.Status, in.Comment, actor)
+		if err != nil {
+			return nil, nil, err
+		}
+		prefix, desc := tokenAudit(ctx)
+		log.Info().Str("source", "mcp").Str("tokenPrefix", prefix).Str("tokenDescription", desc).
+			Int64("serverId", in.ServerID).Str("cveId", in.CVEID).Str("status", in.Status).Msg("MCP: server assessment set")
+		return jsonResult(o)
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "remove_server_assessment",
+		Description: "Remove the per-server decision for a CVE; the server then follows automation and the CVE's assessment again.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in removeServerAssessmentInput) (*mcpsdk.CallToolResult, any, error) {
+		actor := ""
+		if d.AssessorFromContext != nil {
+			actor = d.AssessorFromContext(ctx)
+		}
+		removed, err := d.AutoAssessment.RemoveOverride(ctx, in.ServerID, in.CVEID, actor)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !removed {
+			return nil, nil, fmt.Errorf("no decision for server %d and %s", in.ServerID, in.CVEID)
+		}
+		return jsonResult(map[string]any{"removed": true})
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{

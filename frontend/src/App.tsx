@@ -9,6 +9,7 @@ import ServerDetail from './pages/ServerDetail';
 import Findings from './pages/Findings';
 import Packages from './pages/Packages';
 import PackageDetail from './pages/PackageDetail';
+import AutoDecisions from './pages/AutoDecisions';
 import Triage from './pages/Triage';
 import TriageDetail from './pages/TriageDetail';
 import Assessments from './pages/Assessments';
@@ -52,6 +53,7 @@ export default function App() {
           <Route path="triage" element={<Triage />} />
           <Route path="triage/:cveId" element={<TriageDetail />} />
           <Route path="assessments" element={<Assessments />} />
+          <Route path="auto-decisions" element={<AutoDecisions />} />
           <Route path="ai-assessments" element={<AIAssessments />} />
           <Route path="statistics" element={<Statistics />} />
           <Route path="reports" element={<Reports />} />

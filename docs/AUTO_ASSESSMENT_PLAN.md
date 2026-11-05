@@ -1,6 +1,6 @@
 # Automated assessment
 
-**Status:** planned, agreed on 2026-11-05. Phase 1 (KEV and EPSS) implemented.
+**Status:** agreed on 2026-11-05. Phase 1 (KEV and EPSS) and phase 2 (decision model) implemented.
 **Scope:** backend, frontend, agent (separate repository), MCP, reports.
 
 ## 1. Goal
@@ -190,11 +190,16 @@ version, which re-evaluates its decisions.
 | G-EXPLOIT | 2 | verified public exploit in ExploitDB | guard (configurable) |
 | G-EPSS | 2 | EPSS ≥ threshold (default 0.10) | guard (configurable) |
 | R-VEX | 2 | Canonical VEX says `not_affected` | not_relevant |
-| R-HDR | 2 | package ships only headers or documentation: `linux-libc-dev`, `linux-headers-*`, `*-doc` (exact list in code, tested) | not_relevant |
-| R-KRN-IDLE | 2 | finding is on a kernel image/modules package that is installed but is not the running kernel | not_relevant |
+| R-HDR | 2 | package ships only kernel headers, kernel sources or documentation: `linux-libc-dev`, `linux-headers-*`, `linux-*-headers-*`, `linux-source-*`, `linux-doc`, `*-doc`; not `-dev` packages (static libraries end up in programs built on the host) | not_relevant |
 | R-KMOD | 4 | kernel CVE whose affected code lies only in modules that are neither loaded nor built-in, **and** cannot be loaded (`modules_disabled=1`, blacklisted with `install … /bin/false`, or not present in the module index at all) | not_relevant |
 | R-NET | 4 | network-only CVE (CVSS `AV:N`) in a package whose processes listen on loopback only, and the package has no other attack surface per its precondition analysis | open, with a hint to the AI stage |
 | R-UNUSED | 4 | library CVE, package not mapped by any process, and the package ships no executables or services | candidate; enabled only after shadow evaluation shows it safe |
+
+R-KRN-IDLE (a kernel package installed but not running) was dropped while
+implementing phase 2: the scanner never reports findings for installed kernel
+packages. Kernel findings belong to the pseudo-package `kernel` and always
+describe the running kernel (OVAL matches `uname -r`), and the package feed
+skips kernel source packages entirely.
 
 "Module not loaded" alone never dismisses: the kernel autoloads many modules on
 demand, some at the request of unprivileged users (e.g. network protocols). The
@@ -365,7 +370,22 @@ Each phase is shippable on its own and leaves the system working.
 
 ## 13. Open points
 
-- Exact list of packages for R-HDR (to be derived from the current findings).
+- Exact list of packages for R-HDR: to be checked against the production
+  findings in shadow mode before the rule is activated.
 - Verification of the kernel CVE → affected file data source (Phase 4).
 - Default EPSS guard threshold (0.10 proposed) after looking at the distribution
   of our findings.
+
+## 14. Implementation notes (phase 2)
+
+- Decisions are stored per (server, CVE) in `auto_decisions` only when every
+  active finding of the CVE on that server is dismissed by an enabled rule.
+- Whether a decision takes effect is computed when it is read, from the global
+  mode, the rule modes and the guards. Switching a rule between shadow and
+  active therefore takes effect immediately, without re-evaluation.
+- With no active rule, the triage queue does not join `auto_decisions` at all.
+- One evaluation per server at a time (advisory lock); full re-evaluations are
+  coalesced, so bursts of triggers cause at most one extra run.
+- Hysteresis (§5, point 5) is not needed yet: the phase-2 rules read no runtime
+  facts. It comes with phase 3.
+

@@ -28,7 +28,7 @@ func (s *ReportScheduleService) GetAll(ctx context.Context) ([]models.ReportSche
 			time_hour, time_minute, timezone,
 			server_ids, group_ids,
 			period_type, period_days,
-			include_severity_chart, include_trend_chart, include_top_cves, include_full_cve_list,
+			include_severity_chart, include_trend_chart, include_top_cves, include_full_cve_list, include_auto_assessments,
 			recipients,
 			enabled, last_run_at, next_run_at, COALESCE(last_error, ''),
 			created_at, updated_at
@@ -59,7 +59,7 @@ func (s *ReportScheduleService) GetByID(ctx context.Context, id int64) (*models.
 			time_hour, time_minute, timezone,
 			server_ids, group_ids,
 			period_type, period_days,
-			include_severity_chart, include_trend_chart, include_top_cves, include_full_cve_list,
+			include_severity_chart, include_trend_chart, include_top_cves, include_full_cve_list, include_auto_assessments,
 			recipients,
 			enabled, last_run_at, next_run_at, COALESCE(last_error, ''),
 			created_at, updated_at
@@ -88,16 +88,16 @@ func (s *ReportScheduleService) Create(ctx context.Context, rs *models.ReportSch
 			time_hour, time_minute, timezone,
 			server_ids, group_ids,
 			period_type, period_days,
-			include_severity_chart, include_trend_chart, include_top_cves, include_full_cve_list,
+			include_severity_chart, include_trend_chart, include_top_cves, include_full_cve_list, include_auto_assessments,
 			recipients, enabled, next_run_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		RETURNING id, created_at, updated_at
 	`,
 		rs.Name, rs.ScheduleType, rs.IntervalValue, rs.DayOfWeek, rs.WeekOfMonth, rs.DayOfMonth,
 		rs.TimeHour, rs.TimeMinute, rs.Timezone,
 		rs.ServerIDs, rs.GroupIDs,
 		rs.PeriodType, rs.PeriodDays,
-		rs.IncludeSeverityChart, rs.IncludeTrendChart, rs.IncludeTopCVEs, rs.IncludeFullCVEList,
+		rs.IncludeSeverityChart, rs.IncludeTrendChart, rs.IncludeTopCVEs, rs.IncludeFullCVEList, rs.IncludeAutoAssessments,
 		rs.Recipients, rs.Enabled, rs.NextRunAt,
 	).Scan(&rs.ID, &rs.CreatedAt, &rs.UpdatedAt)
 
@@ -122,6 +122,7 @@ func (s *ReportScheduleService) Update(ctx context.Context, rs *models.ReportSch
 			include_severity_chart = $15, include_trend_chart = $16,
 			include_top_cves = $17, include_full_cve_list = $18,
 			recipients = $19, enabled = $20, next_run_at = $21,
+			include_auto_assessments = $22,
 			updated_at = NOW()
 		WHERE id = $1
 	`,
@@ -134,6 +135,7 @@ func (s *ReportScheduleService) Update(ctx context.Context, rs *models.ReportSch
 		rs.IncludeSeverityChart, rs.IncludeTrendChart,
 		rs.IncludeTopCVEs, rs.IncludeFullCVEList,
 		rs.Recipients, rs.Enabled, rs.NextRunAt,
+		rs.IncludeAutoAssessments,
 	)
 	if err != nil {
 		return fmt.Errorf("update report schedule %d: %w", rs.ID, err)
@@ -180,7 +182,7 @@ func (s *ReportScheduleService) GetDueSchedules(ctx context.Context) ([]models.R
 			time_hour, time_minute, timezone,
 			server_ids, group_ids,
 			period_type, period_days,
-			include_severity_chart, include_trend_chart, include_top_cves, include_full_cve_list,
+			include_severity_chart, include_trend_chart, include_top_cves, include_full_cve_list, include_auto_assessments,
 			recipients,
 			enabled, last_run_at, next_run_at, COALESCE(last_error, ''),
 			created_at, updated_at
@@ -320,7 +322,7 @@ func scanSchedule(rows pgx.Rows) (models.ReportSchedule, error) {
 		&rs.TimeHour, &rs.TimeMinute, &rs.Timezone,
 		&rs.ServerIDs, &rs.GroupIDs,
 		&rs.PeriodType, &rs.PeriodDays,
-		&rs.IncludeSeverityChart, &rs.IncludeTrendChart, &rs.IncludeTopCVEs, &rs.IncludeFullCVEList,
+		&rs.IncludeSeverityChart, &rs.IncludeTrendChart, &rs.IncludeTopCVEs, &rs.IncludeFullCVEList, &rs.IncludeAutoAssessments,
 		&rs.Recipients,
 		&rs.Enabled, &rs.LastRunAt, &rs.NextRunAt, &rs.LastError,
 		&rs.CreatedAt, &rs.UpdatedAt,
@@ -349,7 +351,7 @@ func scanScheduleRow(row pgx.Row) (models.ReportSchedule, error) {
 		&rs.TimeHour, &rs.TimeMinute, &rs.Timezone,
 		&rs.ServerIDs, &rs.GroupIDs,
 		&rs.PeriodType, &rs.PeriodDays,
-		&rs.IncludeSeverityChart, &rs.IncludeTrendChart, &rs.IncludeTopCVEs, &rs.IncludeFullCVEList,
+		&rs.IncludeSeverityChart, &rs.IncludeTrendChart, &rs.IncludeTopCVEs, &rs.IncludeFullCVEList, &rs.IncludeAutoAssessments,
 		&rs.Recipients,
 		&rs.Enabled, &rs.LastRunAt, &rs.NextRunAt, &rs.LastError,
 		&rs.CreatedAt, &rs.UpdatedAt,

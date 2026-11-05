@@ -7,6 +7,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/vultrack/vultrack/internal/services"
 )
 
 // In-memory metrics — updated at event time.
@@ -21,6 +23,11 @@ var (
 		Help:    "Duration of completed scan jobs in seconds.",
 		Buckets: []float64{1, 5, 10, 30, 60, 120, 300},
 	}, []string{"trigger"})
+
+	AutoDecisionChangesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vultrack_auto_decision_changes_total",
+		Help: "Automated assessment decisions created, changed and revoked by the evaluator.",
+	}, []string{"change"})
 
 	AgentAuthFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "vultrack_agent_auth_failures_total",
@@ -66,6 +73,9 @@ type DBCollector struct {
 	// Sequence headroom. An exhausted sequence stops every write to its table
 	// and is otherwise invisible until it happens.
 	dbSequenceUsage *prometheus.Desc
+
+	// Automated assessment
+	autoDecisions *prometheus.Desc
 }
 
 func NewDBCollector(db *pgxpool.Pool) *DBCollector {
@@ -101,6 +111,12 @@ func NewDBCollector(db *pgxpool.Pool) *DBCollector {
 			"Number of scan jobs currently running.",
 			nil, nil,
 		),
+		autoDecisions: prometheus.NewDesc(
+			"vultrack_auto_decisions",
+			"Stored automated assessment decisions by rule and state (applied, shadow, blocked, rejected, overridden).",
+			[]string{"rule", "state"}, nil,
+		),
+
 		syncLastSuccess: prometheus.NewDesc(
 			"vultrack_sync_last_success_timestamp",
 			"Unix timestamp of the last successful data sync by source.",
@@ -206,6 +222,7 @@ func (c *DBCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.dbBlocks
 	ch <- c.dbDeadlocksTotal
 	ch <- c.dbSequenceUsage
+	ch <- c.autoDecisions
 }
 
 func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
@@ -221,6 +238,23 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectPoolStats(ch)
 	c.collectPostgresStats(ctx, ch)
 	c.collectSequenceUsage(ctx, ch)
+	c.collectAutoDecisions(ctx, ch)
+}
+
+// collectAutoDecisions reports stored decisions by rule and state. The state
+// depends on the configured modes, so it is computed like the UI does.
+func (c *DBCollector) collectAutoDecisions(ctx context.Context, ch chan<- prometheus.Metric) {
+	cfg, err := services.NewSettingsService(c.db).LoadAutoAssessmentConfig(ctx)
+	if err != nil {
+		return
+	}
+	counts, err := services.NewAutoAssessmentService(c.db).CountByRuleAndState(ctx, cfg)
+	if err != nil {
+		return
+	}
+	for k, n := range counts {
+		ch <- prometheus.MustNewConstMetric(c.autoDecisions, prometheus.GaugeValue, float64(n), k[0], k[1])
+	}
 }
 
 // collectSequenceUsage reports how close each sequence is to its ceiling.

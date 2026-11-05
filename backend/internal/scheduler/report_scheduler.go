@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"github.com/vultrack/vultrack/internal/autoassess"
 	"github.com/vultrack/vultrack/internal/models"
 	"github.com/vultrack/vultrack/internal/services"
 )
@@ -112,15 +113,17 @@ func (s *ReportScheduler) executeSchedule(ctx context.Context, rs *models.Report
 
 	// Build report request using the same struct the existing ReportService expects
 	req := services.ReportRequest{
-		ServerIDs:            rs.ServerIDs,
-		GroupIDs:             rs.GroupIDs,
-		StartDate:            startDate,
-		EndDate:              endDate,
-		ReportType:           "vulnerability_summary",
-		IncludeSeverityChart: rs.IncludeSeverityChart,
-		IncludeTrendChart:    rs.IncludeTrendChart,
-		IncludeTopCVEs:       rs.IncludeTopCVEs,
-		IncludeFullCVEList:   rs.IncludeFullCVEList,
+		ServerIDs:              rs.ServerIDs,
+		GroupIDs:               rs.GroupIDs,
+		StartDate:              startDate,
+		EndDate:                endDate,
+		ReportType:             "vulnerability_summary",
+		IncludeSeverityChart:   rs.IncludeSeverityChart,
+		IncludeTrendChart:      rs.IncludeTrendChart,
+		IncludeTopCVEs:         rs.IncludeTopCVEs,
+		IncludeFullCVEList:     rs.IncludeFullCVEList,
+		IncludeAutoAssessments: rs.IncludeAutoAssessments,
+		AutoRuleDescriptions:   autoassess.RuleDescriptions(),
 	}
 
 	// Generate PDF

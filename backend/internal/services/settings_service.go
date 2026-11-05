@@ -169,6 +169,13 @@ func (s *SettingsService) BuildTriageOptions(ctx context.Context) (TriageFilterO
 
 	opts := TriageFilterOptions{Mode: mode}
 
+	// Automated decisions that take effect remove servers from the queue.
+	auto, err := s.LoadAutoAssessmentConfig(ctx)
+	if err != nil {
+		return opts, err
+	}
+	opts.AutoActiveRules = auto.ActiveRuleIDs()
+
 	// Hide VEX 'not affected' findings unless explicitly disabled in settings.
 	// Mirrors the UI, which treats settings['triage_hide_vex_not_affected'] !== 'false'.
 	hideVex, _ := s.GetValue(ctx, "triage_hide_vex_not_affected")

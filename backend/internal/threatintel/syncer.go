@@ -56,6 +56,14 @@ type Syncer struct {
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
+
+	// afterSync runs after every successful sync of a feed.
+	afterSync func(src Source)
+}
+
+// SetAfterSync registers a function that runs after every successful sync.
+func (s *Syncer) SetAfterSync(f func(src Source)) {
+	s.afterSync = f
 }
 
 // New creates the syncer for both feeds.
@@ -179,6 +187,9 @@ func (s *Syncer) Sync(ctx context.Context, src Source) error {
 		return err
 	}
 	s.setStatus(ctx, src, "success", "", n)
+	if s.afterSync != nil {
+		s.afterSync(src)
+	}
 	log.Info().Str("source", string(src)).Int("records", n).Dur("duration", time.Since(start)).Msg("Threat intel sync completed")
 	return nil
 }

@@ -406,6 +406,68 @@ CREATE TABLE IF NOT EXISTS epss_scores (
 );
 
 -- ============================================================================
+-- AUTOMATED ASSESSMENT (docs/AUTO_ASSESSMENT_PLAN.md)
+-- ============================================================================
+
+-- Current automated decision per (server, CVE). A row exists only when every
+-- active finding of the CVE on the server is dismissed by a rule. Whether a row
+-- takes effect is decided when it is read: the global mode and each rule's mode
+-- live in settings, and any guard blocks it. Rows are rewritten only when the
+-- computed decision changes.
+CREATE TABLE IF NOT EXISTS auto_decisions (
+    server_id  INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    cve_id     VARCHAR(30) NOT NULL,
+    verdict    VARCHAR(20) NOT NULL DEFAULT 'not_relevant',
+    source     VARCHAR(10) NOT NULL DEFAULT 'rule',    -- 'rule' (later also 'ai')
+    rule_ids   TEXT[] NOT NULL,                        -- every rule that dismissed one of the findings
+    guards     TEXT[] NOT NULL DEFAULT '{}',           -- guards that block the decision; empty = not blocked
+    reason     TEXT NOT NULL,
+    evidence   JSONB NOT NULL DEFAULT '{}',            -- per package: rule, version, detail; guard details
+    decided_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (server_id, cve_id),
+    CONSTRAINT valid_auto_verdict CHECK (verdict IN ('not_relevant'))
+);
+CREATE INDEX IF NOT EXISTS idx_auto_decisions_cve ON auto_decisions(cve_id);
+
+-- Append-only audit trail of automated decisions and per-server human
+-- decisions. Written only when something changes.
+CREATE TABLE IF NOT EXISTS decision_events (
+    id         BIGSERIAL PRIMARY KEY,
+    server_id  INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    cve_id     VARCHAR(30) NOT NULL,
+    event      VARCHAR(30) NOT NULL,  -- auto_created, auto_changed, auto_revoked, override_set, override_removed
+    verdict    VARCHAR(20),
+    rule_ids   TEXT[],
+    guards     TEXT[],
+    reason     TEXT,
+    evidence   JSONB,
+    actor      VARCHAR(255),          -- user for human events; NULL for automation
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_decision_events_pair ON decision_events(server_id, cve_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decision_events_created ON decision_events(created_at);
+
+-- A human decision for one server, which overrides automation and the CVE's
+-- assessment for that server. 'manual' switches automation off for the pair
+-- without deciding: the server stays open until a human assesses the CVE.
+CREATE TABLE IF NOT EXISTS assessment_overrides (
+    server_id   INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    cve_id      VARCHAR(30) NOT NULL,
+    status      VARCHAR(20) NOT NULL,
+    comment     TEXT,
+    assessed_by VARCHAR(255),
+    assessed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (server_id, cve_id),
+    CONSTRAINT valid_override_status CHECK (status IN ('relevant', 'not_relevant', 'accepted_risk', 'manual'))
+);
+CREATE INDEX IF NOT EXISTS idx_assessment_overrides_cve ON assessment_overrides(cve_id);
+
+-- A CVE assessment marked binding applies to every server, and automation never
+-- overrides it.
+ALTER TABLE assessments ADD COLUMN IF NOT EXISTS binding_all_servers BOOLEAN NOT NULL DEFAULT false;
+
+-- ============================================================================
 -- SYNC STATUS (NEW)
 -- ============================================================================
 
@@ -561,6 +623,7 @@ CREATE TABLE IF NOT EXISTS report_schedules (
     include_trend_chart    BOOLEAN NOT NULL DEFAULT true,
     include_top_cves       BOOLEAN NOT NULL DEFAULT true,
     include_full_cve_list  BOOLEAN NOT NULL DEFAULT false,
+    include_auto_assessments BOOLEAN NOT NULL DEFAULT false,
 
     -- Email recipients
     recipients      TEXT[] NOT NULL,
@@ -574,6 +637,8 @@ CREATE TABLE IF NOT EXISTS report_schedules (
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW()
 );
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS include_auto_assessments BOOLEAN NOT NULL DEFAULT false;
+
 
 -- ============================================================================
 -- SCAN JOBS

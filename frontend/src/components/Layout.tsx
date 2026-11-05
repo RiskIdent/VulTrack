@@ -16,6 +16,7 @@ import {
   Radar,
   Sparkles,
   Package,
+  Bot,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -31,6 +32,7 @@ const navItems = [
   { path: '/packages', label: 'APT Packages', icon: Package },
   { path: '/triage', label: 'Triage', icon: ClipboardCheck },
   { path: '/assessments', label: 'Assessments', icon: FileCheck },
+  { path: '/auto-decisions', label: 'Auto Decisions', icon: Bot },
   { path: '/ai-assessments', label: 'AI Assessments', icon: Sparkles },
   { path: '/statistics', label: 'Statistics', icon: BarChart3 },
   { path: '/reports', label: 'Reports', icon: FileText },

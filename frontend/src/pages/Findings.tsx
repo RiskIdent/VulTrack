@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, X, ExternalLink, AlertTriangle } from 'lucide-react';
 import { CVSSBadge, VendorSeverityBadge, FixStateBadge, VEXBadge, SourceBadge, PocketBadge, KEVBadge, EPSSBadge } from '../components/SeverityBadge';
 import { AIAssessmentCard } from '../components/AIAssessmentCard';
+import { AutoDecisionBadge } from '../components/AutoDecision';
 import { getFindings, getFinding, getFindingsGrouped } from '../api/client';
 import type { Finding, GroupedFinding } from '../types';
 
@@ -457,6 +458,7 @@ export default function Findings() {
                           </span>
                         )}
                         <VEXBadge status={finding.vexStatus} justification={finding.vexJustification} />
+                        <AutoDecisionBadge decision={finding.autoDecision} />
                       </div>
                     </td>
                   </tr>
@@ -527,6 +529,7 @@ export default function Findings() {
                                 VEX: mixed
                               </span>
                             )}
+                            <AutoDecisionBadge decision={group.autoDecision} />
                           </div>
                         </td>
                       </tr>

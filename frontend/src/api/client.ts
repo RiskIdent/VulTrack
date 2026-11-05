@@ -324,7 +324,7 @@ export const getAssessments = (params?: AssessmentFilterParams) => {
   }>(`/assessments${qs ? '?' + qs : ''}`);
 };
 
-export const createAssessment = (data: { cveId: string; status: string; comment?: string; ticketUrl?: string; assessedBy?: string }) =>
+export const createAssessment = (data: { cveId: string; status: string; comment?: string; ticketUrl?: string; assessedBy?: string; bindingAllServers?: boolean }) =>
   fetchAPI<import('../types').Assessment>('/assessments', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -416,6 +416,7 @@ export interface GenerateReportParams {
   includeTrendChart?: boolean;
   includeTopCVEs?: boolean;
   includeFullCVEList?: boolean;
+  includeAutoAssessments?: boolean;
 }
 
 export const generateReport = async (params: GenerateReportParams): Promise<Blob> => {
@@ -838,3 +839,58 @@ export const getThreatIntelStatus = () =>
 
 export const triggerThreatIntelSync = (source: 'kev' | 'epss') =>
   fetchAPI<{ message: string }>(`/admin/threat-intel/${source}/sync`, { method: 'POST' });
+
+// Automated assessment
+export const getAutoAssessmentConfig = () =>
+  fetchAPI<import('../types').AutoAssessmentConfig>('/auto-assessment/config');
+
+export const updateAutoAssessmentConfig = (data: {
+  mode?: import('../types').AutoMode;
+  ruleModes?: Record<string, import('../types').AutoMode>;
+  guardExploit?: boolean;
+  guardEpss?: number;
+}) =>
+  fetchAPI<import('../types').AutoAssessmentConfig>('/admin/auto-assessment/config', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+
+export const reevaluateAutoAssessment = () =>
+  fetchAPI<{ message: string }>('/admin/auto-assessment/reevaluate', { method: 'POST' });
+
+export const getAutoAssessmentStats = () =>
+  fetchAPI<{ stats: import('../types').AutoAssessmentStats; config: import('../types').AutoAssessmentConfig }>('/auto-assessment/stats');
+
+export const getAutoDecisions = (params: {
+  ruleId?: string; state?: string; guard?: string; serverId?: number; cveId?: string; search?: string;
+  limit?: number; offset?: number;
+}) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== '' && v !== 0) q.set(k, String(v));
+  }
+  return fetchAPI<{ decisions: import('../types').AutoDecision[]; total: number }>(`/auto-assessment/decisions?${q}`);
+};
+
+export const getDecisionEvents = (params: { serverId?: number; cveId?: string; limit?: number }) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== '' && v !== 0) q.set(k, String(v));
+  }
+  return fetchAPI<{ events: import('../types').DecisionEvent[] }>(`/auto-assessment/events?${q}`);
+};
+
+export const getCVEServerStatus = (cveId: string) =>
+  fetchAPI<{ servers: import('../types').ServerStatus[]; mode: import('../types').AutoMode }>(`/cves/${encodeURIComponent(cveId)}/server-status`);
+
+export const setServerAssessment = (serverId: number, cveId: string, data: { status: import('../types').ServerOverrideStatus; comment?: string; assessedBy?: string }) =>
+  fetchAPI<{ status: string }>(`/servers/${serverId}/cves/${encodeURIComponent(cveId)}/assessment`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+
+export const deleteServerAssessment = (serverId: number, cveId: string, assessedBy?: string) =>
+  fetchAPI<void>(`/servers/${serverId}/cves/${encodeURIComponent(cveId)}/assessment${assessedBy ? `?assessedBy=${encodeURIComponent(assessedBy)}` : ''}`, {
+    method: 'DELETE',
+  });
+

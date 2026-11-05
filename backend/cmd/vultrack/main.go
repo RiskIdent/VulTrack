@@ -13,6 +13,7 @@ import (
 
 	"github.com/vultrack/vultrack/internal/ai"
 	"github.com/vultrack/vultrack/internal/aiqueue"
+	"github.com/vultrack/vultrack/internal/autoassess"
 	"github.com/vultrack/vultrack/internal/config"
 	"github.com/vultrack/vultrack/internal/database"
 	"github.com/vultrack/vultrack/internal/exploitdb"
@@ -110,6 +111,14 @@ func main() {
 	threatIntelService := services.NewThreatIntelService(db)
 	threatIntelSyncer := threatintel.New(db, settingsService)
 
+	// Automated assessment: re-evaluated after every scan, after a KEV/EPSS
+	// sync, on configuration changes and at start-up.
+	autoAssessmentService := services.NewAutoAssessmentService(db)
+	autoEvaluator := autoassess.New(db, settingsService)
+	threatIntelSyncer.SetAfterSync(func(src threatintel.Source) {
+		autoEvaluator.TriggerAll(string(src) + " sync")
+	})
+
 	// VEX service + syncer
 	vexService := services.NewVEXService(db)
 	vexSyncer := vex.New(vexService, settingsService)
@@ -117,6 +126,17 @@ func main() {
 	// Vulnerability scanner + scan queue
 	vulnScanner := scanner.NewScanner(db, vexService, pkgFeedService)
 	scanQ := scanqueue.New(db, vulnScanner, cfg)
+	scanQ.SetAfterScan(func(ctx context.Context, serverID int64) {
+		r, err := autoEvaluator.EvaluateServer(ctx, serverID)
+		if err != nil {
+			log.Error().Err(err).Int64("serverId", serverID).Msg("Automated assessment after scan failed")
+			return
+		}
+		if r.Created+r.Changed+r.Revoked > 0 {
+			log.Info().Int64("serverId", serverID).Int("created", r.Created).Int("changed", r.Changed).
+				Int("revoked", r.Revoked).Msg("Automated assessment updated")
+		}
+	})
 
 	// AI assessment service + queue (inactive when ANTHROPIC_API_KEY is unset)
 	aiAssessmentService := services.NewAIAssessmentService(db)
@@ -164,6 +184,10 @@ func main() {
 	// Start KEV/EPSS syncer
 	threatIntelSyncer.Start()
 
+	// Re-evaluate all automated decisions once at start-up: a new release may
+	// have changed a rule.
+	autoEvaluator.TriggerAll("start-up")
+
 	// Start scan queue
 	scanQ.Start()
 
@@ -203,6 +227,8 @@ func main() {
 		userService,
 		apiTokenService,
 		aiAssessmentService,
+		autoAssessmentService,
+		autoEvaluator,
 		threatIntelService,
 		threatIntelSyncer,
 	)

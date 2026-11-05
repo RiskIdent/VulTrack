@@ -37,6 +37,15 @@ type ThreatIntel struct {
 	EPSSPercentile *float64   `json:"epssPercentile,omitempty"`
 }
 
+// DecisionBadge is the automated decision of a finding's (server, CVE) pair, as
+// shown next to the finding. State is applied, shadow, blocked, rejected or
+// overridden (see services.AutoAssessmentService).
+type DecisionBadge struct {
+	RuleIDs []string `json:"ruleIds"`
+	Guards  []string `json:"guards,omitempty"`
+	State   string   `json:"state"`
+}
+
 // Finding represents a vulnerability finding on a server
 type Finding struct {
 	ID             int64      `json:"id"`
@@ -75,6 +84,9 @@ type Finding struct {
 
 	// CISA KEV and FIRST EPSS
 	ThreatIntel
+
+	// Automated decision for this finding's (server, CVE), if any
+	AutoDecision *DecisionBadge `json:"autoDecision,omitempty"`
 
 	// Enrichment from ExploitDB
 	HasExploit      bool  `json:"hasExploit"`
@@ -129,6 +141,7 @@ type GroupedFinding struct {
 	EarliestFirstSeen time.Time        `json:"earliestFirstSeen"`
 	LatestLastSeen    time.Time        `json:"latestLastSeen"`
 	ThreatIntel
+	AutoDecision *DecisionBadge `json:"autoDecision,omitempty"`
 }
 
 // Assessment represents a user's evaluation of a CVE
@@ -142,6 +155,11 @@ type Assessment struct {
 	AssessedAt time.Time `json:"assessedAt"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
+	// BindingAllServers: the assessment applies to every server and automated
+	// decisions never override it.
+	BindingAllServers bool `json:"bindingAllServers"`
+	// SetBinding is the binding flag requested on write; nil keeps the stored value.
+	SetBinding *bool `json:"-"`
 	// Joined fields for display (not stored in assessments table)
 	CVSS3Score      float64 `json:"cvss3Score,omitempty"`
 	Severity        string  `json:"severity,omitempty"`
@@ -642,6 +660,8 @@ type ReportSchedule struct {
 	IncludeTrendChart    bool `json:"includeTrendChart"`
 	IncludeTopCVEs       bool `json:"includeTopCves"`
 	IncludeFullCVEList   bool `json:"includeFullCveList"`
+	// IncludeAutoAssessments adds the "Automated assessments" section.
+	IncludeAutoAssessments bool `json:"includeAutoAssessments"`
 
 	Recipients []string `json:"recipients"`
 

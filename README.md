@@ -18,6 +18,7 @@ The VulTrack Agent can be found in [this repository](https://github.com/RiskIden
 - **OVAL Integration**: Automatic vulnerability detection using OVAL definitions (Ubuntu and others)
 - **NVD Enrichment**: CVE details enriched with CVSS scores, CWE IDs, and descriptions
 - **ExploitDB Integration**: Identify vulnerabilities with known exploits
+- **Automated Assessment**: Deterministic, versioned rules dismiss findings that cannot affect a server (for example kernel headers or Canonical VEX "not affected"), per server and CVE. Automation only ever sets *not relevant*; guards (CISA KEV, verified exploits, EPSS threshold) block it, and every decision records the rule, version and evidence. Runs in shadow mode until a rule is activated; humans can override any server or make an assessment binding for all servers. See [docs/AUTO_ASSESSMENT_PLAN.md](docs/AUTO_ASSESSMENT_PLAN.md)
 - **CISA KEV and FIRST EPSS**: Marks CVEs that are exploited in the wild (CISA Known Exploited Vulnerabilities catalog) and shows each CVE's probability of exploitation in the next 30 days (EPSS). The triage queue is ordered by them: KEV first, then EPSS, then CVSS. Both are synced daily
 - **Ubuntu VEX Integration**: Automatic enrichment of findings with Canonical's VEX (Vulnerability Exploitability eXchange) data — surfaces `Not Affected`, `Will Not Fix`, and `Under Investigation` assessments from Ubuntu Security directly in your findings and triage queue
 - **Scheduled Reports**: Automated PDF reports delivered by email (weekly / monthly)
@@ -329,9 +330,22 @@ Both accept the filters `name`, `version`, `arch`, `sourcePackage`, `server` and
 
 ### Assessments
 - `GET /api/v1/assessments` - List all assessments
-- `POST /api/v1/assessments` - Create assessment
+- `POST /api/v1/assessments` - Create assessment (`bindingAllServers: true` makes it apply to every server, overriding automated and per-server decisions)
 - `PUT /api/v1/assessments/:cveId` - Update assessment
 - `DELETE /api/v1/assessments/:cveId` - Delete assessment
+
+### Automated Assessment
+- `GET /api/v1/auto-assessment/config` - Mode, rule catalogue with modes, guards
+- `GET /api/v1/auto-assessment/stats` - Decision counts per rule and state, agreement with human assessments, guard counts, open server/CVE pairs, activity of the last 30 days
+- `GET /api/v1/auto-assessment/decisions` - Stored decisions with state (`applied`, `shadow`, `blocked`, `rejected`, `overridden`); filters `ruleId`, `state`, `guard`, `serverId`, `cveId`, `search`; paginated
+- `GET /api/v1/auto-assessment/events` - Audit trail; filters `serverId`, `cveId`, `limit`
+- `GET /api/v1/cves/:id/server-status` - Effective status of every affected server and where it comes from
+- `PUT /api/v1/servers/:id/cves/:cveId/assessment` - Decide a CVE for one server (`relevant`, `not_relevant`, `accepted_risk`, or `manual` = automation off for this server)
+- `DELETE /api/v1/servers/:id/cves/:cveId/assessment` - Remove that per-server decision
+- `PUT /api/v1/admin/auto-assessment/config` - Set `mode`, `ruleModes`, `guardExploit`, `guardEpss` (re-evaluates all servers)
+- `POST /api/v1/admin/auto-assessment/reevaluate` - Re-evaluate all servers now
+
+Decisions are re-evaluated after every scan of a server, after each KEV/EPSS sync, after configuration changes and at start-up. With mode `off` the triage queue behaves exactly as before.
 
 ### AI Assessments
 - `GET /api/v1/ai-assessments` - List AI assessments (filters: `status`, `search`; paginated)
@@ -460,10 +474,10 @@ Deleting a token revokes it immediately. All write actions are logged with the a
 ### Tools
 
 **Read tools** (available to every token):
-`list_servers`, `get_server`, `list_installed_packages`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `get_ai_assessment`, `list_triage_queue`, `get_triage_config`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
+`list_servers`, `get_server`, `get_auto_assessment`, `list_auto_decisions`, `list_installed_packages`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `get_ai_assessment`, `list_triage_queue`, `get_triage_config`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
 
 **Write tools** (only available to non-read-only tokens):
-`upsert_assessment`, `delete_assessment`, `trigger_server_scan`, `create_server_group`, `update_server_group`, `delete_server_group`, `set_server_group_members`
+`upsert_assessment`, `set_server_assessment`, `remove_server_assessment`, `delete_assessment`, `trigger_server_scan`, `create_server_group`, `update_server_group`, `delete_server_group`, `set_server_group_members`
 
 All MCP tools share the same logic as the REST API / UI, including admin-configured settings. In particular, `list_triage_queue` honours the configured triage filter (vendor severities or CVSS threshold) and returns the same findings as the UI, and `upsert_assessment` creates a Jira ticket when the status is set to `relevant` and Jira is enabled — just like the UI.
 

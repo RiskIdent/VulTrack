@@ -75,8 +75,17 @@ export interface CVEThreatIntel extends ThreatIntel {
   epssScoreDate?: string;
 }
 
+// Automated decision of a finding's (server, CVE) pair, shown next to findings.
+export type DecisionState = 'applied' | 'shadow' | 'blocked' | 'rejected' | 'overridden';
+export interface DecisionBadge {
+  ruleIds: string[];
+  guards?: string[];
+  state: DecisionState;
+}
+
 // Finding types
 export interface Finding extends ThreatIntel {
+  autoDecision?: DecisionBadge;
   id: number;
   serverId: number;
   cveId: string;
@@ -136,6 +145,7 @@ export interface PackageFinding {
 }
 
 export interface GroupedFinding extends ThreatIntel {
+  autoDecision?: DecisionBadge;
   serverId: number;
   serverName: string;
   cveId: string;
@@ -167,6 +177,8 @@ export interface Assessment {
   assessedAt: string;
   createdAt: string;
   updatedAt: string;
+  // Applies to every server; automated decisions never override it
+  bindingAllServers?: boolean;
   // Joined fields for display
   cvss3Score?: number;
   severity?: string;
@@ -355,6 +367,7 @@ export interface ReportSchedule {
   includeTrendChart: boolean;
   includeTopCves: boolean;
   includeFullCveList: boolean;
+  includeAutoAssessments: boolean;
   recipients: string[];
   enabled: boolean;
   lastRunAt?: string | null;
@@ -398,3 +411,112 @@ export interface ScanStats {
   cancelled: number;
   queueDepth: number;
 }
+
+// =============================================================================
+// Automated assessment (docs/AUTO_ASSESSMENT_PLAN.md)
+// =============================================================================
+
+export type AutoMode = 'off' | 'shadow' | 'active';
+
+export interface AutoRuleInfo {
+  id: string;
+  version: number;
+  description: string;
+  mode: AutoMode;          // configured
+  effectiveMode: AutoMode; // after the global mode
+}
+
+export interface AutoGuardInfo {
+  id: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface AutoAssessmentConfig {
+  mode: AutoMode;
+  rules: AutoRuleInfo[];
+  guards: AutoGuardInfo[];
+  guardExploit: boolean;
+  guardEpss: number;
+  activeRules: string[];
+}
+
+export interface AutoRuleStats {
+  ruleId: string;
+  decisions: number;
+  applied: number;
+  shadow: number;
+  blocked: number;
+  rejected: number;
+  overridden: number;
+  humanAgree: number;
+  humanDisagree: number;
+}
+
+export interface AutoAssessmentStats {
+  rules: AutoRuleStats[] | null;
+  guards: Record<string, number>;
+  total: AutoRuleStats;
+  openPairs: number;
+  totalPairs: number;
+  overrides: Record<string, number>;
+  activity: { date: string; created: number; revoked: number; overrides: number }[];
+  lastEventAt: string | null;
+}
+
+export interface PackageEvidence {
+  package: string;
+  version?: string;
+  rule: string;
+  ruleVersion: number;
+  detail: string;
+}
+
+export interface DecisionEvidence {
+  packages: PackageEvidence[];
+  guards?: { id: string; detail: string }[];
+}
+
+export interface AutoDecision {
+  serverId: number;
+  serverName: string;
+  cveId: string;
+  verdict: string;
+  source: string;
+  ruleIds: string[];
+  guards: string[];
+  reason: string;
+  evidence: DecisionEvidence;
+  state: DecisionState;
+  decidedAt: string;
+  updatedAt: string;
+  humanStatus?: string;
+}
+
+export interface DecisionEvent {
+  id: number;
+  serverId: number;
+  serverName: string;
+  cveId: string;
+  event: 'auto_created' | 'auto_changed' | 'auto_revoked' | 'override_set' | 'override_removed';
+  verdict?: string;
+  ruleIds?: string[];
+  guards?: string[];
+  reason?: string;
+  evidence?: DecisionEvidence;
+  actor?: string;
+  createdAt: string;
+}
+
+export type ServerOverrideStatus = 'relevant' | 'not_relevant' | 'accepted_risk' | 'manual';
+
+export interface ServerStatus {
+  serverId: number;
+  serverName: string;
+  packages: string[];
+  status: 'open' | 'not_relevant' | 'relevant' | 'accepted_risk' | 'pending';
+  source: 'override' | 'binding' | 'auto' | 'assessment' | 'none';
+  override?: { status: ServerOverrideStatus; comment?: string; assessedBy?: string; assessedAt: string };
+  decision?: AutoDecision;
+}
+
