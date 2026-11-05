@@ -221,6 +221,12 @@ func main() {
 			if snaps > 0 || idx > 0 {
 				log.Info().Int64("snapshots", snaps).Int64("moduleIndexes", idx).Msg("Runtime facts cleaned up")
 			}
+			an, bt, us, err := preconditionAnalyzer.Cleanup(context.Background(), 90*24*time.Hour, 400*24*time.Hour)
+			if err != nil {
+				log.Error().Err(err).Msg("AI precondition cleanup failed")
+			} else if an+bt+us > 0 {
+				log.Info().Int64("analyses", an).Int64("batches", bt).Int64("usageRecords", us).Msg("AI precondition data cleaned up")
+			}
 			builds, cves, err := kernelSyncer.Cleanup(context.Background(), 30*24*time.Hour)
 			if err != nil {
 				log.Error().Err(err).Msg("Kernel data cleanup failed")

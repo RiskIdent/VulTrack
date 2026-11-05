@@ -93,12 +93,15 @@ func (h *Host) conditionFalse(c ai.Condition) (string, bool) {
 		}
 		return "no process of " + c.Package + " listens", true
 	case ai.CondPackageInUse:
+		if c.Package == "" {
+			return "", false
+		}
 		if ok, why := h.Packages.Unused(c.Package); ok {
 			return c.Package + ": " + why, true
 		}
 	case ai.CondServiceActive:
-		if !r.ServicesKnown {
-			return "", false
+		if !r.ServicesKnown || (c.Package == "" && c.Unit == "") {
+			return "", false // "any service" can never be ruled out
 		}
 		matched, unmasked := 0, 0
 		for _, s := range r.Services {

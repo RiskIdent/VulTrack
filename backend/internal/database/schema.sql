@@ -609,6 +609,19 @@ CREATE TABLE IF NOT EXISTS ai_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_usage_stage_time ON ai_usage(stage, created_at);
 
+-- Until v1.6.9 a condition without package ("any listening program") made the
+-- whole model output invalid and the analysis failed permanently. Such
+-- conditions are accepted now; those CVEs are analysed again.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE name = '2026-11-precondition-empty-package') THEN
+    UPDATE precondition_analyses
+    SET terminal = false, requested_at = NOW() - interval '2 days'
+    WHERE status = 'error' AND error LIKE '%without package%';
+    INSERT INTO schema_migrations (name) VALUES ('2026-11-precondition-empty-package');
+  END IF;
+END $$;
+
 -- ============================================================================
 -- KERNEL CODE MAP FOR R-KMOD (docs/AUTO_ASSESSMENT_PLAN.md §7)
 -- ============================================================================

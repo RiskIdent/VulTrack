@@ -545,6 +545,13 @@ in place carry most of the orphaned libraries.
   Haiku 5.5) analyses declined CVEs: synchronously right away, in batch mode
   in the next run. A fallback result counts as current until the CVE input
   changes; without fallback the CVE stays open for a human.
+- **Conditions without package** ("any listening program", "any service")
+  are valid output but never checkable, so they never dismiss a server.
+  Until v1.6.9 they made the analysis fail; a one-time migration re-opens
+  those CVEs.
+- **Retention:** one analysis row per CVE; analyses of CVEs without active
+  findings are deleted after 90 days, ended batches after 90 days, cost
+  records (`ai_usage`) after 400 days (daily cleanup).
 - **Model comparison** (§8.2) is not built: the model can be switched in the
   Admin UI and compared in operation.
 - **Human agreement** (Admin, Auto Decisions, PDF report) counts "accepted

@@ -95,6 +95,9 @@ func TestAIPreKeepsOpen(t *testing.T) {
 		"userns allowed":                       {[]ai.AttackPath{{Requires: []ai.Condition{cond(ai.CondUnprivilegedUserns, "", "")}}}, nil},
 		"sysctls unknown":                      {[]ai.AttackPath{{Requires: []ai.Condition{cond(ai.CondUnprivilegedBPF, "", "")}}}, func(h *Host) { h.Runtime.Sysctls = nil }},
 		"package_in_use without package facts": {[]ai.AttackPath{{Requires: []ai.Condition{cond(ai.CondPackageInUse, "libfoo", "")}}}, nil},
+		"any listening program":                {[]ai.AttackPath{{Requires: []ai.Condition{cond(ai.CondNetworkListener, "", "non_loopback")}}}, nil},
+		"any service":                          {[]ai.AttackPath{{Requires: []ai.Condition{{Type: ai.CondServiceActive, Necessary: true, Confidence: "high"}}}}, nil},
+		"any package in use":                   {[]ai.AttackPath{{Requires: []ai.Condition{cond(ai.CondPackageInUse, "", "")}}}, func(h *Host) { h.Packages = unusedHost().Packages }},
 		"never checkable":                      {[]ai.AttackPath{{Requires: []ai.Condition{cond(ai.CondKernelCode, "", ""), cond(ai.CondConfigDependent, "", ""), cond(ai.CondPhysicalAccess, "", "")}}}, nil},
 	}
 	for name, c := range cases {

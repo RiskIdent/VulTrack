@@ -178,3 +178,30 @@ func Backlog(ctx context.Context, db *pgxpool.Pool, settings *services.SettingsS
 	`, ids, ai.PreconditionPromptHash(cfg.Model), cfg.Model, fallbackHash).Scan(&covered)
 	return len(ids) - covered, err
 }
+
+// Cleanup deletes analyses of CVEs without active findings that are older
+// than retention, ended batches older than retention, and cost records older
+// than costRetention (kept longer for the monthly statistics).
+func (a *Analyzer) Cleanup(ctx context.Context, retention, costRetention time.Duration) (analyses, batches, usage int64, err error) {
+	tag, err := a.db.Exec(ctx, `
+		DELETE FROM precondition_analyses p
+		WHERE COALESCE(p.analysed_at, p.requested_at) < NOW() - make_interval(secs => $1) AND p.status <> 'pending'
+		  AND NOT EXISTS (SELECT 1 FROM findings f WHERE f.cve_id = p.cve_id AND f.resolved_at IS NULL)
+	`, retention.Seconds())
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	analyses = tag.RowsAffected()
+	tag, err = a.db.Exec(ctx, `
+		DELETE FROM precondition_batches WHERE status = 'ended' AND ended_at < NOW() - make_interval(secs => $1)
+	`, retention.Seconds())
+	if err != nil {
+		return analyses, 0, 0, err
+	}
+	batches = tag.RowsAffected()
+	tag, err = a.db.Exec(ctx, `DELETE FROM ai_usage WHERE created_at < NOW() - make_interval(secs => $1)`, costRetention.Seconds())
+	if err != nil {
+		return analyses, batches, 0, err
+	}
+	return analyses, batches, tag.RowsAffected(), nil
+}

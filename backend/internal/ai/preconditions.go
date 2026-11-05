@@ -134,12 +134,9 @@ func (r PreconditionResult) Validate() error {
 			default:
 				return fmt.Errorf("invalid confidence %q", c.Confidence)
 			}
-			if (c.Type == CondNetworkListener || c.Type == CondPackageInUse) && c.Package == "" {
-				return fmt.Errorf("%s without package", c.Type)
-			}
-			if c.Type == CondServiceActive && c.Package == "" && c.Unit == "" {
-				return fmt.Errorf("service_active without package or unit")
-			}
+			// A network_listener, package_in_use or service_active without a
+			// package (or unit) means "any program": valid, but never
+			// checkable, so it can never dismiss a server.
 		}
 	}
 	return nil
