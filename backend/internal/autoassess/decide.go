@@ -21,6 +21,9 @@ type PackageEvidence struct {
 type Evidence struct {
 	Packages []PackageEvidence `json:"packages"`
 	Guards   []Guard           `json:"guards,omitempty"`
+	// Facts holds, per runtime fact category a rule read, the hash of the
+	// fact snapshot the decision is based on (kept as long as it is referenced).
+	Facts map[string]string `json:"facts,omitempty"`
 }
 
 // Decision is the automated verdict for one (server, CVE) pair.
@@ -40,11 +43,12 @@ func (d Decision) EvidenceJSON() []byte {
 	return b
 }
 
-// Decide computes the decisions for one server's active findings. enabled
+// Decide computes the decisions for one server's active findings on host h
+// (nil when nothing is known about the host). enabled
 // selects the rules to run (rules in mode off are left out). signals holds the
 // guard inputs per CVE; a CVE missing from it has no KEV listing, EPSS score or
 // exploit.
-func Decide(findings []Finding, enabled []Rule, signals map[string]CVESignals, guards GuardConfig) map[string]Decision {
+func Decide(findings []Finding, h *Host, enabled []Rule, signals map[string]CVESignals, guards GuardConfig) map[string]Decision {
 	byCVE := map[string][]Finding{}
 	for _, f := range findings {
 		byCVE[f.CVEID] = append(byCVE[f.CVEID], f)
@@ -58,7 +62,7 @@ func Decide(findings []Finding, enabled []Rule, signals map[string]CVESignals, g
 		for _, f := range fs {
 			hit := false
 			for _, r := range enabled {
-				if ok, detail := r.Dismiss(f); ok {
+				if ok, detail := r.Dismiss(f, h); ok {
 					ev.Packages = append(ev.Packages, PackageEvidence{
 						Package: f.Package, Version: f.PackageVersion,
 						Rule: r.ID(), RuleVersion: r.Version(), Detail: detail,
@@ -79,6 +83,16 @@ func Decide(findings []Finding, enabled []Rule, signals map[string]CVESignals, g
 		ruleSet := map[string]bool{}
 		for _, p := range ev.Packages {
 			ruleSet[p.Rule] = true
+			if fr, ok := RuleByID(p.Rule).(FactReader); ok && h != nil {
+				for _, cat := range fr.FactCategories() {
+					if hash := h.FactHashes[cat]; hash != "" {
+						if ev.Facts == nil {
+							ev.Facts = map[string]string{}
+						}
+						ev.Facts[cat] = hash
+					}
+				}
+			}
 		}
 		ruleIDs := make([]string, 0, len(ruleSet))
 		for id := range ruleSet {

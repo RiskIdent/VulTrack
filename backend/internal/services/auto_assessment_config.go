@@ -21,7 +21,12 @@ const (
 	SettingAutoRuleModes    = "auto_assessment_rule_modes"
 	SettingAutoGuardExploit = "auto_assessment_guard_exploit"
 	SettingAutoGuardEPSS    = "auto_assessment_guard_epss"
+	SettingAutoFactSettle   = "auto_assessment_fact_settle_minutes"
 )
+
+// DefaultFactSettleMinutes is how long runtime facts must stay unchanged
+// before a rule that reads them may create a new decision.
+const DefaultFactSettleMinutes = 120
 
 // DefaultEPSSGuard is the EPSS probability at or above which automated
 // dismissal is blocked, when the setting is missing or invalid.
@@ -37,6 +42,11 @@ type AutoAssessmentConfig struct {
 	GuardExploit bool `json:"guardExploit"`
 	// GuardEPSS blocks dismissal of CVEs with an EPSS score >= this value; 0 = off.
 	GuardEPSS float64 `json:"guardEpss"`
+	// FactSettleMinutes: a rule that reads runtime facts creates a new decision
+	// only when the facts it reads have not changed for this long, so a module
+	// that is loaded now and then does not make decisions come and go.
+	// Existing decisions are kept while the rule still holds.
+	FactSettleMinutes int `json:"factSettleMinutes"`
 }
 
 // RuleMode returns the effective mode of a rule. With the global mode off or in
@@ -82,6 +92,8 @@ func (s *SettingsService) LoadAutoAssessmentConfig(ctx context.Context) (AutoAss
 		RuleModes:    map[string]string{},
 		GuardExploit: true,
 		GuardEPSS:    DefaultEPSSGuard,
+
+		FactSettleMinutes: DefaultFactSettleMinutes,
 	}
 	all, err := s.GetAll(ctx)
 	if err != nil {
@@ -108,6 +120,10 @@ func (s *SettingsService) LoadAutoAssessmentConfig(ctx context.Context) (AutoAss
 		case SettingAutoGuardEPSS:
 			if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
 				cfg.GuardEPSS = f
+			}
+		case SettingAutoFactSettle:
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 7*24*60 {
+				cfg.FactSettleMinutes = n
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -27,6 +28,8 @@ type autoAssessmentConfigInput struct {
 	RuleModes    map[string]string `json:"ruleModes"`
 	GuardExploit *bool             `json:"guardExploit"`
 	GuardEPSS    *float64          `json:"guardEpss"`
+	// FactSettleMinutes: see services.AutoAssessmentConfig.
+	FactSettleMinutes *int `json:"factSettleMinutes"`
 }
 
 // updateAutoAssessmentConfig validates and stores the configuration, then
@@ -68,11 +71,20 @@ func (h *Handler) updateAutoAssessmentConfig(c *fiber.Ctx) error {
 		}
 		updates[services.SettingAutoGuardEPSS] = strconv.FormatFloat(*in.GuardEPSS, 'f', -1, 64)
 	}
+	if in.FactSettleMinutes != nil {
+		if *in.FactSettleMinutes < 0 || *in.FactSettleMinutes > 7*24*60 {
+			return fiber.NewError(fiber.StatusBadRequest, "factSettleMinutes must be between 0 and 10080")
+		}
+		updates[services.SettingAutoFactSettle] = strconv.Itoa(*in.FactSettleMinutes)
+	}
 	if len(updates) > 0 {
 		if err := h.settingsService.SetMultiple(c.Context(), updates); err != nil {
 			return err
 		}
 		h.autoEvaluator.TriggerAll("configuration changed")
+		if h.kernelSyncer != nil {
+			go h.kernelSyncer.RunOnce(context.Background()) // R-KMOD may just have been switched on
+		}
 	}
 	return h.getAutoAssessmentConfig(c)
 }
@@ -200,4 +212,25 @@ func (h *Handler) deleteServerAssessment(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "No decision for this server")
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// getKernelIntelStatus reports the kernel data R-KMOD relies on: fetched CVE
+// records and mapped kernel builds.
+// GET /api/v1/admin/kernel-intel/status
+func (h *Handler) getKernelIntelStatus(c *fiber.Ctx) error {
+	st, err := h.kernelSyncer.GetStatus(c.Context())
+	if err != nil {
+		return err
+	}
+	return c.JSON(st)
+}
+
+// triggerKernelIntelSync fetches missing kernel data in the background.
+// POST /api/v1/admin/kernel-intel/sync
+func (h *Handler) triggerKernelIntelSync(c *fiber.Ctx) error {
+	if h.kernelSyncer.Running() {
+		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"message": "Sync already running"})
+	}
+	go h.kernelSyncer.RunOnce(context.Background())
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"message": "Sync started"})
 }

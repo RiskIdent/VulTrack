@@ -19,6 +19,7 @@ import (
 	"github.com/vultrack/vultrack/internal/exploitdb"
 	"github.com/vultrack/vultrack/internal/handlers"
 	"github.com/vultrack/vultrack/internal/jira"
+	"github.com/vultrack/vultrack/internal/kernelintel"
 	"github.com/vultrack/vultrack/internal/metrics"
 	"github.com/vultrack/vultrack/internal/nvd"
 	"github.com/vultrack/vultrack/internal/oidc"
@@ -119,6 +120,9 @@ func main() {
 	threatIntelSyncer.SetAfterSync(func(src threatintel.Source) {
 		autoEvaluator.TriggerAll(string(src) + " sync")
 	})
+	// Kernel code map for R-KMOD (CVE records, kernel build makefiles).
+	kernelSyncer := kernelintel.NewSyncer(db, settingsService, kernelintel.NewFetcher())
+	kernelSyncer.AfterChange = autoEvaluator.TriggerAll
 
 	// VEX service + syncer
 	vexService := services.NewVEXService(db)
@@ -185,6 +189,9 @@ func main() {
 	// Start KEV/EPSS syncer
 	threatIntelSyncer.Start()
 
+	// Start kernel code map syncer (idle while automated assessment is off)
+	kernelSyncer.Start()
+
 	// Re-evaluate all automated decisions once at start-up: a new release may
 	// have changed a rule.
 	autoEvaluator.TriggerAll("start-up")
@@ -249,6 +256,7 @@ func main() {
 		runtimeFactsService,
 		threatIntelService,
 		threatIntelSyncer,
+		kernelSyncer,
 	)
 
 	// Start server
@@ -271,6 +279,7 @@ func main() {
 	nvdSyncer.Stop()
 	exploitDBSyncer.Stop()
 	threatIntelSyncer.Stop()
+	kernelSyncer.Stop()
 	vexSyncer.Stop()
 	handler.Shutdown()
 }

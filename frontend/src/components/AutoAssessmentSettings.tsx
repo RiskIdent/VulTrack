@@ -1,13 +1,15 @@
 import { useEffect, useState, useCallback, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Bot, RefreshCw, ShieldAlert, Save, ExternalLink, Sparkles } from 'lucide-react';
+import { Bot, RefreshCw, ShieldAlert, Save, ExternalLink, Sparkles, Cpu } from 'lucide-react';
 import { ConfirmModal } from './ConfirmModal';
 import {
   getAutoAssessmentStats,
   updateAutoAssessmentConfig,
   reevaluateAutoAssessment,
+  getKernelIntelStatus,
+  triggerKernelIntelSync,
 } from '../api/client';
-import type { AutoAssessmentConfig, AutoAssessmentStats, AutoMode, AutoRuleStats } from '../types';
+import type { AutoAssessmentConfig, AutoAssessmentStats, AutoMode, AutoRuleStats, KernelIntelStatus } from '../types';
 
 const MODES: { id: AutoMode; label: string; text: string }[] = [
   { id: 'off', label: 'Off', text: 'No automated decisions. The triage queue works exactly as without this feature.' },
@@ -309,6 +311,14 @@ export default function AutoAssessmentSettings() {
         </div>
       </div>
 
+      <KernelDataCard
+        settleMinutes={config.factSettleMinutes}
+        kmodMode={config.rules.find((r) => r.id === 'R-KMOD')?.effectiveMode ?? 'off'}
+        saving={saving}
+        onSaveSettle={(m) => save({ factSettleMinutes: m }, 'Settle time saved.')}
+        onError={setError}
+      />
+
       <ConfirmModal
         isOpen={confirm !== null}
         title={confirm?.title || ''}
@@ -330,6 +340,138 @@ function Stat({ label, value, hint }: { label: string; value: number; hint?: str
     <div className="bg-[#1a2420] rounded-lg p-3">
       <div className="text-xl font-bold text-[#e8f5e9]">{value.toLocaleString()}</div>
       <div className="text-xs text-[#6b7280]">{label}{hint ? ` ${hint}` : ''}</div>
+    </div>
+  );
+}
+
+// KernelDataCard shows the data R-KMOD relies on (CVE records listing the
+// affected source files, mapped kernel builds) and the settle time for
+// decisions based on runtime facts.
+function KernelDataCard({ settleMinutes, kmodMode, saving, onSaveSettle, onError }: {
+  settleMinutes: number;
+  kmodMode: AutoMode;
+  saving: boolean;
+  onSaveSettle: (minutes: number) => void;
+  onError: (msg: string) => void;
+}) {
+  const [status, setStatus] = useState<KernelIntelStatus | null>(null);
+  const [settle, setSettle] = useState(String(settleMinutes));
+
+  useEffect(() => setSettle(String(settleMinutes)), [settleMinutes]);
+
+  const load = useCallback(async () => {
+    try {
+      setStatus(await getKernelIntelStatus());
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Failed to load kernel data status');
+    }
+  }, [onError]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!status?.running) return;
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [status?.running, load]);
+
+  const sync = async () => {
+    try {
+      await triggerKernelIntelSync();
+      setTimeout(load, 1000);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Failed to start sync');
+    }
+  };
+
+  const saveSettle = () => {
+    const n = parseInt(settle, 10);
+    if (isNaN(n) || n < 0 || n > 10080) {
+      onError('Settle time must be between 0 and 10080 minutes');
+      return;
+    }
+    onSaveSettle(n);
+  };
+
+  return (
+    <div className="card">
+      <div className="flex items-start justify-between gap-4 mb-1">
+        <div className="flex items-center gap-3">
+          <Cpu className="w-5 h-5 text-sky-300" />
+          <h3 className="text-lg font-semibold text-[#e8f5e9]">Runtime facts &amp; kernel data</h3>
+        </div>
+        <button onClick={sync} disabled={kmodMode === 'off' || status?.running} className="btn flex items-center gap-2 bg-[#1a2420] text-[#a5d6a7] hover:bg-[#2d3f36]"
+          title={kmodMode === 'off' ? 'R-KMOD is off' : 'Fetch missing CVE records and kernel builds now (also runs hourly)'}>
+          <RefreshCw className={`w-4 h-4 ${status?.running ? 'animate-spin' : ''}`} /> {status?.running ? 'Syncing…' : 'Sync now'}
+        </button>
+      </div>
+      <p className="text-sm text-[#6b7280] mb-4">
+        R-KMOD needs the source files each kernel CVE affects (from the CVE record at cveawg.mitre.org) and, per kernel build the
+        servers run, how each file is built (from Ubuntu's kernel headers and module packages on launchpad.net). Both are fetched
+        in the background while R-KMOD is not off.
+      </p>
+
+      <div className="flex items-start gap-3 mb-5">
+        <input type="number" min="0" max="10080" step="10" value={settle} onChange={(e) => setSettle(e.target.value)} className="input w-24" />
+        <div className="flex-1">
+          <div className="text-[#e8f5e9]">Settle time in minutes</div>
+          <div className="text-xs text-[#6b7280]">
+            A rule based on runtime facts (loaded modules …) creates a new decision only once the server's facts have been
+            unchanged this long. Existing decisions are revoked at once when the facts no longer support them. 0 = no wait.
+          </div>
+        </div>
+        <button onClick={saveSettle} disabled={saving} className="btn btn-primary flex items-center gap-2">
+          <Save className="w-4 h-4" /> Save
+        </button>
+      </div>
+
+      {status && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <Stat label="CVE records with source files" value={status.cves.withData} />
+            <Stat label="without source files" value={status.cves.noFiles} hint="(not assigned by the kernel CNA)" />
+            <Stat label="Not fetched yet" value={status.cves.pending} />
+            <Stat label="Fetch errors" value={status.cves.errors} />
+          </div>
+          {status.builds.length === 0 ? (
+            <p className="text-sm text-[#6b7280]">No kernel build mapped yet. Builds are mapped for servers whose agent reports kernel facts.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-[#2d3f36]">
+                    <th className="table-header text-left py-2 px-3">Kernel</th>
+                    <th className="table-header text-left py-2 px-3">Build</th>
+                    <th className="table-header text-left py-2 px-3">Status</th>
+                    <th className="table-header text-right py-2 px-3">Source files</th>
+                    <th className="table-header text-left py-2 px-3" title="Module paths checked against linux-modules / linux-modules-extra">Modules verified</th>
+                    <th className="table-header text-right py-2 px-3">Servers</th>
+                    <th className="table-header text-left py-2 px-3">Mapped</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {status.builds.map((b) => (
+                    <tr key={`${b.release}/${b.version}/${b.arch}`} className="table-row">
+                      <td className="py-2 px-3 font-mono text-sm text-[#e8f5e9]">{b.release} <span className="text-[#6b7280]">{b.arch}</span></td>
+                      <td className="py-2 px-3 font-mono text-sm text-[#a5d6a7]">{b.version}</td>
+                      <td className="py-2 px-3 text-sm">
+                        {b.status === 'ok' ? <span className="text-[#4ade80]">ok</span> : <span className="text-red-400" title={b.error}>error</span>}
+                        {b.error && <div className="text-xs text-red-400/80 max-w-md truncate" title={b.error}>{b.error}</div>}
+                      </td>
+                      <td className="py-2 px-3 text-right text-sm text-[#e8f5e9]">{b.sourceFiles.toLocaleString()}</td>
+                      <td className="py-2 px-3 text-sm">{b.modulesVerified ? <span className="text-[#4ade80]">yes</span> : <span className="text-yellow-400">no</span>}</td>
+                      <td className="py-2 px-3 text-right text-sm text-[#e8f5e9]">{b.servers}</td>
+                      <td className="py-2 px-3 text-sm text-[#6b7280]">{new Date(b.builtAt).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

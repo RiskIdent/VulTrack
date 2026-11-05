@@ -40,12 +40,13 @@ func Info(cfg services.AutoAssessmentConfig) map[string]any {
 		{"G-EPSS", GuardDescriptions["G-EPSS"], cfg.GuardEPSS > 0},
 	}
 	return map[string]any{
-		"mode":         cfg.Mode,
-		"rules":        rules,
-		"guards":       guards,
-		"guardExploit": cfg.GuardExploit,
-		"guardEpss":    cfg.GuardEPSS,
-		"activeRules":  cfg.ActiveRuleIDs(),
+		"mode":              cfg.Mode,
+		"rules":             rules,
+		"guards":            guards,
+		"guardExploit":      cfg.GuardExploit,
+		"guardEpss":         cfg.GuardEPSS,
+		"factSettleMinutes": cfg.FactSettleMinutes,
+		"activeRules":       cfg.ActiveRuleIDs(),
 	}
 }
 

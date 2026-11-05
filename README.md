@@ -18,7 +18,7 @@ The VulTrack Agent can be found in [this repository](https://github.com/RiskIden
 - **OVAL Integration**: Automatic vulnerability detection using OVAL definitions (Ubuntu and others)
 - **NVD Enrichment**: CVE details enriched with CVSS scores, CWE IDs, and descriptions
 - **ExploitDB Integration**: Identify vulnerabilities with known exploits
-- **Automated Assessment**: Deterministic, versioned rules dismiss findings that cannot affect a server (for example kernel headers or Canonical VEX "not affected"), per server and CVE. Automation only ever sets *not relevant*; guards (CISA KEV, verified exploits, EPSS threshold) block it, and every decision records the rule, version and evidence. Runs in shadow mode until a rule is activated; humans can override any server or make an assessment binding for all servers. See [docs/AUTO_ASSESSMENT_PLAN.md](docs/AUTO_ASSESSMENT_PLAN.md)
+- **Automated Assessment**: Deterministic, versioned rules dismiss findings that cannot affect a server (for example kernel headers or Canonical VEX "not affected"), per server and CVE, including kernel CVEs whose code is only in modules that cannot be loaded on the server (R-KMOD). Automation only ever sets *not relevant*; guards (CISA KEV, verified exploits, EPSS threshold) block it, and every decision records the rule, version and evidence. Runs in shadow mode until a rule is activated; humans can override any server or make an assessment binding for all servers. See [docs/AUTO_ASSESSMENT_PLAN.md](docs/AUTO_ASSESSMENT_PLAN.md)
 - **CISA KEV and FIRST EPSS**: Marks CVEs that are exploited in the wild (CISA Known Exploited Vulnerabilities catalog) and shows each CVE's probability of exploitation in the next 30 days (EPSS). The triage queue is ordered by them: KEV first, then EPSS, then CVSS. Both are synced daily
 - **Ubuntu VEX Integration**: Automatic enrichment of findings with Canonical's VEX (Vulnerability Exploitability eXchange) data — surfaces `Not Affected`, `Will Not Fix`, and `Under Investigation` assessments from Ubuntu Security directly in your findings and triage queue
 - **Scheduled Reports**: Automated PDF reports delivered by email (weekly / monthly)
@@ -343,10 +343,14 @@ Both accept the filters `name`, `version`, `arch`, `sourcePackage`, `server` and
 - `GET /api/v1/cves/:id/server-status` - Effective status of every affected server and where it comes from
 - `PUT /api/v1/servers/:id/cves/:cveId/assessment` - Decide a CVE for one server (`relevant`, `not_relevant`, `accepted_risk`, or `manual` = automation off for this server)
 - `DELETE /api/v1/servers/:id/cves/:cveId/assessment` - Remove that per-server decision
-- `PUT /api/v1/admin/auto-assessment/config` - Set `mode`, `ruleModes`, `guardExploit`, `guardEpss` (re-evaluates all servers)
+- `PUT /api/v1/admin/auto-assessment/config` - Set `mode`, `ruleModes`, `guardExploit`, `guardEpss`, `factSettleMinutes` (re-evaluates all servers)
 - `POST /api/v1/admin/auto-assessment/reevaluate` - Re-evaluate all servers now
+- `GET /api/v1/admin/kernel-intel/status` - Kernel data for R-KMOD: CVE records with affected source files, mapped kernel builds
+- `POST /api/v1/admin/kernel-intel/sync` - Fetch missing kernel data now
 
-Decisions are re-evaluated after every scan of a server, after each KEV/EPSS sync, after configuration changes and at start-up. With mode `off` the triage queue behaves exactly as before.
+Decisions are re-evaluated after every scan of a server, after each KEV/EPSS sync, after new kernel data, after configuration changes and at start-up. With mode `off` the triage queue behaves exactly as before.
+
+**R-KMOD** (kernel CVEs in modules that cannot be loaded) needs agents that report runtime facts and outbound HTTPS from the backend to `cveawg.mitre.org` (CVE records listing the affected kernel source files) and `launchpad.net` / `launchpadlibrarian.net` (Ubuntu kernel headers and module packages, to map each source file to built-in code or a module). Both are fetched in the background, hourly, only while automated assessment and R-KMOD are not off. A new decision based on runtime facts waits until the facts have been unchanged for the settle time (default 120 minutes); it is revoked at once when, for example, the module gets loaded.
 
 ### AI Assessments
 - `GET /api/v1/ai-assessments` - List AI assessments (filters: `status`, `search`; paginated)

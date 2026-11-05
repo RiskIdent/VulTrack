@@ -410,3 +410,55 @@ Each phase is shippable on its own and leaves the system working.
   (`evidence -> 'facts' -> <category> = <hash>`) are deleted daily after 30
   days; so are module indexes no server's kernel facts cite any more.
 
+
+## 16. Implementation notes (phase 4: R-KMOD)
+
+- **Affected code.** The Linux kernel CNA lists the affected source files in
+  every CVE record it assigns (`containers.cna.affected[].programFiles`). The
+  syncer (`internal/kernelintel`) fetches the record from the CVE Services API
+  (`https://cveawg.mitre.org/api/cve/<id>`) for every kernel CVE with active
+  findings, at about 5 requests per second, and stores it in
+  `kernel_cve_files`. Records are refreshed after 30 days, failures after a
+  day. CVEs of other CNAs have no file list (`no_files`) and are never
+  dismissed by R-KMOD.
+- **Build map.** For every kernel build a server with kernel facts runs
+  (release from the facts, version of `linux-modules-<release>`, server
+  architecture) the syncer downloads from Launchpad, which keeps every
+  published build:
+  the flavour headers package (`linux-headers-<release>`, for `.config`), the
+  common headers package (`linux-headers-<abi>` or `<source>-headers-<abi>`,
+  for the Kbuild makefiles) and the module packages (`linux-modules-*`,
+  `linux-modules-extra-*`, file names only). Makefiles are parsed into a map
+  source file → `builtin` / `module <path>` / `absent (<option> off)`, stored in
+  `kernel_source_files`. Packages are streamed; nothing else is kept.
+- **Conservative parsing.** Conditionals (`ifeq`, `ifdef`) are ignored, so
+  both branches count. Tokens with variables are skipped and the files behind
+  them stay unmapped. `tools/` (user-space programs) is skipped. Code under a
+  different `arch/` is `absent`. A module target counts as real only when the
+  module packages ship it (`Shipped`); on a 6.8 tree 6,458 of 6,474 real
+  modules are recognised, and a few makefile-only modules that are not shipped
+  are never trusted.
+- **Rule.** R-KMOD dismisses a `kernel` finding only when the kernel facts are
+  known, not truncated and describe the scanned kernel (`release` =
+  `servers.kernel`), the module index and the build map are known, and every
+  affected file is mapped with every target either `absent`, or a module that
+  is not loaded (by name or path), not built in on the host, and cannot be
+  loaded: `modulesDisabled`, an `install … /bin/false|/bin/true` line, or not
+  installed (missing from the host's index while the packages ship it). A
+  plain `blacklist` line is not enough. The evidence names each file and why
+  it cannot run.
+- **Rules get host context.** `Rule.Dismiss(f, h *Host)`; rules that read
+  runtime facts implement `FactReader`, and their decisions record the fact
+  snapshot hashes in `evidence.facts`, which keeps those snapshots from the
+  daily cleanup.
+- **Hysteresis.** A new decision based on runtime facts is created only when
+  the facts have been unchanged for the settle time (setting
+  `auto_assessment_fact_settle_minutes`, default 120; Admin → Assessment
+  Automation → Runtime facts & kernel data). An existing decision is revoked
+  at once when the facts no longer support it, e.g. when the module is loaded.
+- **Network.** The backend needs outbound HTTPS to `cveawg.mitre.org` and
+  `launchpad.net` (redirects to `launchpadlibrarian.net`). Nothing is fetched
+  while automated assessment or R-KMOD is off.
+- **Admin.** `GET /api/v1/admin/kernel-intel/status` and
+  `POST /api/v1/admin/kernel-intel/sync`; the Admin card shows CVE record
+  counts and every mapped build with its server count.

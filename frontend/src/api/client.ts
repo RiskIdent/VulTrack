@@ -849,6 +849,7 @@ export const updateAutoAssessmentConfig = (data: {
   ruleModes?: Record<string, import('../types').AutoMode>;
   guardExploit?: boolean;
   guardEpss?: number;
+  factSettleMinutes?: number;
 }) =>
   fetchAPI<import('../types').AutoAssessmentConfig>('/admin/auto-assessment/config', {
     method: 'PUT',
@@ -857,6 +858,12 @@ export const updateAutoAssessmentConfig = (data: {
 
 export const reevaluateAutoAssessment = () =>
   fetchAPI<{ message: string }>('/admin/auto-assessment/reevaluate', { method: 'POST' });
+
+export const getKernelIntelStatus = () =>
+  fetchAPI<import('../types').KernelIntelStatus>('/admin/kernel-intel/status');
+
+export const triggerKernelIntelSync = () =>
+  fetchAPI<{ message: string }>('/admin/kernel-intel/sync', { method: 'POST' });
 
 export const getAutoAssessmentStats = () =>
   fetchAPI<{ stats: import('../types').AutoAssessmentStats; config: import('../types').AutoAssessmentConfig }>('/auto-assessment/stats');

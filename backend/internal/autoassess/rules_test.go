@@ -58,7 +58,7 @@ func TestDecide(t *testing.T) {
 		"CVE-6": {EPSS: &epssLow},
 		"CVE-7": {VerifiedExploit: true},
 	}
-	got := Decide(findings, Rules, signals, GuardConfig{Exploit: true, EPSS: 0.1})
+	got := Decide(findings, nil, Rules, signals, GuardConfig{Exploit: true, EPSS: 0.1})
 
 	if _, ok := got["CVE-2"]; ok {
 		t.Error("CVE-2 has an undismissed finding and must stay open")
@@ -87,7 +87,7 @@ func TestDecide(t *testing.T) {
 	}
 
 	t.Run("optional guards off; KEV stays on", func(t *testing.T) {
-		off := Decide(findings, Rules, signals, GuardConfig{})
+		off := Decide(findings, nil, Rules, signals, GuardConfig{})
 		if len(off["CVE-5"].Guards) != 0 || len(off["CVE-7"].Guards) != 0 {
 			t.Errorf("EPSS/exploit guards should be off: %v %v", off["CVE-5"].Guards, off["CVE-7"].Guards)
 		}
@@ -97,7 +97,7 @@ func TestDecide(t *testing.T) {
 	})
 
 	t.Run("a disabled rule decides nothing", func(t *testing.T) {
-		onlyVEX := Decide(findings, []Rule{vexNotAffected{}}, signals, GuardConfig{})
+		onlyVEX := Decide(findings, nil, []Rule{vexNotAffected{}}, signals, GuardConfig{})
 		if len(onlyVEX) != 0 {
 			t.Errorf("without R-HDR, no CVE is fully dismissed: %v", onlyVEX)
 		}
@@ -108,7 +108,7 @@ func TestDecide(t *testing.T) {
 		for i, j := 0, len(shuffled)-1; i < j; i, j = i+1, j-1 {
 			shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
 		}
-		again := Decide(shuffled, Rules, signals, GuardConfig{Exploit: true, EPSS: 0.1})
+		again := Decide(shuffled, nil, Rules, signals, GuardConfig{Exploit: true, EPSS: 0.1})
 		for cve, d := range got {
 			if string(again[cve].EvidenceJSON()) != string(d.EvidenceJSON()) || again[cve].Reason != d.Reason {
 				t.Errorf("%s differs with another finding order", cve)

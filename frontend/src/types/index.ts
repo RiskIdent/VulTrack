@@ -438,7 +438,26 @@ export interface AutoAssessmentConfig {
   guards: AutoGuardInfo[];
   guardExploit: boolean;
   guardEpss: number;
+  factSettleMinutes: number;
   activeRules: string[];
+}
+
+export interface KernelBuildStatus {
+  release: string;
+  version: string;
+  arch: string;
+  status: 'ok' | 'error';
+  error?: string;
+  sourceFiles: number;
+  modulesVerified: boolean;
+  servers: number;
+  builtAt: string;
+}
+
+export interface KernelIntelStatus {
+  cves: { total: number; withData: number; noFiles: number; errors: number; pending: number };
+  builds: KernelBuildStatus[];
+  running: boolean;
 }
 
 export interface AutoRuleStats {

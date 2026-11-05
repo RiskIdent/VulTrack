@@ -23,6 +23,7 @@ import (
 	"github.com/vultrack/vultrack/internal/config"
 	"github.com/vultrack/vultrack/internal/exploitdb"
 	"github.com/vultrack/vultrack/internal/jira"
+	"github.com/vultrack/vultrack/internal/kernelintel"
 	"github.com/vultrack/vultrack/internal/models"
 	"github.com/vultrack/vultrack/internal/nvd"
 	"github.com/vultrack/vultrack/internal/oidc"
@@ -69,6 +70,7 @@ type Handler struct {
 	autoAssessmentService *services.AutoAssessmentService
 	autoEvaluator         *autoassess.Evaluator
 	runtimeFactsService   *services.RuntimeFactsService
+	kernelSyncer          *kernelintel.Syncer
 
 	// VEX service + syncer
 	vexService *services.VEXService
@@ -150,6 +152,8 @@ func New(
 	// CISA KEV and FIRST EPSS
 	threatIntelService *services.ThreatIntelService,
 	threatIntelSyncer *threatintel.Syncer,
+	// Kernel code map for R-KMOD
+	kernelSyncer *kernelintel.Syncer,
 ) *Handler {
 	// Resolve the JWT signing secret.
 	// If JWT_SECRET is not configured we generate a random one and warn — tokens
@@ -199,6 +203,7 @@ func New(
 		autoEvaluator:         autoEvaluator,
 		runtimeFactsService:   runtimeFactsService,
 		threatIntelSyncer:     threatIntelSyncer,
+		kernelSyncer:          kernelSyncer,
 		jwtSecret:             jwtSecret,
 	}
 
@@ -420,6 +425,8 @@ func New(
 	admin.Get("/threat-intel/status", h.getThreatIntelStatus)
 	admin.Put("/auto-assessment/config", h.updateAutoAssessmentConfig)
 	admin.Post("/auto-assessment/reevaluate", h.reevaluateAutoAssessment)
+	admin.Get("/kernel-intel/status", h.getKernelIntelStatus)
+	admin.Post("/kernel-intel/sync", h.triggerKernelIntelSync)
 	admin.Post("/threat-intel/:source/sync", h.triggerThreatIntelSync)
 
 	// Admin: VEX Management

@@ -27,6 +27,8 @@ type Evaluator struct {
 	allMu      sync.Mutex
 	allPending []string // triggers that arrived while a run was in progress
 	allRunning bool
+
+	modIndex moduleIndexCache
 }
 
 // New creates an Evaluator.
@@ -88,9 +90,13 @@ func (e *Evaluator) evaluateServer(ctx context.Context, serverID int64, cfg serv
 		return Result{}, err
 	}
 	rules := enabledRules(cfg)
+	host, err := e.loadHost(ctx, tx, serverID, findings, rules)
+	if err != nil {
+		return Result{}, err
+	}
 
 	// Rules first, then guard data only for the CVEs a rule would dismiss.
-	candidates := Decide(findings, rules, nil, GuardConfig{})
+	candidates := Decide(findings, host, rules, nil, GuardConfig{})
 	cves := make([]string, 0, len(candidates))
 	for cve := range candidates {
 		cves = append(cves, cve)
@@ -99,12 +105,13 @@ func (e *Evaluator) evaluateServer(ctx context.Context, serverID int64, cfg serv
 	if err != nil {
 		return Result{}, err
 	}
-	want := Decide(findings, rules, signals, GuardConfig{Exploit: cfg.GuardExploit, EPSS: cfg.GuardEPSS})
+	want := Decide(findings, host, rules, signals, GuardConfig{Exploit: cfg.GuardExploit, EPSS: cfg.GuardEPSS})
 
 	have, err := loadDecisions(ctx, tx, serverID)
 	if err != nil {
 		return Result{}, err
 	}
+	e.holdUnsettled(want, have, host, cfg)
 
 	var res Result
 	for cve, d := range want {
@@ -145,6 +152,27 @@ func (e *Evaluator) evaluateServer(ctx context.Context, serverID int64, cfg serv
 	metrics.AutoDecisionChangesTotal.WithLabelValues("changed").Add(float64(res.Changed))
 	metrics.AutoDecisionChangesTotal.WithLabelValues("revoked").Add(float64(res.Revoked))
 	return res, nil
+}
+
+// holdUnsettled drops new decisions that rest on runtime facts which changed
+// less than the settle window ago. A decision that exists already is kept (and
+// updated) as long as its rules still hold; only its creation waits.
+func (e *Evaluator) holdUnsettled(want map[string]Decision, have map[string]storedDecision, h *Host, cfg services.AutoAssessmentConfig) {
+	window := time.Duration(cfg.FactSettleMinutes) * time.Minute
+	if window <= 0 {
+		return
+	}
+	for cve, d := range want {
+		if _, exists := have[cve]; exists {
+			continue
+		}
+		for cat := range d.Evidence.Facts {
+			if age, ok := h.FactsAge[cat]; !ok || age < window {
+				delete(want, cve)
+				break
+			}
+		}
+	}
 }
 
 // revokeReason explains why a decision no longer holds.

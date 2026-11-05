@@ -28,14 +28,22 @@ type Rule interface {
 	ID() string
 	Version() int
 	Description() string
-	// Dismiss reports whether the finding is not relevant, with a one-line
-	// explanation that is stored as evidence.
-	Dismiss(f Finding) (bool, string)
+	// Dismiss reports whether the finding is not relevant on the host, with a
+	// one-line explanation that is stored as evidence. h may be nil or partly
+	// unknown.
+	Dismiss(f Finding, h *Host) (bool, string)
+}
+
+// FactReader is implemented by rules that read runtime facts. The snapshot
+// hashes of those categories are recorded with the decision, and new
+// decisions wait until the facts have settled.
+type FactReader interface {
+	FactCategories() []string
 }
 
 // Rules is the rule catalogue in evaluation order. The first rule that
 // dismisses a finding is recorded for it.
-var Rules = []Rule{vexNotAffected{}, headersAndDocs{}}
+var Rules = []Rule{vexNotAffected{}, headersAndDocs{}, kernelModules{}}
 
 // RuleByID returns the rule with the given ID, or nil.
 func RuleByID(id string) Rule {
@@ -55,7 +63,7 @@ func (vexNotAffected) Version() int { return 1 }
 func (vexNotAffected) Description() string {
 	return "Canonical's VEX data states that the package is not affected by the CVE."
 }
-func (vexNotAffected) Dismiss(f Finding) (bool, string) {
+func (vexNotAffected) Dismiss(f Finding, _ *Host) (bool, string) {
 	if f.VexStatus != "not_affected" {
 		return false, ""
 	}
@@ -74,7 +82,7 @@ func (headersAndDocs) Version() int { return 1 }
 func (headersAndDocs) Description() string {
 	return "The package ships only kernel headers, kernel sources or documentation (linux-libc-dev, linux-headers-*, linux-*-headers-*, linux-source-*, linux-doc, *-doc); no code from it runs on the server."
 }
-func (headersAndDocs) Dismiss(f Finding) (bool, string) {
+func (headersAndDocs) Dismiss(f Finding, _ *Host) (bool, string) {
 	if kind := headerOrDocKind(f.Package); kind != "" {
 		return true, fmt.Sprintf("Package %s contains only %s", f.Package, kind)
 	}

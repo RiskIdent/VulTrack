@@ -540,6 +540,47 @@ CREATE TABLE IF NOT EXISTS kernel_module_index (
 );
 
 -- ============================================================================
+-- KERNEL CODE MAP FOR R-KMOD (docs/AUTO_ASSESSMENT_PLAN.md §7)
+-- ============================================================================
+
+-- Source files a kernel CVE affects, from its CVE record
+-- (containers.cna.affected[].programFiles; filled by the Linux kernel CNA).
+CREATE TABLE IF NOT EXISTS kernel_cve_files (
+    cve_id        VARCHAR(30) PRIMARY KEY,
+    status        VARCHAR(20) NOT NULL,      -- ok, no_files, not_found, error
+    assigner      VARCHAR(60),
+    program_files TEXT[] NOT NULL DEFAULT '{}',
+    error         TEXT,
+    fetched_at    TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- One kernel build (uname -r + package version + architecture) whose Kbuild
+-- makefiles and .config were read from Ubuntu's linux-headers packages.
+CREATE TABLE IF NOT EXISTS kernel_builds (
+    id               SERIAL PRIMARY KEY,
+    release          VARCHAR(100) NOT NULL,  -- uname -r, e.g. 6.8.0-147-generic
+    version          VARCHAR(100) NOT NULL,  -- package version, e.g. 6.8.0-147.147
+    arch             VARCHAR(20) NOT NULL,   -- Debian architecture, e.g. amd64
+    status           VARCHAR(20) NOT NULL,   -- ok, error
+    error            TEXT,
+    headers_package  VARCHAR(150),
+    source_files     INTEGER NOT NULL DEFAULT 0,
+    modules_verified BOOLEAN NOT NULL DEFAULT false, -- module packages were listed
+    shipped_modules  INTEGER NOT NULL DEFAULT 0,
+    built_at         TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (release, version, arch)
+);
+
+-- How each source file is built in a kernel build: built in, as a module, or
+-- not at all (see internal/kernelintel).
+CREATE TABLE IF NOT EXISTS kernel_source_files (
+    build_id INTEGER NOT NULL REFERENCES kernel_builds(id) ON DELETE CASCADE,
+    path     TEXT NOT NULL,
+    targets  JSONB NOT NULL,
+    PRIMARY KEY (build_id, path)
+);
+
+-- ============================================================================
 -- SYNC STATUS (NEW)
 -- ============================================================================
 
