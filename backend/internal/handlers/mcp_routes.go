@@ -41,6 +41,7 @@ func (h *Handler) registerMCPRoutes(app *fiber.App) {
 		PackageService:      h.packageService,
 		ThreatIntelService:  h.threatIntelService,
 		AutoAssessment:      h.autoAssessmentService,
+		RuntimeFacts:        h.runtimeFactsService,
 		ScanQueue:           h.scanQueue,
 		UpsertAssessment:    h.upsertAssessment,
 		AssessorFromContext: h.mcpAssessor,

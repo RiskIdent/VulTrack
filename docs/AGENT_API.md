@@ -297,6 +297,7 @@ The report body is identical across v1 and v2.
 | `osCodename` | string | Distribution codename | `"noble"`, `"bookworm"`, `"jammy"` |
 | `packageManager` | string | Package manager type | `"dpkg"`, `"rpm"` |
 | `reportedAt` | string | ISO 8601 timestamp; server uses `NOW()` if omitted | `"2026-01-25T14:30:00Z"` |
+| `runtime` | object | Runtime facts: kernel modules, listening sockets, packages in use, services, virtualization (see below) | |
 
 ### Package object
 
@@ -306,6 +307,45 @@ The report body is identical across v1 and v2.
 | `version` | string | Yes | Installed version (full EVR format) |
 | `arch` | string | No | Package architecture |
 | `source` | string | No | Source package name |
+
+### Runtime object (optional)
+
+Agents that support it send runtime facts with every report. The backend uses
+them to decide whether a vulnerability can affect the server (automated
+assessment) and shows them on the server's **Runtime** tab. The complete
+format, how to collect each field, size limits and what must not be collected
+are specified in [AGENT_RUNTIME_FACTS_PROMPT.md](AGENT_RUNTIME_FACTS_PROMPT.md).
+
+```json
+"runtime": {
+  "schemaVersion": 1,
+  "collectedAt": "2026-11-05T10:00:03Z",
+  "kernel": { "release": "6.8.0-124-generic", "modulesDisabled": false, "loadedModules": [...],
+              "blacklistedModules": [...], "moduleIndex": {"hash": "sha256:..."}, "sysctls": {...},
+              "installedKernels": [...], "rebootRequired": false },
+  "listeners": [ {"protocol": "tcp", "address": "0.0.0.0", "port": 22, "process": "sshd", "package": "openssh-server", ...} ],
+  "packagesInUse": [ {"package": "libssl3t64", "processes": ["nginx", "sshd"], "staleProcesses": ["nginx"]} ],
+  "services": [ {"unit": "nginx.service", "activeState": "active", "unitFileState": "enabled", "package": "nginx"} ],
+  "virtualization": "kvm",
+  "errors": [ {"collector": "services", "error": "..."} ],
+  "truncated": []
+}
+```
+
+How the backend treats it:
+
+- **A missing category means "unknown", an empty list means "none".** A
+  category that is not sent removes the stored one; rules never draw
+  conclusions from unknown data. A report without `runtime` (older agents)
+  makes all categories unknown.
+- `schemaVersion` other than `1` is ignored (all categories unknown).
+- Each category is stored by the SHA-256 of its canonical JSON. An unchanged
+  category costs no write besides its timestamp; `stable_since` records when it
+  last changed.
+- `kernel.moduleIndex.available/builtin` are stored once per kernel release
+  and only if they match `moduleIndex.hash`; afterwards the hash alone suffices.
+- The runtime object may be at most 2 MB; the whole request at most 4 MB.
+  Request bodies are not accepted gzip-compressed.
 
 ---
 

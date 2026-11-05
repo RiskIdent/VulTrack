@@ -1,6 +1,6 @@
 # Automated assessment
 
-**Status:** agreed on 2026-11-05. Phase 1 (KEV and EPSS) and phase 2 (decision model) implemented.
+**Status:** agreed on 2026-11-05. Phases 1 (KEV and EPSS), 2 (decision model) and 3 (runtime facts, backend side) implemented; the agent side of phase 3 is specified in AGENT_RUNTIME_FACTS_PROMPT.md.
 **Scope:** backend, frontend, agent (separate repository), MCP, reports.
 
 ## 1. Goal
@@ -388,4 +388,25 @@ Each phase is shippable on its own and leaves the system working.
   coalesced, so bursts of triggers cause at most one extra run.
 - Hysteresis (§5, point 5) is not needed yet: the phase-2 rules read no runtime
   facts. It comes with phase 3.
+
+## 15. Implementation notes (phase 3)
+
+- `server_facts` holds the current state per (server, category) with
+  `stable_since` (last content change) and `reported_at`; the content lives in
+  `fact_snapshots`, keyed by the SHA-256 of the canonical JSON. `server_runtime`
+  keeps the agent's collection errors and truncation flags.
+- The kernel module index is stored once per kernel release in
+  `kernel_module_index`; the kernel facts keep only its hash, so resending the
+  index never looks like a change on the server.
+- A category missing from a report, an unsupported `schemaVersion`, a report
+  without `runtime` and an unparseable category all make the data unknown
+  (the row is removed). Phase-4 rules must treat "no row" and `truncated` as
+  "cannot conclude absence".
+- Fact changes reach the decisions through the existing after-scan
+  evaluation, since every report triggers a scan. Hysteresis (§5 point 5) is
+  for phase 4: a dismissal that rests on a fact requires `stable_since` older
+  than two report intervals.
+- Snapshots no longer current and not cited by a decision or event
+  (`evidence -> 'facts' -> <category> = <hash>`) are deleted daily after 30
+  days; so are module indexes no server's kernel facts cite any more.
 

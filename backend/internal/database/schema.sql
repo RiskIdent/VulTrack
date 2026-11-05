@@ -468,6 +468,52 @@ CREATE INDEX IF NOT EXISTS idx_assessment_overrides_cve ON assessment_overrides(
 ALTER TABLE assessments ADD COLUMN IF NOT EXISTS binding_all_servers BOOLEAN NOT NULL DEFAULT false;
 
 -- ============================================================================
+-- RUNTIME FACTS FROM THE AGENT (docs/AUTO_ASSESSMENT_PLAN.md §6)
+-- ============================================================================
+
+-- Content-addressed snapshots of one fact category; one row per distinct
+-- content, shared by every server and every point in time that had it.
+CREATE TABLE IF NOT EXISTS fact_snapshots (
+    hash       VARCHAR(64) PRIMARY KEY,     -- sha256 of the canonical JSON
+    category   VARCHAR(30) NOT NULL,
+    data       JSONB NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- The current facts of each server, per category. A category the agent did
+-- not report has no row: it is unknown, and rules never rely on it.
+CREATE TABLE IF NOT EXISTS server_facts (
+    server_id    INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    category     VARCHAR(30) NOT NULL,     -- kernel, listeners, packagesInUse, services, virtualization
+    hash         VARCHAR(64) NOT NULL REFERENCES fact_snapshots(hash),
+    truncated    BOOLEAN NOT NULL DEFAULT false, -- the agent cut the list at its size limit
+    stable_since TIMESTAMP NOT NULL,       -- when the content last changed
+    reported_at  TIMESTAMP NOT NULL,       -- last report that carried it
+    PRIMARY KEY (server_id, category)
+);
+
+-- Per server: what the last report said about the collection itself.
+CREATE TABLE IF NOT EXISTS server_runtime (
+    server_id      INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+    schema_version INTEGER,
+    collected_at   TIMESTAMP,
+    errors         JSONB NOT NULL DEFAULT '[]',  -- [{collector, error}]
+    truncated      TEXT[] NOT NULL DEFAULT '{}',
+    reported_at    TIMESTAMP NOT NULL
+);
+
+-- Kernel module index (available and built-in module paths) per kernel
+-- release; shared by every server running that kernel build.
+CREATE TABLE IF NOT EXISTS kernel_module_index (
+    kernel_release VARCHAR(100) NOT NULL,
+    hash           VARCHAR(80) NOT NULL,   -- "sha256:…" as computed by the agent
+    available      TEXT[] NOT NULL,
+    builtin        TEXT[] NOT NULL,
+    received_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (kernel_release, hash)
+);
+
+-- ============================================================================
 -- SYNC STATUS (NEW)
 -- ============================================================================
 

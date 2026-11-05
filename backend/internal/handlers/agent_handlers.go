@@ -191,6 +191,10 @@ func (h *Handler) receiveAgentReport(c *fiber.Ctx) error {
 		}
 	}
 
+	// Runtime facts. A failure here is logged but does not fail the report:
+	// without facts every category is simply unknown to the rules.
+	h.ingestRuntime(ctx, server.ID, report.Runtime)
+
 	log.Info().
 		Str("hostname", report.Hostname).
 		Int64("serverId", server.ID).

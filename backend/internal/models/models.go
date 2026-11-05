@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -412,6 +413,9 @@ type AgentReport struct {
 	IPv4Addrs      []string      `json:"ipv4Addrs"`
 	ReportedAt     time.Time     `json:"reportedAt"`
 	Packages       []PackageInfo `json:"packages"`
+	// Runtime facts (optional; docs/AGENT_RUNTIME_FACTS_PROMPT.md). Kept raw:
+	// the backend stores each category content-addressed.
+	Runtime json.RawMessage `json:"runtime,omitempty"`
 }
 
 // PackageInfo represents package information from an agent report

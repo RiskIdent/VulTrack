@@ -114,6 +114,7 @@ func main() {
 	// Automated assessment: re-evaluated after every scan, after a KEV/EPSS
 	// sync, on configuration changes and at start-up.
 	autoAssessmentService := services.NewAutoAssessmentService(db)
+	runtimeFactsService := services.NewRuntimeFactsService(db)
 	autoEvaluator := autoassess.New(db, settingsService)
 	threatIntelSyncer.SetAfterSync(func(src threatintel.Source) {
 		autoEvaluator.TriggerAll(string(src) + " sync")
@@ -188,6 +189,22 @@ func main() {
 	// have changed a rule.
 	autoEvaluator.TriggerAll("start-up")
 
+	// Daily cleanup of runtime fact snapshots nothing refers to any more.
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			snaps, idx, err := runtimeFactsService.CleanupSnapshots(context.Background(), 30*24*time.Hour)
+			if err != nil {
+				log.Error().Err(err).Msg("Runtime facts cleanup failed")
+				continue
+			}
+			if snaps > 0 || idx > 0 {
+				log.Info().Int64("snapshots", snaps).Int64("moduleIndexes", idx).Msg("Runtime facts cleaned up")
+			}
+		}
+	}()
+
 	// Start scan queue
 	scanQ.Start()
 
@@ -229,6 +246,7 @@ func main() {
 		aiAssessmentService,
 		autoAssessmentService,
 		autoEvaluator,
+		runtimeFactsService,
 		threatIntelService,
 		threatIntelSyncer,
 	)

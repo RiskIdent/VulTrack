@@ -45,6 +45,7 @@ type Deps struct {
 	PackageService      *services.PackageService
 	ThreatIntelService  *services.ThreatIntelService
 	AutoAssessment      *services.AutoAssessmentService
+	RuntimeFacts        *services.RuntimeFactsService
 	ScanQueue           *scanqueue.Queue
 
 	// UpsertAssessment performs the same create-or-update assessment logic as the
@@ -280,6 +281,20 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 			return nil, nil, err
 		}
 		return paginatedResult(map[string]any{"packages": packages}, total, filter.Limit, filter.Offset)
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "get_server_runtime",
+		Description: "Get the runtime facts a server's agent reported: kernel (loaded modules, blacklisted modules, sysctls, installed kernels, reboot required), " +
+			"listeners (protocol, bind address, port, process, package, systemd unit), packagesInUse (packages mapped by running processes, " +
+			"including processes still using replaced files), services and virtualization. Each category has stableSince (last change). " +
+			"Categories listed in unknown were not reported: nothing may be concluded about them.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in getServerInput) (*mcpsdk.CallToolResult, any, error) {
+		rt, err := d.RuntimeFacts.Get(ctx, in.ServerID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return jsonResult(rt)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{

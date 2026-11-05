@@ -520,3 +520,24 @@ export interface ServerStatus {
   decision?: AutoDecision;
 }
 
+// Runtime facts reported by the agent (docs/AGENT_RUNTIME_FACTS_PROMPT.md)
+export interface FactCategoryState {
+  category: 'kernel' | 'listeners' | 'packagesInUse' | 'services' | 'virtualization';
+  hash: string;
+  truncated: boolean;
+  stableSince: string;
+  reportedAt: string;
+  data: unknown;
+}
+
+export interface ServerRuntime {
+  schemaVersion?: number;
+  collectedAt?: string;
+  reportedAt?: string;
+  errors: unknown;
+  truncated: string[];
+  categories: FactCategoryState[];
+  moduleIndex?: { kernelRelease: string; hash: string; known: boolean; available: number; builtin: number };
+  unknown: string[];
+}
+

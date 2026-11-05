@@ -894,3 +894,7 @@ export const deleteServerAssessment = (serverId: number, cveId: string, assessed
     method: 'DELETE',
   });
 
+// Runtime facts of a server
+export const getServerRuntime = (id: number) =>
+  fetchAPI<import('../types').ServerRuntime>(`/servers/${id}/runtime`);
+

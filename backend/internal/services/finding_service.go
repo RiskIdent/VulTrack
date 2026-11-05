@@ -487,8 +487,8 @@ type TriageFilterOptions struct {
 	// such a decision, and not blocked by a guard, leaves the queue. Empty when
 	// automation is off or in shadow mode; the queue is then as before.
 	AutoActiveRules []string
-	Limit              int
-	Offset             int
+	Limit           int
+	Offset          int
 }
 
 // triageQueueFrom builds the FROM/WHERE part shared by the triage queue and its

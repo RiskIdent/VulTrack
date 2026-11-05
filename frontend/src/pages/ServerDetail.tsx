@@ -1,11 +1,12 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Server as ServerIcon, Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Tags, Package, RefreshCw, X, ExternalLink, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Server as ServerIcon, Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Tags, Package, RefreshCw, X, ExternalLink, AlertTriangle, Activity } from 'lucide-react';
+import RuntimeFactsPanel from '../components/RuntimeFactsPanel';
 import { CVSSBadge, VendorSeverityBadge, FixStateBadge, SourceBadge, PocketBadge } from '../components/SeverityBadge';
 import { getServer, getServerFindings, getServerGroupsForServer, getServerPackages, triggerServerScan, getFinding } from '../api/client';
 import type { Server, Finding, ServerGroup, ServerPackage } from '../types';
 
-type Tab = 'findings' | 'packages';
+type Tab = 'findings' | 'packages' | 'runtime';
 type FindingSortField = 'cveId' | 'packageName' | 'severity' | 'cvss3Score' | 'fixState' | 'fixedIn' | 'firstSeenAt';
 type PackageSortField = 'name' | 'version' | 'arch' | 'sourcePackage';
 type SortDirection = 'asc' | 'desc';
@@ -475,7 +476,21 @@ export default function ServerDetail() {
           <Package className="w-4 h-4" />
           Packages {packagesLoaded ? `(${packages.length})` : ''}
         </button>
+        <button
+          onClick={() => setActiveTab('runtime')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+            activeTab === 'runtime'
+              ? 'bg-[#4ade80] text-[#0d1512]'
+              : 'bg-[#1a2420] text-[#a5d6a7] hover:bg-[#2d3f36]'
+          }`}
+        >
+          <Activity className="w-4 h-4" />
+          Runtime
+        </button>
       </div>
+
+      {/* Runtime Tab */}
+      {activeTab === 'runtime' && server && <RuntimeFactsPanel serverId={server.id} />}
 
       {/* Findings Tab */}
       {activeTab === 'findings' && (

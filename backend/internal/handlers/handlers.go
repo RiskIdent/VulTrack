@@ -67,6 +67,7 @@ type Handler struct {
 
 	autoAssessmentService *services.AutoAssessmentService
 	autoEvaluator         *autoassess.Evaluator
+	runtimeFactsService   *services.RuntimeFactsService
 
 	// VEX service + syncer
 	vexService *services.VEXService
@@ -144,6 +145,7 @@ func New(
 	// Automated assessment
 	autoAssessmentService *services.AutoAssessmentService,
 	autoEvaluator *autoassess.Evaluator,
+	runtimeFactsService *services.RuntimeFactsService,
 	// CISA KEV and FIRST EPSS
 	threatIntelService *services.ThreatIntelService,
 	threatIntelSyncer *threatintel.Syncer,
@@ -194,6 +196,7 @@ func New(
 		threatIntelService:    threatIntelService,
 		autoAssessmentService: autoAssessmentService,
 		autoEvaluator:         autoEvaluator,
+		runtimeFactsService:   runtimeFactsService,
 		threatIntelSyncer:     threatIntelSyncer,
 		jwtSecret:             jwtSecret,
 	}
@@ -277,6 +280,7 @@ func New(
 	protected.Get("/servers", h.getServers)
 	protected.Get("/servers/:id", h.getServer)
 	protected.Get("/servers/:id/findings", h.getServerFindings)
+	protected.Get("/servers/:id/runtime", h.getServerRuntime)
 
 	// Findings
 	protected.Get("/findings", h.getFindings)

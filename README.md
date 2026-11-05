@@ -307,6 +307,7 @@ docker compose up -d postgres
 - `GET /api/v1/servers` - List all servers
 - `GET /api/v1/servers/:id` - Get server details
 - `GET /api/v1/servers/:id/findings` - Get server findings
+- `GET /api/v1/servers/:id/runtime` - Runtime facts reported by the server's agent (kernel modules, listening ports, packages in use, services), with the time each category last changed; categories not reported are listed as `unknown`
 - `GET /api/v1/servers/:id/packages` - Get server packages
 - `GET /api/v1/servers/:id/groups` - Get groups for a server
 - `PUT /api/v1/servers/:id/groups` - Set groups for a server
@@ -474,7 +475,7 @@ Deleting a token revokes it immediately. All write actions are logged with the a
 ### Tools
 
 **Read tools** (available to every token):
-`list_servers`, `get_server`, `get_auto_assessment`, `list_auto_decisions`, `list_installed_packages`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `get_ai_assessment`, `list_triage_queue`, `get_triage_config`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
+`list_servers`, `get_server`, `get_server_runtime`, `get_auto_assessment`, `list_auto_decisions`, `list_installed_packages`, `list_findings`, `get_finding`, `get_cve`, `list_cve_servers`, `get_ai_assessment`, `list_triage_queue`, `get_triage_config`, `list_assessments`, `get_dashboard_stats`, `get_severity_stats`, `get_trend_stats`, `get_top_servers`, `get_top_cves`, `get_assessments_by_severity`, `list_server_groups`, `get_server_group`, `get_server_group_members`
 
 **Write tools** (only available to non-read-only tokens):
 `upsert_assessment`, `set_server_assessment`, `remove_server_assessment`, `delete_assessment`, `trigger_server_scan`, `create_server_group`, `update_server_group`, `delete_server_group`, `set_server_group_members`
