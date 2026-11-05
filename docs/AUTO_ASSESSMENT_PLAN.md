@@ -539,7 +539,14 @@ in place carry most of the orphaned libraries.
 - **R-NET** is not a separate rule: its case (a network-only CVE in a
   package that listens on loopback only) is exactly a necessary
   `network_listener` condition with scope `non_loopback`, which AI-PRE checks.
-- **Not yet built:** the model comparison on CVEs humans already assessed
-  (§8.2). It spends money and needs an explicit run.
-- **Refusals** (e.g. the cyber safety classifier) are stored as terminal
-  errors; the CVE stays open. No model fallback is configured.
+- **Refusals** (e.g. the cyber safety classifier) are logged with category
+  and explanation, stored (`refused_by`) and listed in Admin. Optionally a
+  fallback model (`ai_precondition_fallback_model`: Sonnet 5.5, Opus 5.5 or
+  Haiku 5.5) analyses declined CVEs: synchronously right away, in batch mode
+  in the next run. A fallback result counts as current until the CVE input
+  changes; without fallback the CVE stays open for a human.
+- **Model comparison** (§8.2) is not built: the model can be switched in the
+  Admin UI and compared in operation.
+- **Human agreement** (Admin, Auto Decisions, PDF report) counts "accepted
+  risk" separately: it means relevant but acceptable and does not contradict
+  a dismissal; only "relevant" does.

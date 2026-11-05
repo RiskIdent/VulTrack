@@ -7,6 +7,7 @@ import type { PreconditionAnalysis, PreconditionCondition, PreconditionStatus } 
 const MODEL_NAMES: Record<string, string> = {
   'claude-sonnet-5-5': 'Claude Sonnet 5.5',
   'claude-opus-5-5': 'Claude Opus 5.5',
+  'claude-haiku-5-5': 'Claude Haiku 5.5',
 };
 
 const CONDITION_LABELS: Record<string, string> = {
@@ -64,6 +65,11 @@ export function PreconditionCard({ cveId }: { cveId: string }) {
           {!analysis.current && analysis.status === 'ok' ? ' · outdated, will be redone' : ''}
         </span>
       </div>
+      {analysis.refusedBy && analysis.status === 'ok' && (
+        <p className="text-xs text-yellow-400 mb-2">
+          {MODEL_NAMES[analysis.refusedBy] || analysis.refusedBy} declined this CVE; analysed by the fallback model.
+        </p>
+      )}
       {analysis.status === 'pending' && <p className="text-sm text-[#a5d6a7]">Analysis requested, waiting for the batch result.</p>}
       {analysis.status === 'error' && <p className="text-sm text-red-400">Analysis failed: {analysis.error}</p>}
       {r && (
@@ -209,6 +215,16 @@ export function PreconditionSettings() {
                 ))}
               </select>
             </label>
+            <label className="flex items-center gap-3">
+              <span className="text-sm text-[#a5d6a7]" title="Analyses CVEs the main model declines (refusal). Without it they stay open for a human.">If declined</span>
+              <select className="input py-1" value={c.fallbackModel} disabled={saving}
+                onChange={(e) => save({ fallbackModel: e.target.value }, e.target.value ? 'Fallback model saved.' : 'Fallback switched off.')}>
+                <option value="">leave open</option>
+                {status.fallbackModels.filter((m) => m !== c.model).map((m) => (
+                  <option key={m} value={m}>retry with {MODEL_NAMES[m] || m}</option>
+                ))}
+              </select>
+            </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={c.useBatch} disabled={saving} onChange={(e) => save({ useBatch: e.target.checked }, 'Saved.')} className="w-4 h-4" />
               <span className="text-sm text-[#e8f5e9]">Batch processing</span>
@@ -243,13 +259,33 @@ export function PreconditionSettings() {
           </div>
           {pct >= 100 && <p className="text-xs text-red-400 mt-1">Budget reached: no new analyses until next month or a higher budget.</p>}
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <Tile label="Analyses" value={status.analyses.ok} />
           <Tile label="Determinable" value={status.analyses.determinable} />
           <Tile label="Waiting for batch" value={status.analyses.pending} />
           <Tile label="Failed" value={status.analyses.errors} />
+          <Tile label={`Declined (${status.analyses.byFallback} by fallback)`} value={status.analyses.refused} />
           <Tile label="Spent in total" text={usd(status.spentTotal)} />
         </div>
+        {status.refusals.length > 0 && (
+          <div className="mt-4">
+            <h4 className="text-sm font-semibold text-[#a5d6a7] mb-2">Declined and still open</h4>
+            <table className="w-full">
+              <tbody>
+                {status.refusals.map((r) => (
+                  <tr key={r.cveId} className="table-row">
+                    <td className="py-1.5 px-2 font-mono text-sm">
+                      <Link to={`/triage/${encodeURIComponent(r.cveId)}`} className="text-[#e8f5e9] hover:underline">{r.cveId}</Link>
+                    </td>
+                    <td className="py-1.5 px-2 text-sm text-[#a5d6a7]">{MODEL_NAMES[r.model] || r.model}{r.fallback ? ' (fallback)' : ''}</td>
+                    <td className="py-1.5 px-2 text-xs text-[#6b7280] max-w-xl truncate" title={r.error}>{r.error}</td>
+                    <td className="py-1.5 px-2 text-xs text-[#6b7280] whitespace-nowrap">{new Date(r.at).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
         {status.lastError && <p className="text-xs text-red-400 mt-3">Last error: {status.lastError}</p>}
         <p className="text-xs text-[#6b7280] mt-3 flex items-center gap-1">
           <LinkIcon className="w-3 h-3" /> The analysis of a CVE is shown on its triage page.

@@ -28,16 +28,19 @@ export function ModeBadge({ mode }: { mode: AutoMode }) {
   return <span className={`px-2 py-0.5 rounded text-xs font-medium border ${modeBadge[mode]}`}>{mode}</span>;
 }
 
-// agreement renders "x of y" with a percentage, or a dash without data.
+// agreement compares a rule with human assessments of the same servers.
+// "Accepted risk" (relevant but acceptable) does not contradict "not
+// relevant"; only "relevant" does.
 function agreement(r?: AutoRuleStats) {
   if (!r) return <span className="text-[#6b7280]">–</span>;
-  const judged = r.humanAgree + r.humanDisagree;
+  const judged = r.humanAgree + r.humanAccepted + r.humanDisagree;
   if (judged === 0) return <span className="text-[#6b7280]" title="No human assessment on the same servers yet">no data</span>;
-  const pct = Math.round((r.humanAgree / judged) * 100);
+  const pct = Math.round(((judged - r.humanDisagree) / judged) * 100);
   const cls = r.humanDisagree === 0 ? 'text-[#4ade80]' : pct >= 95 ? 'text-yellow-400' : 'text-red-400';
   return (
-    <span className={cls} title={`${r.humanAgree} agree, ${r.humanDisagree} disagree (a human assessed the server as relevant or accepted risk)`}>
-      {pct}% ({r.humanAgree}/{judged})
+    <span className={cls}
+      title={`${r.humanAgree} not relevant, ${r.humanAccepted} accepted risk (no contradiction), ${r.humanDisagree} relevant (contradiction)`}>
+      {pct}% ({judged - r.humanDisagree}/{judged})
     </span>
   );
 }
@@ -116,8 +119,8 @@ export default function AutoAssessmentSettings() {
       if (r) {
         lines.push(`Currently ${r.decisions} decisions, ${r.blocked} blocked by guards.`);
         if (r.humanDisagree > 0) {
-          lines.push(`Warning: on ${r.humanDisagree} server(s) a human assessed the CVE as relevant or accepted risk. Review them on the Auto Decisions page first.`);
-        } else if (r.humanAgree === 0) {
+          lines.push(`Warning: on ${r.humanDisagree} server(s) a human assessed the CVE as relevant. Review them on the Auto Decisions page first.`);
+        } else if (r.humanAgree + r.humanAccepted === 0) {
           lines.push('No human assessment on the same servers yet to compare with.');
         }
       }

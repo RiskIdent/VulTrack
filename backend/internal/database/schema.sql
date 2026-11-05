@@ -576,9 +576,11 @@ CREATE TABLE IF NOT EXISTS precondition_analyses (
     result        JSONB,                  -- paths, reasoning, recommendation
     error         TEXT,
     terminal      BOOLEAN NOT NULL DEFAULT false, -- retrying will not help
+    refused_by    VARCHAR(60),            -- the main model declined; set on its refusal and on the fallback's result
     requested_at  TIMESTAMP NOT NULL DEFAULT NOW(),
     analysed_at   TIMESTAMP
 );
+ALTER TABLE precondition_analyses ADD COLUMN IF NOT EXISTS refused_by VARCHAR(60);
 CREATE INDEX IF NOT EXISTS idx_precondition_analyses_batch ON precondition_analyses(batch_id) WHERE batch_id IS NOT NULL;
 
 -- Message Batches submitted for the analysis.

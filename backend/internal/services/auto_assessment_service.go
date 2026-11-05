@@ -172,7 +172,8 @@ type RuleStats struct {
 	// Agreement with humans on the same (server, CVE): the human verdict is the
 	// per-server decision, else the CVE assessment.
 	HumanAgree    int `json:"humanAgree"`    // human said not_relevant
-	HumanDisagree int `json:"humanDisagree"` // human said relevant or accepted_risk
+	HumanAccepted int `json:"humanAccepted"` // human said accepted_risk: relevant but acceptable, no contradiction
+	HumanDisagree int `json:"humanDisagree"` // human said relevant
 }
 
 // DayCount is one day of decision activity.
@@ -207,7 +208,8 @@ func (s *AutoAssessmentService) Stats(ctx context.Context, cfg AutoAssessmentCon
 		COUNT(*) FILTER (WHERE state = 'rejected'),
 		COUNT(*) FILTER (WHERE state = 'overridden'),
 		COUNT(*) FILTER (WHERE human = 'not_relevant'),
-		COUNT(*) FILTER (WHERE human IN ('relevant', 'accepted_risk'))`
+		COUNT(*) FILTER (WHERE human = 'accepted_risk'),
+		COUNT(*) FILTER (WHERE human = 'relevant')`
 	base := `SELECT d.rule_ids, d.guards, ` + decisionStateSQL("$1") + ` AS state, ` + humanStatusSQL + ` AS human` + decisionFrom
 
 	rows, err := s.db.Query(ctx, `
@@ -221,7 +223,7 @@ func (s *AutoAssessmentService) Stats(ctx context.Context, cfg AutoAssessmentCon
 	}
 	for rows.Next() {
 		var r RuleStats
-		if err := rows.Scan(&r.RuleID, &r.Decisions, &r.Applied, &r.Shadow, &r.Blocked, &r.Rejected, &r.Overridden, &r.HumanAgree, &r.HumanDisagree); err != nil {
+		if err := rows.Scan(&r.RuleID, &r.Decisions, &r.Applied, &r.Shadow, &r.Blocked, &r.Rejected, &r.Overridden, &r.HumanAgree, &r.HumanAccepted, &r.HumanDisagree); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -234,7 +236,7 @@ func (s *AutoAssessmentService) Stats(ctx context.Context, cfg AutoAssessmentCon
 
 	t := &st.Total
 	if err := s.db.QueryRow(ctx, `WITH x AS (`+base+`) SELECT 'total', `+counts+` FROM x`, active).
-		Scan(&t.RuleID, &t.Decisions, &t.Applied, &t.Shadow, &t.Blocked, &t.Rejected, &t.Overridden, &t.HumanAgree, &t.HumanDisagree); err != nil {
+		Scan(&t.RuleID, &t.Decisions, &t.Applied, &t.Shadow, &t.Blocked, &t.Rejected, &t.Overridden, &t.HumanAgree, &t.HumanAccepted, &t.HumanDisagree); err != nil {
 		return nil, err
 	}
 

@@ -27,6 +27,8 @@ type preconditionConfigInput struct {
 	UseBatch  *bool    `json:"useBatch"`
 	BudgetUSD *float64 `json:"budgetUsd"`
 	DailyMax  *int     `json:"dailyMax"`
+	// FallbackModel: "" switches the fallback off.
+	FallbackModel *string `json:"fallbackModel"`
 }
 
 // updatePreconditionConfig stores the configuration.
@@ -60,6 +62,12 @@ func (h *Handler) updatePreconditionConfig(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusBadRequest, "dailyMax must be between 0 and 100000")
 		}
 		updates[services.SettingPreDaily] = strconv.Itoa(*in.DailyMax)
+	}
+	if in.FallbackModel != nil {
+		if *in.FallbackModel != "" && !slices.Contains(services.PreconditionFallbackModels, *in.FallbackModel) {
+			return fiber.NewError(fiber.StatusBadRequest, "unsupported fallback model")
+		}
+		updates[services.SettingPreFallback] = *in.FallbackModel
 	}
 	if len(updates) > 0 {
 		if err := h.settingsService.SetMultiple(c.Context(), updates); err != nil {

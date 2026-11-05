@@ -40,6 +40,7 @@ type AutoReportRule struct {
 	Blocked       int
 	Overridden    int // includes "rejected" (automation switched off by a human)
 	HumanAgree    int
+	HumanAccepted int
 	HumanDisagree int
 }
 
@@ -91,7 +92,8 @@ func (s *ReportService) getAutoAssessmentReport(ctx context.Context, serverIDs [
 		       COUNT(*) FILTER (WHERE state = 'blocked'),
 		       COUNT(*) FILTER (WHERE state IN ('overridden', 'rejected')),
 		       COUNT(*) FILTER (WHERE human = 'not_relevant'),
-		       COUNT(*) FILTER (WHERE human IN ('relevant', 'accepted_risk'))
+		       COUNT(*) FILTER (WHERE human = 'accepted_risk'),
+		       COUNT(*) FILTER (WHERE human = 'relevant')
 		FROM x, unnest(x.rule_ids) AS rule_id
 		GROUP BY rule_id ORDER BY rule_id
 	`, args...)
@@ -100,7 +102,7 @@ func (s *ReportService) getAutoAssessmentReport(ctx context.Context, serverIDs [
 	}
 	for rows.Next() {
 		var rr AutoReportRule
-		if err := rows.Scan(&rr.RuleID, &rr.Applied, &rr.Shadow, &rr.Blocked, &rr.Overridden, &rr.HumanAgree, &rr.HumanDisagree); err != nil {
+		if err := rows.Scan(&rr.RuleID, &rr.Applied, &rr.Shadow, &rr.Blocked, &rr.Overridden, &rr.HumanAgree, &rr.HumanAccepted, &rr.HumanDisagree); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -227,7 +229,7 @@ func (s *ReportService) addAutoAssessmentSection(m core.Maroto, data *ReportData
 		col.New(1).Add(h("Shadow", 8, align.Center)),
 		col.New(1).Add(h("Blocked", 8, align.Center)),
 		col.New(2).Add(h("Overridden by human", 8, align.Center)),
-		col.New(3).Add(h("Human agrees / disagrees", 8, align.Center)),
+		col.New(3).Add(h("Human: not relevant / accepted risk / relevant", 8, align.Center)),
 	).WithStyle(headerCell)
 	if len(r.Rules) == 0 {
 		m.AddRow(7, col.New(12).Add(c("No automated decisions for the servers in scope.", 8, align.Left))).WithStyle(rowCell(0))
@@ -243,12 +245,12 @@ func (s *ReportService) addAutoAssessmentSection(m core.Maroto, data *ReportData
 			col.New(1).Add(c(fmt.Sprint(rr.Shadow), 8, align.Center)),
 			col.New(1).Add(c(fmt.Sprint(rr.Blocked), 8, align.Center)),
 			col.New(2).Add(c(fmt.Sprint(rr.Overridden), 8, align.Center)),
-			col.New(3).Add(c(fmt.Sprintf("%d / %d", rr.HumanAgree, rr.HumanDisagree), 8, align.Center)),
+			col.New(3).Add(c(fmt.Sprintf("%d / %d / %d", rr.HumanAgree, rr.HumanAccepted, rr.HumanDisagree), 8, align.Center)),
 		).WithStyle(rowCell(i))
 	}
 	m.AddRow(5, col.New(12).Add(text.New(
 		"Applied: in effect. Shadow: computed, not in effect. Blocked: a guard (CISA KEV, verified exploit, EPSS threshold) prevents it. "+
-			"Human agrees/disagrees: a human assessed the same server as not relevant / as relevant or accepted risk.",
+			"Human: how a human assessed the same server. Accepted risk does not contradict the dismissal; relevant does.",
 		props.Text{Size: 6.5, Color: grey, Top: 1})))
 	m.AddRow(6, col.New(12))
 

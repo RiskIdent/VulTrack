@@ -173,18 +173,42 @@ func (a *Analyzer) startAnalyses(ctx context.Context, cfg services.PreconditionC
 		return 0, nil
 	}
 
-	inputs, err := a.candidates(ctx, cfg, n)
-	if err != nil || len(inputs) == 0 {
+	primary, fallback, err := a.candidates(ctx, cfg, n)
+	if err != nil {
 		return 0, err
 	}
-	promptHash := ai.PreconditionPromptHash(cfg.Model)
+	stored, err := a.run(ctx, cfg, cfg.Model, "", primary)
+	if err != nil {
+		return stored, err
+	}
+	if len(fallback) > 0 {
+		n, err := a.run(ctx, cfg, cfg.FallbackModel, cfg.Model, fallback)
+		stored += n
+		if err != nil {
+			return stored, err
+		}
+	}
+	return stored, nil
+}
+
+// run analyses inputs with model, as a batch or synchronously. refusedBy is
+// set when model is the fallback for CVEs the main model declined.
+func (a *Analyzer) run(ctx context.Context, cfg services.PreconditionConfig, model, refusedBy string, inputs []ai.PreconditionInput) (int, error) {
+	if len(inputs) == 0 {
+		return 0, nil
+	}
+	promptHash := ai.PreconditionPromptHash(model)
+	var refusedArg any
+	if refusedBy != "" {
+		refusedArg = refusedBy
+	}
 
 	if cfg.UseBatch {
 		items := make([]ai.BatchItem, len(inputs))
 		for i, in := range inputs {
 			items[i] = ai.BatchItem{CustomID: in.CVEID, Input: in}
 		}
-		id, err := a.client.SubmitPreconditionBatch(ctx, cfg.Model, items)
+		id, err := a.client.SubmitPreconditionBatch(ctx, model, items)
 		if err != nil {
 			return 0, err
 		}
@@ -194,20 +218,22 @@ func (a *Analyzer) startAnalyses(ctx context.Context, cfg services.PreconditionC
 		}
 		defer tx.Rollback(ctx)
 		if _, err := tx.Exec(ctx, `INSERT INTO precondition_batches (id, model, requests, status) VALUES ($1, $2, $3, 'in_progress')`,
-			id, cfg.Model, len(items)); err != nil {
+			id, model, len(items)); err != nil {
 			return 0, err
 		}
 		for _, in := range inputs {
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO precondition_analyses (cve_id, status, model, prompt_hash, input_hash, batch_id, requested_at)
-				VALUES ($1, 'pending', $2, $3, $4, $5, NOW())
+				INSERT INTO precondition_analyses (cve_id, status, model, prompt_hash, input_hash, batch_id, refused_by, requested_at)
+				VALUES ($1, 'pending', $2, $3, $4, $5, $6, NOW())
 				ON CONFLICT (cve_id) DO UPDATE SET status = 'pending', model = EXCLUDED.model, prompt_hash = EXCLUDED.prompt_hash,
-					input_hash = EXCLUDED.input_hash, batch_id = EXCLUDED.batch_id, error = NULL, terminal = false, requested_at = NOW()
-			`, in.CVEID, cfg.Model, promptHash, in.Hash(), id); err != nil {
+					input_hash = EXCLUDED.input_hash, batch_id = EXCLUDED.batch_id, refused_by = EXCLUDED.refused_by,
+					error = NULL, terminal = false, requested_at = NOW()
+			`, in.CVEID, model, promptHash, in.Hash(), id, refusedArg); err != nil {
 				return 0, err
 			}
 		}
-		log.Info().Str("batch", id).Int("cves", len(items)).Str("model", cfg.Model).Msg("AI precondition analysis: batch submitted")
+		log.Info().Str("batch", id).Int("cves", len(items)).Str("model", model).Bool("fallback", refusedBy != "").
+			Msg("AI precondition analysis: batch submitted")
 		return 0, tx.Commit(ctx)
 	}
 
@@ -218,72 +244,102 @@ func (a *Analyzer) startAnalyses(ctx context.Context, cfg services.PreconditionC
 			return stored, nil
 		default:
 		}
-		res, usage, err := a.client.AnalyzePreconditions(ctx, cfg.Model, in)
-		if err := a.store(ctx, in.CVEID, cfg.Model, promptHash, in.Hash(), "", res, usage, false, err); err != nil {
+		res, usage, err := a.client.AnalyzePreconditions(ctx, model, in)
+		if err := a.store(ctx, in.CVEID, model, promptHash, in.Hash(), "", refusedBy, res, usage, false, err); err != nil {
 			return stored, err
 		}
 		stored++
+		// A refusal of the main model goes to the fallback right away.
+		if errors.Is(err, ai.ErrRefusal) && refusedBy == "" && cfg.FallbackModel != "" {
+			fres, fusage, ferr := a.client.AnalyzePreconditions(ctx, cfg.FallbackModel, in)
+			if err := a.store(ctx, in.CVEID, cfg.FallbackModel, ai.PreconditionPromptHash(cfg.FallbackModel), in.Hash(), "",
+				model, fres, fusage, false, ferr); err != nil {
+				return stored, err
+			}
+		}
 	}
 	return stored, nil
 }
 
-// candidates returns up to n inputs that need an analysis: CVEs of the
-// triage queue without a current one (same model, prompt and input), and
-// without a recent failure.
-func (a *Analyzer) candidates(ctx context.Context, cfg services.PreconditionConfig, n int) ([]ai.PreconditionInput, error) {
+// candidates returns up to n inputs that need an analysis, in queue order:
+// primary are CVEs of the triage queue without a current analysis (same
+// model, prompt and input) and without a recent failure; fallback are CVEs
+// the main model declined, when a fallback model is configured. A fallback
+// result (or a second refusal) is current as long as the input is unchanged.
+func (a *Analyzer) candidates(ctx context.Context, cfg services.PreconditionConfig, n int) (primary, fallback []ai.PreconditionInput, err error) {
 	opts, err := a.settings.BuildTriageOptions(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ids, err := a.findings.TriageQueueCVEIDs(ctx, opts, RuleID, 2000)
 	if err != nil || len(ids) == 0 {
-		return nil, err
+		return nil, nil, err
 	}
 	inputs, err := BuildInputs(ctx, a.db, ids)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	type existing struct {
-		status, prompt, input string
-		terminal, recent      bool
+		status, prompt, input, refusedBy string
+		terminal, recent                 bool
 	}
 	have := map[string]existing{}
 	rows, err := a.db.Query(ctx, `
-		SELECT cve_id, status, prompt_hash, input_hash, terminal, requested_at > NOW() - interval '1 day'
+		SELECT cve_id, status, prompt_hash, input_hash, COALESCE(refused_by, ''), terminal, requested_at > NOW() - interval '1 day'
 		FROM precondition_analyses WHERE cve_id = ANY($1)
 	`, ids)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for rows.Next() {
 		var id string
 		var e existing
-		if err := rows.Scan(&id, &e.status, &e.prompt, &e.input, &e.terminal, &e.recent); err != nil {
+		if err := rows.Scan(&id, &e.status, &e.prompt, &e.input, &e.refusedBy, &e.terminal, &e.recent); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		have[id] = e
 	}
 	rows.Close()
 
-	promptHash := ai.PreconditionPromptHash(cfg.Model)
-	var out []ai.PreconditionInput
+	mainHash := ai.PreconditionPromptHash(cfg.Model)
+	fallbackHash := ""
+	if cfg.FallbackModel != "" {
+		fallbackHash = ai.PreconditionPromptHash(cfg.FallbackModel)
+	}
 	for _, id := range ids { // queue order
+		if len(primary)+len(fallback) >= n {
+			break
+		}
 		in, ok := inputs[id]
 		if !ok || in.Description == "" {
 			continue
 		}
-		if e, ok := have[id]; ok && e.prompt == promptHash && e.input == in.Hash() {
-			if e.status != "error" || e.terminal || e.recent {
-				continue
-			}
+		e, ok := have[id]
+		if !ok || e.input != in.Hash() {
+			primary = append(primary, in)
+			continue
 		}
-		out = append(out, in)
-		if len(out) >= n {
-			break
+		switch e.prompt {
+		case mainHash:
+			switch {
+			case e.status != "error":
+			case e.refusedBy == cfg.Model:
+				if fallbackHash != "" {
+					fallback = append(fallback, in)
+				}
+			case !e.terminal && !e.recent:
+				primary = append(primary, in)
+			}
+		case fallbackHash:
+			if e.refusedBy != cfg.Model {
+				primary = append(primary, in) // a fallback analysis for another main model
+			}
+		default:
+			primary = append(primary, in) // made with another model or prompt
 		}
 	}
-	return out, nil
+	return primary, fallback, nil
 }
 
 // BuildInputs assembles the model input of each CVE from the catalog and the
@@ -368,9 +424,10 @@ func (a *Analyzer) collectBatches(ctx context.Context) (int, error) {
 			continue
 		}
 		for _, o := range outcomes {
-			var promptHash, inputHash string
-			err := a.db.QueryRow(ctx, `SELECT prompt_hash, input_hash FROM precondition_analyses WHERE cve_id = $1 AND batch_id = $2`,
-				o.CustomID, b.id).Scan(&promptHash, &inputHash)
+			var promptHash, inputHash, refusedBy string
+			err := a.db.QueryRow(ctx, `
+				SELECT prompt_hash, input_hash, COALESCE(refused_by, '') FROM precondition_analyses WHERE cve_id = $1 AND batch_id = $2
+			`, o.CustomID, b.id).Scan(&promptHash, &inputHash, &refusedBy)
 			if errors.Is(err, pgx.ErrNoRows) {
 				// Superseded by a newer request; still account for the cost.
 				if err := a.logUsage(ctx, a.db, o.CustomID, b.model, o.Usage, true); err != nil {
@@ -381,7 +438,7 @@ func (a *Analyzer) collectBatches(ctx context.Context) (int, error) {
 			if err != nil {
 				return stored, err
 			}
-			if err := a.store(ctx, o.CustomID, b.model, promptHash, inputHash, b.id, o.Result, o.Usage, true, o.Err); err != nil {
+			if err := a.store(ctx, o.CustomID, b.model, promptHash, inputHash, b.id, refusedBy, o.Result, o.Usage, true, o.Err); err != nil {
 				return stored, err
 			}
 			stored++
@@ -411,24 +468,36 @@ func (a *Analyzer) logUsage(ctx context.Context, db *pgxpool.Pool, cveID, model 
 	return err
 }
 
-// store records one outcome and its cost.
-func (a *Analyzer) store(ctx context.Context, cveID, model, promptHash, inputHash, batchID string,
+// store records one outcome and its cost. refusedBy is the main model when
+// model is the fallback; a refusal of the main model records the model
+// itself, so the fallback can pick the CVE up.
+func (a *Analyzer) store(ctx context.Context, cveID, model, promptHash, inputHash, batchID, refusedBy string,
 	res ai.PreconditionResult, u ai.Usage, batch bool, callErr error) error {
 	if err := a.logUsage(ctx, a.db, cveID, model, u, batch); err != nil {
 		return err
 	}
-	var batchArg any
+	var batchArg, refusedArg any
 	if batchID != "" {
 		batchArg = batchID
 	}
+	if refusedBy != "" {
+		refusedArg = refusedBy
+	}
 	if callErr != nil {
+		if errors.Is(callErr, ai.ErrRefusal) {
+			log.Warn().Str("cve", cveID).Str("model", model).Bool("fallback", refusedBy != "").Err(callErr).
+				Msg("AI precondition analysis: the model declined the CVE")
+			if refusedBy == "" {
+				refusedArg = model
+			}
+		}
 		_, err := a.db.Exec(ctx, `
-			INSERT INTO precondition_analyses (cve_id, status, model, prompt_hash, input_hash, batch_id, error, terminal, analysed_at)
-			VALUES ($1, 'error', $2, $3, $4, $5, $6, $7, NOW())
+			INSERT INTO precondition_analyses (cve_id, status, model, prompt_hash, input_hash, batch_id, refused_by, error, terminal, analysed_at)
+			VALUES ($1, 'error', $2, $3, $4, $5, $6, $7, $8, NOW())
 			ON CONFLICT (cve_id) DO UPDATE SET status = 'error', model = EXCLUDED.model, prompt_hash = EXCLUDED.prompt_hash,
-				input_hash = EXCLUDED.input_hash, batch_id = EXCLUDED.batch_id, error = EXCLUDED.error,
-				terminal = EXCLUDED.terminal, analysed_at = NOW()
-		`, cveID, model, promptHash, inputHash, batchArg, callErr.Error(), ai.IsTerminal(callErr))
+				input_hash = EXCLUDED.input_hash, batch_id = EXCLUDED.batch_id, refused_by = EXCLUDED.refused_by,
+				error = EXCLUDED.error, terminal = EXCLUDED.terminal, analysed_at = NOW()
+		`, cveID, model, promptHash, inputHash, batchArg, refusedArg, callErr.Error(), ai.IsTerminal(callErr))
 		return err
 	}
 	b, err := json.Marshal(res)
@@ -436,11 +505,11 @@ func (a *Analyzer) store(ctx context.Context, cveID, model, promptHash, inputHas
 		return err
 	}
 	_, err = a.db.Exec(ctx, `
-		INSERT INTO precondition_analyses (cve_id, status, model, prompt_hash, input_hash, batch_id, determinable, result, analysed_at)
-		VALUES ($1, 'ok', $2, $3, $4, $5, $6, $7, NOW())
+		INSERT INTO precondition_analyses (cve_id, status, model, prompt_hash, input_hash, batch_id, refused_by, determinable, result, analysed_at)
+		VALUES ($1, 'ok', $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (cve_id) DO UPDATE SET status = 'ok', model = EXCLUDED.model, prompt_hash = EXCLUDED.prompt_hash,
-			input_hash = EXCLUDED.input_hash, batch_id = EXCLUDED.batch_id, determinable = EXCLUDED.determinable,
-			result = EXCLUDED.result, error = NULL, terminal = false, analysed_at = NOW()
-	`, cveID, model, promptHash, inputHash, batchArg, res.Determinable, b)
+			input_hash = EXCLUDED.input_hash, batch_id = EXCLUDED.batch_id, refused_by = EXCLUDED.refused_by,
+			determinable = EXCLUDED.determinable, result = EXCLUDED.result, error = NULL, terminal = false, analysed_at = NOW()
+	`, cveID, model, promptHash, inputHash, batchArg, refusedArg, res.Determinable, b)
 	return err
 }

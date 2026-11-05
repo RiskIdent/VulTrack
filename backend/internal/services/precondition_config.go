@@ -8,11 +8,12 @@ import (
 
 // Settings of the AI precondition analysis (docs/AUTO_ASSESSMENT_PLAN.md §8).
 const (
-	SettingPreEnabled = "ai_precondition_enabled"
-	SettingPreModel   = "ai_precondition_model"
-	SettingPreBatch   = "ai_precondition_batch"
-	SettingPreBudget  = "ai_precondition_budget_usd"
-	SettingPreDaily   = "ai_precondition_daily_limit"
+	SettingPreEnabled  = "ai_precondition_enabled"
+	SettingPreModel    = "ai_precondition_model"
+	SettingPreBatch    = "ai_precondition_batch"
+	SettingPreBudget   = "ai_precondition_budget_usd"
+	SettingPreDaily    = "ai_precondition_daily_limit"
+	SettingPreFallback = "ai_precondition_fallback_model"
 )
 
 // Defaults of the precondition analysis. It is off until an admin enables
@@ -26,6 +27,9 @@ const (
 // PreconditionModels are the models selectable for the analysis.
 var PreconditionModels = []string{"claude-sonnet-5-5", "claude-opus-5-5"}
 
+// PreconditionFallbackModels can analyse CVEs the main model declined.
+var PreconditionFallbackModels = []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"}
+
 // PreconditionConfig controls the AI precondition analysis. Shared by the
 // analyzer, the REST API and MCP.
 type PreconditionConfig struct {
@@ -34,6 +38,8 @@ type PreconditionConfig struct {
 	UseBatch  bool    `json:"useBatch"`  // Message Batches API: half price, results within hours
 	BudgetUSD float64 `json:"budgetUsd"` // per calendar month; the analysis pauses when reached
 	DailyMax  int     `json:"dailyMax"`  // analyses started per day
+	// FallbackModel analyses CVEs the main model declined (refusal); "" = none.
+	FallbackModel string `json:"fallbackModel"`
 }
 
 // LoadPreconditionConfig reads the configuration; invalid values fall back
@@ -65,7 +71,16 @@ func (s *SettingsService) LoadPreconditionConfig(ctx context.Context) (Precondit
 			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 				cfg.DailyMax = n
 			}
+		case SettingPreFallback:
+			for _, m := range PreconditionFallbackModels {
+				if v == m {
+					cfg.FallbackModel = v
+				}
+			}
 		}
+	}
+	if cfg.FallbackModel == cfg.Model {
+		cfg.FallbackModel = ""
 	}
 	return cfg, nil
 }

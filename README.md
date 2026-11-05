@@ -346,7 +346,7 @@ Both accept the filters `name`, `version`, `arch`, `sourcePackage`, `server` and
 - `PUT /api/v1/admin/auto-assessment/config` - Set `mode`, `ruleModes`, `guardExploit`, `guardEpss`, `factSettleMinutes`, `unusedDays` (re-evaluates all servers)
 - `POST /api/v1/admin/auto-assessment/reevaluate` - Re-evaluate all servers now
 - `GET /api/v1/admin/ai-preconditions/status` - AI precondition analysis: configuration, spend this month, analysis counts
-- `PUT /api/v1/admin/ai-preconditions/config` - Set `enabled`, `model`, `useBatch`, `budgetUsd`, `dailyMax`
+- `PUT /api/v1/admin/ai-preconditions/config` - Set `enabled`, `model`, `useBatch`, `budgetUsd`, `dailyMax`, `fallbackModel` (analyses CVEs the main model declines; empty = off)
 - `POST /api/v1/admin/ai-preconditions/run` - Collect finished batches and start analyses now
 - `GET /api/v1/cves/:id/preconditions` - The AI precondition analysis of a CVE
 - `GET /api/v1/admin/kernel-intel/status` - Kernel data for R-KMOD: CVE records with affected source files, mapped kernel builds

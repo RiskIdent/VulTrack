@@ -71,7 +71,7 @@ export default function AutoDecisions() {
   }, [load, refreshKey]);
 
   const t = stats?.total;
-  const judged = t ? t.humanAgree + t.humanDisagree : 0;
+  const judged = t ? t.humanAgree + t.humanAccepted + t.humanDisagree : 0;
 
   return (
     <div className="space-y-6">
@@ -102,10 +102,11 @@ export default function AutoDecisions() {
           <Card label="Overridden by human" value={t.overridden} onClick={() => setParam('state', 'overridden')} active={state === 'overridden'} />
           <div className="card">
             <div className={`text-2xl font-bold ${t.humanDisagree ? 'text-yellow-400' : 'text-[#4ade80]'}`}>
-              {judged ? `${Math.round((t.humanAgree / judged) * 100)}%` : '–'}
+              {judged ? `${Math.round(((judged - t.humanDisagree) / judged) * 100)}%` : '–'}
             </div>
-            <div className="text-sm text-[#6b7280]" title="Decisions where a human assessed the same server: share assessed as not relevant">
-              Human agreement {judged ? `(${t.humanAgree}/${judged})` : ''}
+            <div className="text-sm text-[#6b7280]"
+              title={`Decisions where a human assessed the same server: ${t.humanAgree} not relevant, ${t.humanAccepted} accepted risk (no contradiction), ${t.humanDisagree} relevant (contradiction)`}>
+              Human agreement {judged ? `(${judged - t.humanDisagree}/${judged})` : ''}
             </div>
           </div>
         </div>

@@ -470,6 +470,7 @@ export interface AutoRuleStats {
   rejected: number;
   overridden: number;
   humanAgree: number;
+  humanAccepted: number;
   humanDisagree: number;
 }
 
@@ -587,6 +588,7 @@ export interface PreconditionAnalysis {
   status: 'pending' | 'ok' | 'error';
   model: string;
   current: boolean;
+  refusedBy?: string;
   result?: PreconditionResult;
   error?: string;
   analysedAt?: string;
@@ -598,17 +600,20 @@ export interface PreconditionConfig {
   useBatch: boolean;
   budgetUsd: number;
   dailyMax: number;
+  fallbackModel: string;
 }
 
 export interface PreconditionStatus {
   config: PreconditionConfig;
   models: string[];
+  fallbackModels: string[];
   configured: boolean;
   running: boolean;
   spentMonth: number;
   spentTotal: number;
   avgCost: number;
-  analyses: { ok: number; determinable: number; pending: number; errors: number };
+  analyses: { ok: number; determinable: number; pending: number; errors: number; refused: number; byFallback: number };
+  refusals: { cveId: string; model: string; fallback: boolean; error: string; at: string }[];
   batchesInProgress: number;
   lastError?: string;
 }

@@ -264,7 +264,8 @@ func preconditionParams(model string, in PreconditionInput) anthropic.MessageNew
 func parsePrecondition(msg *anthropic.Message) (PreconditionResult, error) {
 	switch msg.StopReason {
 	case anthropic.StopReasonRefusal:
-		return PreconditionResult{}, ErrRefusal
+		return PreconditionResult{}, fmt.Errorf("%w (category %q: %s)", ErrRefusal,
+			string(msg.StopDetails.Category), msg.StopDetails.Explanation)
 	case anthropic.StopReasonMaxTokens:
 		return PreconditionResult{}, ErrIncompleteOutput
 	case anthropic.StopReasonModelContextWindowExceeded:
