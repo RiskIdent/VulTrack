@@ -167,6 +167,14 @@ func (e *Evaluator) holdUnsettled(want map[string]Decision, have map[string]stor
 			continue
 		}
 		for cat := range d.Evidence.Facts {
+			// The service list carries each unit's running state, which
+			// changes whenever a timer job runs, so it is practically never
+			// unchanged for long. The checks read only which units are
+			// installed or masked, a deliberate change; a decision is still
+			// revoked at once when that changes.
+			if cat == "services" {
+				continue
+			}
 			if age, ok := h.FactsAge[cat]; !ok || age < window {
 				delete(want, cve)
 				break

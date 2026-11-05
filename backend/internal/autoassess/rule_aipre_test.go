@@ -123,3 +123,17 @@ func TestAIPrePackageInUse(t *testing.T) {
 		t.Error("a library needed by curl may be in use")
 	}
 }
+
+func TestAIPreRecordsOnlyUsedFacts(t *testing.T) {
+	h := aipreHost(ai.AttackPath{Requires: []ai.Condition{cond(ai.CondNetworkListener, "apache2", "any")}},
+		ai.AttackPath{Requires: []ai.Condition{cond(ai.CondUnprivilegedBPF, "", "")}})
+	h.FactHashes = map[string]string{"listeners": "l1", "services": "s1", "kernel": "k1", "packageInfo": "p1"}
+	ds := Decide([]Finding{{CVEID: "CVE-1", Package: "libfoo"}}, h, Rules, nil, GuardConfig{})
+	d, ok := ds["CVE-1"]
+	if !ok {
+		t.Fatal("no decision")
+	}
+	if len(d.Evidence.Facts) != 2 || d.Evidence.Facts["listeners"] != "l1" || d.Evidence.Facts["kernel"] != "k1" {
+		t.Errorf("facts %v, want listeners and kernel only", d.Evidence.Facts)
+	}
+}

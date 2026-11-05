@@ -221,6 +221,8 @@ func TestAnalyzer(t *testing.T) {
 			t.Fatal(err)
 		}
 		exec(`UPDATE server_facts SET stable_since = NOW() - interval '1 day' WHERE server_id = $1`, srvID)
+		// A service that just started must not delay a decision about listeners.
+		exec(`UPDATE server_facts SET stable_since = NOW() WHERE server_id = $1 AND category = 'services'`, srvID)
 	}
 	decided := func() int {
 		var n int

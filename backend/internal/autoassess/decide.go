@@ -67,6 +67,14 @@ func Decide(findings []Finding, h *Host, enabled []Rule, signals map[string]CVES
 						Package: f.Package, Version: f.PackageVersion,
 						Rule: r.ID(), RuleVersion: r.Version(), Detail: detail,
 					})
+					for _, cat := range factsUsed(r, f, h) {
+						if hash := h.FactHashes[cat]; hash != "" {
+							if ev.Facts == nil {
+								ev.Facts = map[string]string{}
+							}
+							ev.Facts[cat] = hash
+						}
+					}
 					hit = true
 					break
 				}
@@ -83,16 +91,6 @@ func Decide(findings []Finding, h *Host, enabled []Rule, signals map[string]CVES
 		ruleSet := map[string]bool{}
 		for _, p := range ev.Packages {
 			ruleSet[p.Rule] = true
-			if fr, ok := RuleByID(p.Rule).(FactReader); ok && h != nil {
-				for _, cat := range fr.FactCategories() {
-					if hash := h.FactHashes[cat]; hash != "" {
-						if ev.Facts == nil {
-							ev.Facts = map[string]string{}
-						}
-						ev.Facts[cat] = hash
-					}
-				}
-			}
 		}
 		ruleIDs := make([]string, 0, len(ruleSet))
 		for id := range ruleSet {
@@ -116,6 +114,24 @@ func Decide(findings []Finding, h *Host, enabled []Rule, signals map[string]CVES
 		}
 	}
 	return out
+}
+
+// factsUsed lists the runtime fact categories a dismissal of f by r rests
+// on: the categories the rule actually consulted for this finding when it
+// says so (FactsUsedBy), else all categories it may read.
+func factsUsed(r Rule, f Finding, h *Host) []string {
+	if h == nil {
+		return nil
+	}
+	if fu, ok := r.(interface {
+		FactsUsedBy(f Finding, h *Host) []string
+	}); ok {
+		return fu.FactsUsedBy(f, h)
+	}
+	if fr, ok := r.(FactReader); ok {
+		return fr.FactCategories()
+	}
+	return nil
 }
 
 // reason summarises the evidence in one line.

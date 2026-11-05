@@ -43,6 +43,45 @@ func (aiPreconditions) FactCategories() []string {
 	return []string{"listeners", "services", "kernel", "packageInfo"}
 }
 
+// conditionFacts is the fact category each checkable condition reads.
+var conditionFacts = map[string]string{
+	ai.CondNetworkListener:    "listeners",
+	ai.CondPackageInUse:       "packageInfo",
+	ai.CondServiceActive:      "services",
+	ai.CondUnprivilegedUserns: "kernel",
+	ai.CondUnprivilegedBPF:    "kernel",
+}
+
+// FactsUsedBy returns the categories of the conditions that block the paths
+// of f's CVE: a decision rests on those only, so an unrelated change (a
+// service starting, a module loading) neither delays nor changes it.
+func (aiPreconditions) FactsUsedBy(f Finding, h *Host) []string {
+	if h == nil || h.Runtime == nil {
+		return nil
+	}
+	a, ok := h.Preconditions[f.CVEID]
+	if !ok {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range a.Result.Paths {
+		for _, c := range p.Requires {
+			if !c.Necessary || c.Confidence != "high" {
+				continue
+			}
+			if _, isFalse := h.conditionFalse(c); isFalse {
+				if cat := conditionFacts[c.Type]; cat != "" && !seen[cat] {
+					seen[cat] = true
+					out = append(out, cat)
+				}
+				break
+			}
+		}
+	}
+	return out
+}
+
 func (aiPreconditions) Dismiss(f Finding, h *Host) (bool, string) {
 	if h == nil || h.Runtime == nil {
 		return false, ""
