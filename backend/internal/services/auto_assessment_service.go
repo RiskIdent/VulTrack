@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,7 +20,17 @@ import (
 // decisions. Decisions are written by the autoassess evaluator.
 type AutoAssessmentService struct {
 	db *pgxpool.Pool
+
+	// The pair counts in Stats scan every active finding; they change only
+	// with scans, so they are reused for pairCacheTTL (per set of active rules).
+	pairMu    sync.Mutex
+	pairKey   string
+	pairAt    time.Time
+	pairTotal int
+	pairOpen  int
 }
+
+const pairCacheTTL = 60 * time.Second
 
 // NewAutoAssessmentService creates an AutoAssessmentService.
 func NewAutoAssessmentService(db *pgxpool.Pool) *AutoAssessmentService {
@@ -257,23 +268,8 @@ func (s *AutoAssessmentService) Stats(ctx context.Context, cfg AutoAssessmentCon
 	}
 	rows.Close()
 
-	// Pairs with active findings, and those nothing has decided yet (no
-	// automated decision in effect, no human decision for the server or CVE).
-	if err := s.db.QueryRow(ctx, `
-		WITH pairs AS (
-			SELECT DISTINCT server_id, cve_id FROM findings WHERE resolved_at IS NULL
-		)
-		SELECT COUNT(*),
-		       COUNT(*) FILTER (WHERE NOT (
-		           (o.status IS NOT NULL AND o.status <> 'manual')
-		           OR (a.id IS NOT NULL AND a.status <> 'pending')
-		           OR (o.status IS NULL AND d.server_id IS NOT NULL AND cardinality(d.guards) = 0 AND d.rule_ids <@ $1::text[])
-		       ))
-		FROM pairs p
-		LEFT JOIN assessment_overrides o ON o.server_id = p.server_id AND o.cve_id = p.cve_id
-		LEFT JOIN assessments a ON a.cve_id = p.cve_id
-		LEFT JOIN auto_decisions d ON d.server_id = p.server_id AND d.cve_id = p.cve_id
-	`, active).Scan(&st.TotalPairs, &st.OpenPairs); err != nil {
+	st.TotalPairs, st.OpenPairs, err = s.pairCounts(ctx, active)
+	if err != nil {
 		return nil, err
 	}
 
@@ -325,6 +321,38 @@ func (s *AutoAssessmentService) CountByRuleAndState(ctx context.Context, cfg Aut
 		out[[2]string{rule, state}] = n
 	}
 	return out, rows.Err()
+}
+
+// pairCounts returns the (server, CVE) pairs with active findings and those
+// nothing has decided yet (no automated decision in effect, no human decision
+// for the server or the CVE), cached for pairCacheTTL.
+func (s *AutoAssessmentService) pairCounts(ctx context.Context, active []string) (int, int, error) {
+	key := strings.Join(active, ",")
+	s.pairMu.Lock()
+	defer s.pairMu.Unlock()
+	if s.pairKey == key && !s.pairAt.IsZero() && time.Since(s.pairAt) < pairCacheTTL {
+		return s.pairTotal, s.pairOpen, nil
+	}
+	var total, open int
+	if err := s.db.QueryRow(ctx, `
+		WITH pairs AS (
+			SELECT server_id, cve_id FROM findings WHERE resolved_at IS NULL GROUP BY server_id, cve_id
+		)
+		SELECT COUNT(*),
+		       COUNT(*) FILTER (WHERE NOT (
+		           (o.status IS NOT NULL AND o.status <> 'manual')
+		           OR (a.id IS NOT NULL AND a.status <> 'pending')
+		           OR (o.status IS NULL AND d.server_id IS NOT NULL AND cardinality(d.guards) = 0 AND d.rule_ids <@ $1::text[])
+		       ))
+		FROM pairs p
+		LEFT JOIN assessment_overrides o ON o.server_id = p.server_id AND o.cve_id = p.cve_id
+		LEFT JOIN assessments a ON a.cve_id = p.cve_id
+		LEFT JOIN auto_decisions d ON d.server_id = p.server_id AND d.cve_id = p.cve_id
+	`, active).Scan(&total, &open); err != nil {
+		return 0, 0, err
+	}
+	s.pairKey, s.pairAt, s.pairTotal, s.pairOpen = key, time.Now(), total, open
+	return total, open, nil
 }
 
 // DecisionEvent is one entry of the audit trail.

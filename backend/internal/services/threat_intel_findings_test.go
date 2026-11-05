@@ -135,6 +135,23 @@ func TestThreatIntelInFindings(t *testing.T) {
 		}
 	})
 
+	t.Run("grouped pagination: page content and total, also past the end", func(t *testing.T) {
+		page, total, err := findingService.GetAllGrouped(ctx, services.FindingFilter{SortBy: "cveId", SortOrder: "asc", Limit: 2, Offset: 2})
+		if err != nil {
+			t.Fatalf("GetAllGrouped: %v", err)
+		}
+		if got := ids(len(page), func(i int) string { return page[i].CVEID }); total != 5 || got != "3003,3004" {
+			t.Errorf("page 2 = %s (total %d), want 3003,3004 of 5", got, total)
+		}
+		if len(page) == 2 && len(page[0].Packages) != 1 {
+			t.Errorf("group details missing: %+v", page[0])
+		}
+		empty, total, err := findingService.GetAllGrouped(ctx, services.FindingFilter{SortBy: "cveId", SortOrder: "asc", Limit: 2, Offset: 50})
+		if err != nil || len(empty) != 0 || total != 5 {
+			t.Errorf("past the end: %d groups, total %d, err %v", len(empty), total, err)
+		}
+	})
+
 	t.Run("finding detail", func(t *testing.T) {
 		var id int64
 		if err := pool.QueryRow(ctx, `SELECT id FROM findings WHERE cve_id = 'CVE-2026-3002'`).Scan(&id); err != nil {

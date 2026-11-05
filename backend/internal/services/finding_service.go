@@ -262,16 +262,57 @@ func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter
 		from += threatIntelJoins
 	}
 
-	// COUNT distinct (server, CVE) pairs — that's the number of groups.
-	var total int
-	err := s.db.QueryRow(ctx,
-		`SELECT COUNT(DISTINCT (f.server_id, f.cve_id)) `+from+baseWhere, args...,
-	).Scan(&total)
+	orderBy := groupedFindingsOrderBy(filter.SortBy, filter.SortOrder)
+
+	// Step 1: the page of group keys, ranked by the sort columns only, with the
+	// number of groups from the same pass (COUNT(*) OVER () runs before LIMIT).
+	// Building the per-package JSON for every group and discarding all but one
+	// page took ~30 s on millions of findings.
+	keyQuery := `SELECT f.server_id, f.cve_id, COUNT(*) OVER () ` + from + baseWhere + `
+		GROUP BY f.server_id, srv.name, f.cve_id` + orderBy
+	keyArgs := append([]any{}, args...)
+	if filter.Limit > 0 {
+		keyQuery += fmt.Sprintf(` LIMIT $%d OFFSET $%d`, len(keyArgs)+1, len(keyArgs)+2)
+		keyArgs = append(keyArgs, filter.Limit, filter.Offset)
+	}
+	keyRows, err := s.db.Query(ctx, keyQuery, keyArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
+	total := -1
+	var pageServers []int64
+	var pageCVEs []string
+	for keyRows.Next() {
+		var sid int64
+		var cve string
+		if err := keyRows.Scan(&sid, &cve, &total); err != nil {
+			keyRows.Close()
+			return nil, 0, err
+		}
+		pageServers = append(pageServers, sid)
+		pageCVEs = append(pageCVEs, cve)
+	}
+	keyRows.Close()
+	if err := keyRows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if total < 0 {
+		// An empty page (e.g. offset past the end) carries no count; count apart.
+		if err := s.db.QueryRow(ctx,
+			`SELECT COUNT(*) FROM (SELECT 1 `+from+baseWhere+` GROUP BY f.server_id, f.cve_id) g`, args...,
+		).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	if len(pageServers) == 0 {
+		return []models.GroupedFinding{}, total, nil
+	}
 
-	orderBy := groupedFindingsOrderBy(filter.SortBy, filter.SortOrder)
+	// Step 2: the details of those groups only, with the same filters so the
+	// package lists match what the groups were ranked on.
+	args = append(args, pageServers, pageCVEs)
+	baseWhere += fmt.Sprintf(` AND (f.server_id, f.cve_id) IN (SELECT * FROM unnest($%d::bigint[], $%d::text[]))`, argIndex, argIndex+1)
+	argIndex += 2
 
 	selectQuery := `
 		SELECT
@@ -316,15 +357,7 @@ func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter
 	` + from + baseWhere + `
 		GROUP BY f.server_id, srv.name, f.cve_id
 	` + orderBy
-
-	if filter.Limit > 0 {
-		selectQuery += ` LIMIT $` + strconv.Itoa(argIndex)
-		args = append(args, filter.Limit)
-		argIndex++
-
-		selectQuery += ` OFFSET $` + strconv.Itoa(argIndex)
-		args = append(args, filter.Offset)
-	}
+	_ = argIndex
 
 	rows, err := s.db.Query(ctx, selectQuery, args...)
 	if err != nil {

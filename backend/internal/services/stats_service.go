@@ -44,33 +44,42 @@ func (s *StatsService) GetDashboardStats(ctx context.Context, triage *TriageFilt
 		return nil, err
 	}
 
-	// Get finding counts
-	err = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM findings`).Scan(&stats.TotalFindings)
+	// All finding counts in one pass over the table (it holds millions of rows;
+	// these were five separate scans).
+	rows, err := s.db.Query(ctx, `
+		SELECT COALESCE(LOWER(severity), 'unknown') AS sev,
+		       COUNT(*) AS total,
+		       COUNT(*) FILTER (WHERE resolved_at IS NULL) AS active
+		FROM findings
+		GROUP BY 1
+	`)
 	if err != nil {
 		return nil, err
 	}
-
-	err = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM findings WHERE resolved_at IS NULL`).Scan(&stats.ActiveFindings)
-	if err != nil {
+	for rows.Next() {
+		var sev string
+		var total, active int
+		if err := rows.Scan(&sev, &total, &active); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		stats.TotalFindings += total
+		stats.ActiveFindings += active
+		if active > 0 {
+			stats.SeverityBreakdown[sev] += active
+		}
+		switch sev {
+		case "critical":
+			stats.CriticalFindings = active
+		case "high":
+			stats.HighFindings = active
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
 	stats.ResolvedFindings = stats.TotalFindings - stats.ActiveFindings
-
-	// Get severity counts for active findings (case-insensitive)
-	err = s.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM findings WHERE resolved_at IS NULL AND LOWER(severity) = 'critical'`,
-	).Scan(&stats.CriticalFindings)
-	if err != nil {
-		return nil, err
-	}
-
-	err = s.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM findings WHERE resolved_at IS NULL AND LOWER(severity) = 'high'`,
-	).Scan(&stats.HighFindings)
-	if err != nil {
-		return nil, err
-	}
 
 	// Pending assessments: the CVEs in the triage queue, filtered exactly as the
 	// Triage page filters them. Callers that only need the other numbers pass nil.
@@ -79,27 +88,6 @@ func (s *StatsService) GetDashboardStats(ctx context.Context, triage *TriageFilt
 		if err != nil {
 			return nil, err
 		}
-	}
-
-	// Get severity breakdown (normalize to lowercase)
-	rows, err := s.db.Query(ctx, `
-		SELECT COALESCE(LOWER(severity), 'unknown'), COUNT(*)
-		FROM findings
-		WHERE resolved_at IS NULL
-		GROUP BY LOWER(severity)
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var severity string
-		var count int
-		if err := rows.Scan(&severity, &count); err != nil {
-			return nil, err
-		}
-		stats.SeverityBreakdown[severity] = count
 	}
 
 	return stats, nil
@@ -160,20 +148,35 @@ type TopCVE struct {
 
 // GetTopCVEs returns CVEs affecting the most servers
 func (s *StatsService) GetTopCVEs(ctx context.Context, limit int) ([]TopCVE, error) {
+	// Ranked on a pre-aggregation (one row per CVE and server) joined to the
+	// catalog only after grouping; the descriptive columns are then read for the
+	// returned rows alone. Aggregating every finding with two COUNT(DISTINCT)s and
+	// a catalog join per row took seconds on millions of findings.
 	query := `
-		SELECT 
-			f.cve_id,
-			COALESCE(MAX(cve.cvss3_score), MAX(f.cvss3_score)) as cvss3_score,
-			MAX(f.severity) as severity,
-			MAX(f.source_link) FILTER (WHERE f.source_link IS NOT NULL AND f.source_link != '') as source_link,
-			COUNT(DISTINCT f.server_id) as server_count,
-			COUNT(DISTINCT f.package_name) as package_count
-		FROM findings f
-		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id
-		WHERE f.resolved_at IS NULL
-		GROUP BY f.cve_id
-		ORDER BY server_count DESC, cvss3_score DESC NULLS LAST
-		LIMIT $1
+		WITH per_server AS (
+			SELECT cve_id, server_id, MAX(cvss3_score) AS cvss
+			FROM findings
+			WHERE resolved_at IS NULL
+			GROUP BY cve_id, server_id
+		), ranked AS (
+			SELECT p.cve_id, COUNT(*) AS server_count,
+			       COALESCE(MAX(cve.cvss3_score), MAX(p.cvss)) AS cvss3_score
+			FROM per_server p
+			LEFT JOIN cve_catalog cve ON cve.cve_id = p.cve_id
+			GROUP BY p.cve_id
+			ORDER BY server_count DESC, cvss3_score DESC NULLS LAST, p.cve_id
+			LIMIT $1
+		)
+		SELECT r.cve_id, r.cvss3_score, d.severity, d.source_link, r.server_count, d.package_count
+		FROM ranked r
+		CROSS JOIN LATERAL (
+			SELECT COALESCE(MAX(f.severity), '') AS severity,
+			       MAX(f.source_link) FILTER (WHERE f.source_link IS NOT NULL AND f.source_link != '') AS source_link,
+			       COUNT(DISTINCT f.package_name) AS package_count
+			FROM findings f
+			WHERE f.cve_id = r.cve_id AND f.resolved_at IS NULL
+		) d
+		ORDER BY r.server_count DESC, r.cvss3_score DESC NULLS LAST, r.cve_id
 	`
 
 	rows, err := s.db.Query(ctx, query, limit)

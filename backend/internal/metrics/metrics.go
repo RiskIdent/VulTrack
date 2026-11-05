@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,10 +41,22 @@ var (
 	})
 )
 
+// heavyMetricsTTL is how long the metrics that scan every finding are reused.
+// They change only when a scan finishes, while Prometheus typically scrapes
+// every 15 seconds; recomputing them each time kept Postgres busy (two passes
+// over millions of findings per scrape).
+const heavyMetricsTTL = 60 * time.Second
+
 // DBCollector implements prometheus.Collector for metrics derived from the database.
 // It is called on every Prometheus scrape.
 type DBCollector struct {
 	db *pgxpool.Pool
+
+	// Cached results of the expensive collectors (findings, assessments,
+	// automated decisions), recomputed at most once per heavyMetricsTTL.
+	heavyMu sync.Mutex
+	heavyAt time.Time
+	heavy   []prometheus.Metric
 
 	findingsActive  *prometheus.Desc
 	assessments     *prometheus.Desc
@@ -229,8 +242,7 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c.collectFindings(ctx, ch)
-	c.collectAssessments(ctx, ch)
+	c.collectHeavy(ctx, ch)
 	c.collectServers(ctx, ch)
 	c.collectAgents(ctx, ch)
 	c.collectScanJobs(ctx, ch)
@@ -238,7 +250,39 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectPoolStats(ch)
 	c.collectPostgresStats(ctx, ch)
 	c.collectSequenceUsage(ctx, ch)
-	c.collectAutoDecisions(ctx, ch)
+}
+
+// collectHeavy emits the metrics that scan all findings, from a cache that is
+// refreshed at most once per heavyMetricsTTL. Concurrent scrapes wait for one
+// refresh instead of each running the queries.
+func (c *DBCollector) collectHeavy(ctx context.Context, ch chan<- prometheus.Metric) {
+	c.heavyMu.Lock()
+	if c.heavy == nil || time.Since(c.heavyAt) >= heavyMetricsTTL {
+		buf := make(chan prometheus.Metric, 256)
+		done := make(chan struct{})
+		var fresh []prometheus.Metric
+		go func() {
+			for m := range buf {
+				fresh = append(fresh, m)
+			}
+			close(done)
+		}()
+		c.collectFindings(ctx, buf)
+		c.collectAssessments(ctx, buf)
+		c.collectAutoDecisions(ctx, buf)
+		close(buf)
+		<-done
+		// Keep the previous values if this refresh failed entirely (e.g. timeout).
+		if len(fresh) > 0 || c.heavy == nil {
+			c.heavy = fresh
+		}
+		c.heavyAt = time.Now()
+	}
+	cached := c.heavy
+	c.heavyMu.Unlock()
+	for _, m := range cached {
+		ch <- m
+	}
 }
 
 // collectAutoDecisions reports stored decisions by rule and state. The state
@@ -306,10 +350,9 @@ func (c *DBCollector) collectFindings(ctx context.Context, ch chan<- prometheus.
 
 func (c *DBCollector) collectAssessments(ctx context.Context, ch chan<- prometheus.Metric) {
 	rows, err := c.db.Query(ctx, `
-		SELECT COALESCE(a.status, 'pending'), COUNT(DISTINCT f.cve_id)
-		FROM findings f
+		SELECT COALESCE(a.status, 'pending'), COUNT(*)
+		FROM (SELECT DISTINCT cve_id FROM findings WHERE resolved_at IS NULL) f
 		LEFT JOIN assessments a ON f.cve_id = a.cve_id
-		WHERE f.resolved_at IS NULL
 		GROUP BY a.status
 	`)
 	if err != nil {
