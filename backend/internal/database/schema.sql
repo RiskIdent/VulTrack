@@ -378,6 +378,34 @@ CREATE INDEX IF NOT EXISTS idx_exploits_cve_ids
     ON exploits USING GIN(cve_ids);
 
 -- ============================================================================
+-- THREAT INTELLIGENCE: CISA KEV and FIRST EPSS
+-- ============================================================================
+
+-- CISA Known Exploited Vulnerabilities catalog. Synced daily in full; CVEs that
+-- leave the catalog are deleted. See docs/AUTO_ASSESSMENT_PLAN.md.
+CREATE TABLE IF NOT EXISTS kev_entries (
+    cve_id               VARCHAR(30) PRIMARY KEY,
+    vendor_project       TEXT,
+    product              TEXT,
+    vulnerability_name   TEXT,
+    date_added           DATE,
+    due_date             DATE,
+    known_ransomware_use BOOLEAN NOT NULL DEFAULT false,
+    notes                TEXT,
+    updated_at           TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- FIRST EPSS scores: probability of exploitation activity in the next 30 days
+-- and its percentile. Replaced in full once a day (TRUNCATE + COPY), which
+-- leaves no dead tuples behind, unlike an upsert of ~400,000 rows.
+CREATE TABLE IF NOT EXISTS epss_scores (
+    cve_id     VARCHAR(30) PRIMARY KEY,
+    epss       NUMERIC(6,5) NOT NULL,
+    percentile NUMERIC(6,5) NOT NULL,
+    score_date DATE NOT NULL
+);
+
+-- ============================================================================
 -- SYNC STATUS (NEW)
 -- ============================================================================
 

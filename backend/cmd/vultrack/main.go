@@ -27,6 +27,7 @@ import (
 	"github.com/vultrack/vultrack/internal/scheduler"
 	"github.com/vultrack/vultrack/internal/services"
 	"github.com/vultrack/vultrack/internal/session"
+	"github.com/vultrack/vultrack/internal/threatintel"
 	"github.com/vultrack/vultrack/internal/vex"
 )
 
@@ -105,6 +106,10 @@ func main() {
 	// ExploitDB syncer
 	exploitDBSyncer := exploitdb.New(db, settingsService)
 
+	// CISA KEV and FIRST EPSS
+	threatIntelService := services.NewThreatIntelService(db)
+	threatIntelSyncer := threatintel.New(db, settingsService)
+
 	// VEX service + syncer
 	vexService := services.NewVEXService(db)
 	vexSyncer := vex.New(vexService, settingsService)
@@ -156,6 +161,9 @@ func main() {
 	// Start VEX syncer
 	go vexSyncer.Start()
 
+	// Start KEV/EPSS syncer
+	threatIntelSyncer.Start()
+
 	// Start scan queue
 	scanQ.Start()
 
@@ -195,6 +203,8 @@ func main() {
 		userService,
 		apiTokenService,
 		aiAssessmentService,
+		threatIntelService,
+		threatIntelSyncer,
 	)
 
 	// Start server
@@ -216,6 +226,7 @@ func main() {
 	ovalSyncer.Stop()
 	nvdSyncer.Stop()
 	exploitDBSyncer.Stop()
+	threatIntelSyncer.Stop()
 	vexSyncer.Stop()
 	handler.Shutdown()
 }

@@ -25,6 +25,18 @@ type Server struct {
 	HighCount     int `json:"highCount,omitempty"`
 }
 
+// ThreatIntel holds the exploitation signals for a CVE: CISA KEV listing and
+// FIRST EPSS score. Embedded in finding, group and CVE views; the fields are
+// flattened into their JSON.
+type ThreatIntel struct {
+	InKEV          bool       `json:"inKev"`
+	KEVDateAdded   *time.Time `json:"kevDateAdded,omitempty"`
+	KEVDueDate     *time.Time `json:"kevDueDate,omitempty"`
+	KEVRansomware  bool       `json:"kevRansomware,omitempty"`
+	EPSS           *float64   `json:"epss,omitempty"`
+	EPSSPercentile *float64   `json:"epssPercentile,omitempty"`
+}
+
 // Finding represents a vulnerability finding on a server
 type Finding struct {
 	ID             int64      `json:"id"`
@@ -60,6 +72,9 @@ type Finding struct {
 	CVSS2Score     *float64   `json:"cvss2Score,omitempty"`
 	CWEIDs         []string   `json:"cweIds,omitempty"`
 	CVEPublishedAt *time.Time `json:"cvePublishedAt,omitempty"`
+
+	// CISA KEV and FIRST EPSS
+	ThreatIntel
 
 	// Enrichment from ExploitDB
 	HasExploit      bool  `json:"hasExploit"`
@@ -113,6 +128,7 @@ type GroupedFinding struct {
 	VexStatuses       []string         `json:"vexStatuses"`
 	EarliestFirstSeen time.Time        `json:"earliestFirstSeen"`
 	LatestLastSeen    time.Time        `json:"latestLastSeen"`
+	ThreatIntel
 }
 
 // Assessment represents a user's evaluation of a CVE

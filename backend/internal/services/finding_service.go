@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,9 +43,11 @@ type FindingFilter struct {
 	// HideVendorAccepted drops findings the vendor will not fix or has deferred
 	// (see vendorActionableCondition).
 	HideVendorAccepted bool
-	Search             string // free-text search across cve_id, package_name, server_name
+	KEVOnly            bool     // only CVEs listed in CISA KEV
+	MinEPSS            *float64 // only CVEs with an EPSS score >= this probability (0-1)
+	Search             string   // free-text search across cve_id, package_name, server_name
 	IncludeResolved    bool
-	SortBy             string // column to sort by (cveId, serverName, packageName, cvss3Score, severity, fixState, fixedIn, firstSeenAt)
+	SortBy             string // column to sort by (cveId, serverName, packageName, cvss3Score, severity, fixState, fixedIn, firstSeenAt, epss)
 	SortOrder          string // asc or desc
 	Limit              int
 	Offset             int
@@ -52,56 +55,14 @@ type FindingFilter struct {
 
 // GetAll returns findings with optional filters (lightweight list view, no exploit/description data).
 func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]models.Finding, int, error) {
-	// Base WHERE clause (shared between COUNT and SELECT)
-	baseWhere := ` WHERE 1=1`
-	args := []interface{}{}
-	argIndex := 1
-
-	if filter.ServerID != nil {
-		baseWhere += ` AND f.server_id = $` + strconv.Itoa(argIndex)
-		args = append(args, *filter.ServerID)
-		argIndex++
-	}
-	if filter.CVEID != nil {
-		baseWhere += ` AND f.cve_id = $` + strconv.Itoa(argIndex)
-		args = append(args, *filter.CVEID)
-		argIndex++
-	}
-	if filter.Severity != nil {
-		baseWhere += ` AND f.severity = $` + strconv.Itoa(argIndex)
-		args = append(args, *filter.Severity)
-		argIndex++
-	}
-	if filter.MinCVSS != nil {
-		baseWhere += ` AND COALESCE(cve.cvss3_score, f.cvss3_score) >= $` + strconv.Itoa(argIndex)
-		args = append(args, *filter.MinCVSS)
-		argIndex++
-	}
-	if !filter.IncludeResolved {
-		baseWhere += ` AND f.resolved_at IS NULL`
-	}
-	if filter.VexStatus != nil {
-		baseWhere += ` AND f.vex_status = $` + strconv.Itoa(argIndex)
-		args = append(args, *filter.VexStatus)
-		argIndex++
-	}
-	if filter.HideVendorAccepted {
-		baseWhere += ` AND ` + vendorActionableCondition
-	}
-	if filter.Search != "" {
-		searchPattern := "%" + filter.Search + "%"
-		baseWhere += ` AND (f.cve_id ILIKE $` + strconv.Itoa(argIndex) +
-			` OR f.package_name ILIKE $` + strconv.Itoa(argIndex) +
-			` OR srv.name ILIKE $` + strconv.Itoa(argIndex) +
-			` OR COALESCE(f.severity, '') ILIKE $` + strconv.Itoa(argIndex) +
-			` OR COALESCE(f.fix_state, '') ILIKE $` + strconv.Itoa(argIndex) +
-			` OR COALESCE(f.fixed_in, '') ILIKE $` + strconv.Itoa(argIndex) + `)`
-		args = append(args, searchPattern)
-		argIndex++
-	}
+	baseWhere, args := findingsWhere(filter)
+	argIndex := len(args) + 1
 
 	// Lightweight COUNT (no exploit join)
 	countFrom := `FROM findings f JOIN servers srv ON f.server_id = srv.id LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id`
+	if needsThreatIntelJoin(filter) {
+		countFrom += threatIntelJoins
+	}
 	var total int
 	err := s.db.QueryRow(ctx, `SELECT COUNT(*) `+countFrom+baseWhere, args...).Scan(&total)
 	if err != nil {
@@ -143,7 +104,7 @@ func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]mo
 	var findings []models.Finding
 	for rows.Next() {
 		var f models.Finding
-		err := rows.Scan(
+		if err := rows.Scan(
 			&f.ID, &f.ServerID, &f.CVEID, &f.PackageName, &f.PackageVersion,
 			&f.FixState, &f.FixedIn, &f.FixPocket, &f.CVSS3Score, &f.Severity, &f.SourceLink,
 			&f.SourceType,
@@ -151,23 +112,34 @@ func (s *FindingService) GetAll(ctx context.Context, filter FindingFilter) ([]mo
 			&f.ServerName,
 			&f.NVDCvss3Score, &f.CVSS3Severity,
 			&f.VexStatus, &f.VexJustification,
-		)
-		if err != nil {
+		); err != nil {
 			return nil, 0, fmt.Errorf("scan error: %w", err)
 		}
 		findings = append(findings, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	cveIDs := make([]string, len(findings))
+	for i := range findings {
+		cveIDs[i] = findings[i].CVEID
+	}
+	intel, err := loadThreatIntel(ctx, s.db, cveIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range findings {
+		findings[i].ThreatIntel = intel[findings[i].CVEID]
 	}
 
 	return findings, total, nil
 }
 
-// GetAllGrouped returns findings aggregated by (server_id, cve_id). Each row contains
-// the per-package details as a JSON array. Pagination is over groups, not raw findings.
-//
-// Sorting in grouped mode supports cveId, serverName, cvss3Score, severity, firstSeenAt.
-// Package-level sort fields (packageName, fixState, fixedIn) fall back to cvss3Score —
-// they have no meaning at the group level.
-func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter) ([]models.GroupedFinding, int, error) {
+// findingsWhere builds the WHERE clause shared by GetAll and GetAllGrouped and
+// the arguments it binds. It may reference f (findings), srv (servers), cve
+// (cve_catalog), kev (kev_entries) and ep (epss_scores).
+func findingsWhere(filter FindingFilter) (string, []any) {
 	baseWhere := ` WHERE 1=1`
 	args := []interface{}{}
 	argIndex := 1
@@ -203,6 +175,14 @@ func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter
 	if filter.HideVendorAccepted {
 		baseWhere += ` AND ` + vendorActionableCondition
 	}
+	if filter.KEVOnly {
+		baseWhere += ` AND kev.cve_id IS NOT NULL`
+	}
+	if filter.MinEPSS != nil {
+		baseWhere += ` AND ep.epss >= $` + strconv.Itoa(argIndex)
+		args = append(args, *filter.MinEPSS)
+		argIndex++
+	}
 	if filter.Search != "" {
 		searchPattern := "%" + filter.Search + "%"
 		baseWhere += ` AND (f.cve_id ILIKE $` + strconv.Itoa(argIndex) +
@@ -214,10 +194,73 @@ func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter
 		args = append(args, searchPattern)
 		argIndex++
 	}
+	_ = argIndex
+	return baseWhere, args
+}
+
+// threatIntelJoins adds the KEV listing and EPSS score of a finding's CVE. Both
+// are primary-key lookups; Postgres drops either join when a query does not
+// reference it.
+const threatIntelJoins = `
+		LEFT JOIN kev_entries kev ON kev.cve_id = f.cve_id
+		LEFT JOIN epss_scores ep ON ep.cve_id = f.cve_id`
+
+// threatIntelColumns selects the fields scanned by threatIntelDest.
+const threatIntelColumns = `kev.cve_id IS NOT NULL, kev.date_added, kev.due_date,
+			COALESCE(kev.known_ransomware_use, false), ep.epss::float8, ep.percentile::float8`
+
+// needsThreatIntelJoin reports whether a findings query must join KEV and EPSS
+// itself, because it filters or sorts by them. Otherwise the signals are
+// attached to the page afterwards (attachThreatIntel), which keeps them off the
+// millions of rows the query scans before it sorts and limits.
+func needsThreatIntelJoin(filter FindingFilter) bool {
+	return filter.KEVOnly || filter.MinEPSS != nil || filter.SortBy == "epss"
+}
+
+// loadThreatIntel returns the KEV and EPSS data of the given CVEs.
+func loadThreatIntel(ctx context.Context, db *pgxpool.Pool, cveIDs []string) (map[string]models.ThreatIntel, error) {
+	out := make(map[string]models.ThreatIntel, len(cveIDs))
+	if len(cveIDs) == 0 {
+		return out, nil
+	}
+	rows, err := db.Query(ctx, `
+		SELECT f.cve_id, `+threatIntelColumns+`
+		FROM (SELECT DISTINCT unnest($1::text[]) AS cve_id) f`+threatIntelJoins, cveIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var t models.ThreatIntel
+		if err := rows.Scan(append([]any{&id}, threatIntelDest(&t)...)...); err != nil {
+			return nil, err
+		}
+		out[id] = t
+	}
+	return out, rows.Err()
+}
+
+func threatIntelDest(t *models.ThreatIntel) []any {
+	return []any{&t.InKEV, &t.KEVDateAdded, &t.KEVDueDate, &t.KEVRansomware, &t.EPSS, &t.EPSSPercentile}
+}
+
+// GetAllGrouped returns findings aggregated by (server_id, cve_id). Each row contains
+// the per-package details as a JSON array. Pagination is over groups, not raw findings.
+//
+// Sorting in grouped mode supports cveId, serverName, cvss3Score, severity, firstSeenAt.
+// Package-level sort fields (packageName, fixState, fixedIn) fall back to cvss3Score —
+// they have no meaning at the group level.
+func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter) ([]models.GroupedFinding, int, error) {
+	baseWhere, args := findingsWhere(filter)
+	argIndex := len(args) + 1
 
 	from := `FROM findings f
 		JOIN servers srv ON f.server_id = srv.id
 		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id`
+	if needsThreatIntelJoin(filter) {
+		from += threatIntelJoins
+	}
 
 	// COUNT distinct (server, CVE) pairs — that's the number of groups.
 	var total int
@@ -313,6 +356,21 @@ func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter
 		}
 		groups = append(groups, g)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	cveIDs := make([]string, len(groups))
+	for i := range groups {
+		cveIDs[i] = groups[i].CVEID
+	}
+	intel, err := loadThreatIntel(ctx, s.db, cveIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range groups {
+		groups[i].ThreatIntel = intel[groups[i].CVEID]
+	}
 
 	return groups, total, nil
 }
@@ -339,6 +397,8 @@ func groupedFindingsOrderBy(sortBy, sortOrder string) string {
 		col = "MAX(f.severity)"
 	case "firstSeenAt":
 		col = "MIN(f.first_seen_at)"
+	case "epss":
+		col = "MAX(ep.epss)"
 	}
 
 	return fmt.Sprintf(` ORDER BY %s %s %s, f.cve_id ASC, srv.name ASC`, col, dir, nulls)
@@ -374,6 +434,8 @@ func findingsOrderBy(sortBy, sortOrder string) string {
 		col = "f.first_seen_at"
 	case "cvss3Score":
 		col = "COALESCE(cve.cvss3_score, f.cvss3_score)"
+	case "epss":
+		col = "ep.epss"
 	}
 
 	return fmt.Sprintf(` ORDER BY %s %s %s, f.id DESC`, col, dir, nulls)
@@ -484,19 +546,33 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 	offsetPlaceholder := fmt.Sprintf("$%d", argIndex+1)
 	args = append(args, opts.Limit, opts.Offset)
 
+	// One row per CVE (its highest-scoring finding), ordered by priority: KEV
+	// listing first, then EPSS, then CVSS. The UI loads a bounded number of CVEs,
+	// so the order decides which ones it sees when the queue is larger. KEV and
+	// EPSS are joined after DISTINCT ON has reduced the findings to one row per
+	// CVE, not to every finding.
 	selectQuery := fmt.Sprintf(`
-		SELECT DISTINCT ON (f.cve_id)
-			f.id, f.server_id, f.cve_id, f.package_name, COALESCE(f.package_version, ''),
-			COALESCE(f.fix_state, ''), COALESCE(f.fixed_in, ''), f.cvss3_score,
-			COALESCE(f.severity, ''), COALESCE(f.summary, ''), COALESCE(f.source_link, ''),
-			COALESCE(f.source_type, ''),
-			f.first_seen_at, f.last_seen_at, f.resolved_at, f.created_at, f.updated_at,
-			srv.name as server_name,
-			COALESCE(cve.description, ''),
-			cve.cvss3_score,
-			f.vex_status, f.vex_justification
-		%s
-		ORDER BY f.cve_id, COALESCE(cve.cvss3_score, f.cvss3_score) DESC NULLS LAST
+		SELECT q.id, q.server_id, q.cve_id, q.package_name, q.package_version, q.fix_state, q.fixed_in,
+		       q.cvss3_score, q.severity, q.summary, q.source_link, q.source_type,
+		       q.first_seen_at, q.last_seen_at, q.resolved_at, q.created_at, q.updated_at,
+		       q.server_name, q.nvd_description, q.nvd_cvss, q.vex_status, q.vex_justification,
+		       `+threatIntelColumns+`
+		FROM (
+			SELECT DISTINCT ON (f.cve_id)
+				f.id, f.server_id, f.cve_id, f.package_name, COALESCE(f.package_version, '') AS package_version,
+				COALESCE(f.fix_state, '') AS fix_state, COALESCE(f.fixed_in, '') AS fixed_in, f.cvss3_score,
+				COALESCE(f.severity, '') AS severity, COALESCE(f.summary, '') AS summary,
+				COALESCE(f.source_link, '') AS source_link, COALESCE(f.source_type, '') AS source_type,
+				f.first_seen_at, f.last_seen_at, f.resolved_at, f.created_at, f.updated_at,
+				srv.name AS server_name,
+				COALESCE(cve.description, '') AS nvd_description,
+				cve.cvss3_score AS nvd_cvss,
+				f.vex_status, f.vex_justification,
+				COALESCE(cve.cvss3_score, f.cvss3_score) AS priority_cvss
+			%s
+			ORDER BY f.cve_id, COALESCE(cve.cvss3_score, f.cvss3_score) DESC NULLS LAST
+		) q`+strings.ReplaceAll(threatIntelJoins, "f.cve_id", "q.cve_id")+`
+		ORDER BY (kev.cve_id IS NOT NULL) DESC, ep.epss DESC NULLS LAST, q.priority_cvss DESC NULLS LAST, q.cve_id
 		LIMIT %s OFFSET %s
 	`, baseQuery, limitPlaceholder, offsetPlaceholder)
 
@@ -518,6 +594,7 @@ func (s *FindingService) GetTriageQueue(ctx context.Context, opts TriageFilterOp
 			&f.NVDDescription,
 			&f.NVDCvss3Score,
 			&f.VexStatus, &f.VexJustification,
+			&f.InKEV, &f.KEVDateAdded, &f.KEVDueDate, &f.KEVRansomware, &f.EPSS, &f.EPSSPercentile,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -557,10 +634,12 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 			COALESCE(exp.exploit_ids, ARRAY[]::int[]),
 			COALESCE(exp.has_verified, false),
 			-- VEX enrichment
-			f.vex_status, f.vex_justification
+			f.vex_status, f.vex_justification,
+			-- CISA KEV and FIRST EPSS
+			` + threatIntelColumns + `
 		FROM findings f
 		JOIN servers srv ON f.server_id = srv.id
-		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id
+		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id` + threatIntelJoins + `
 		-- OVAL descriptions are release-specific (they name the Ubuntu release, the
 		-- USN and the fixed package versions), so the definition must come from an
 		-- OVAL source matching this server's distribution release. Without that
@@ -614,7 +693,7 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 	var hasVerified bool
 	var ovalDescription string
 
-	err := s.db.QueryRow(ctx, query, id).Scan(
+	dest := []any{
 		&f.ID, &f.ServerID, &f.CVEID, &f.PackageName, &f.PackageVersion,
 		&f.FixState, &f.FixedIn, &f.FixPocket, &f.CVSS3Score, &f.Severity, &f.Summary, &f.SourceLink,
 		&f.SourceType,
@@ -630,7 +709,8 @@ func (s *FindingService) GetByID(ctx context.Context, id int64) (*models.Finding
 		&exploitCount, &exploitIDs, &hasVerified,
 		// VEX
 		&f.VexStatus, &f.VexJustification,
-	)
+	}
+	err := s.db.QueryRow(ctx, query, id).Scan(append(dest, threatIntelDest(&f.ThreatIntel)...)...)
 	if err != nil {
 		return nil, err
 	}

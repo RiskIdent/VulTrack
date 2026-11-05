@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/vultrack/vultrack/internal/models"
 )
 
 // StatsService handles statistics-related operations
@@ -153,6 +155,7 @@ type TopCVE struct {
 	SourceLink   *string  `json:"sourceLink"`
 	ServerCount  int      `json:"serverCount"`
 	PackageCount int      `json:"packageCount"`
+	models.ThreatIntel
 }
 
 // GetTopCVEs returns CVEs affecting the most servers
@@ -186,6 +189,21 @@ func (s *StatsService) GetTopCVEs(ctx context.Context, limit int) ([]TopCVE, err
 			return nil, err
 		}
 		cves = append(cves, cve)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	cveIDs := make([]string, len(cves))
+	for i := range cves {
+		cveIDs[i] = cves[i].CVEID
+	}
+	intel, err := loadThreatIntel(ctx, s.db, cveIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cves {
+		cves[i].ThreatIntel = intel[cves[i].CVEID]
 	}
 
 	return cves, nil

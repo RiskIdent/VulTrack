@@ -29,6 +29,7 @@ import (
 	"github.com/vultrack/vultrack/internal/scanqueue"
 	"github.com/vultrack/vultrack/internal/services"
 	"github.com/vultrack/vultrack/internal/session"
+	"github.com/vultrack/vultrack/internal/threatintel"
 	"github.com/vultrack/vultrack/internal/vex"
 )
 
@@ -59,6 +60,9 @@ type Handler struct {
 
 	// ExploitDB syncer
 	exploitDBSyncer *exploitdb.Syncer
+
+	threatIntelService *services.ThreatIntelService
+	threatIntelSyncer  *threatintel.Syncer
 
 	// VEX service + syncer
 	vexService *services.VEXService
@@ -133,6 +137,9 @@ func New(
 	apiTokenService *services.APITokenService,
 	// AI assessment service (queue runs separately; handlers only enqueue/read)
 	aiAssessmentService *services.AIAssessmentService,
+	// CISA KEV and FIRST EPSS
+	threatIntelService *services.ThreatIntelService,
+	threatIntelSyncer *threatintel.Syncer,
 ) *Handler {
 	// Resolve the JWT signing secret.
 	// If JWT_SECRET is not configured we generate a random one and warn — tokens
@@ -177,6 +184,8 @@ func New(
 		sessionStore:          sessionStore,
 		userService:           userService,
 		apiTokenService:       apiTokenService,
+		threatIntelService:    threatIntelService,
+		threatIntelSyncer:     threatIntelSyncer,
 		jwtSecret:             jwtSecret,
 	}
 
@@ -385,6 +394,8 @@ func New(
 	// Admin: ExploitDB Management
 	admin.Post("/exploitdb/sync", h.triggerExploitDBSync)
 	admin.Get("/exploitdb/status", h.getExploitDBStatus)
+	admin.Get("/threat-intel/status", h.getThreatIntelStatus)
+	admin.Post("/threat-intel/:source/sync", h.triggerThreatIntelSync)
 
 	// Admin: VEX Management
 	admin.Post("/vex/sync", h.triggerVEXSync)
@@ -528,6 +539,10 @@ func (h *Handler) getFindings(c *fiber.Ctx) error {
 	}
 
 	filter.HideVendorAccepted = c.QueryBool("hideVendorAccepted", false)
+	filter.KEVOnly = c.QueryBool("kevOnly", false)
+	if minEPSS := c.QueryFloat("minEpss", 0); minEPSS > 0 {
+		filter.MinEPSS = &minEPSS
+	}
 
 	ctx := c.Context()
 
@@ -671,12 +686,17 @@ func (h *Handler) getCVE(c *fiber.Ctx) error {
 
 	// Get assessment if exists
 	assessment, _ := h.assessmentService.GetByCVE(ctx, cveID)
+	threatIntel, err := h.threatIntelService.GetForCVE(ctx, cveID)
+	if err != nil {
+		return err
+	}
 
 	return c.JSON(fiber.Map{
 		"cveId":       cveID,
 		"findings":    findings,
 		"serverCount": len(findings),
 		"assessment":  assessment,
+		"threatIntel": threatIntel,
 	})
 }
 

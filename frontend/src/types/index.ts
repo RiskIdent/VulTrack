@@ -55,8 +55,28 @@ export interface PackageSummary {
   lastSeenAt: string;
 }
 
+// CISA KEV listing and FIRST EPSS score of a CVE (flattened into findings,
+// groups and top CVEs by the API).
+export interface ThreatIntel {
+  inKev?: boolean;
+  kevDateAdded?: string;
+  kevDueDate?: string;
+  kevRansomware?: boolean;
+  epss?: number;
+  epssPercentile?: number;
+}
+
+// CVE-level threat intelligence with the KEV details list views leave out.
+export interface CVEThreatIntel extends ThreatIntel {
+  kevVendorProject?: string;
+  kevProduct?: string;
+  kevVulnerabilityName?: string;
+  kevNotes?: string;
+  epssScoreDate?: string;
+}
+
 // Finding types
-export interface Finding {
+export interface Finding extends ThreatIntel {
   id: number;
   serverId: number;
   cveId: string;
@@ -115,7 +135,7 @@ export interface PackageFinding {
   vexJustification: string | null;
 }
 
-export interface GroupedFinding {
+export interface GroupedFinding extends ThreatIntel {
   serverId: number;
   serverName: string;
   cveId: string;
@@ -214,7 +234,7 @@ export interface TopServer {
   highCount: number;
 }
 
-export interface TopCVE {
+export interface TopCVE extends ThreatIntel {
   cveId: string;
   cvss3Score: number | null;
   severity: string;

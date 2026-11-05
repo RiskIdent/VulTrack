@@ -1,12 +1,12 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, X, ExternalLink, AlertTriangle } from 'lucide-react';
-import { CVSSBadge, VendorSeverityBadge, FixStateBadge, VEXBadge, SourceBadge, PocketBadge } from '../components/SeverityBadge';
+import { CVSSBadge, VendorSeverityBadge, FixStateBadge, VEXBadge, SourceBadge, PocketBadge, KEVBadge, EPSSBadge } from '../components/SeverityBadge';
 import { AIAssessmentCard } from '../components/AIAssessmentCard';
 import { getFindings, getFinding, getFindingsGrouped } from '../api/client';
 import type { Finding, GroupedFinding } from '../types';
 
-type SortField = 'cveId' | 'serverName' | 'packageName' | 'cvss3Score' | 'severity' | 'fixState' | 'fixedIn' | 'firstSeenAt';
+type SortField = 'cveId' | 'serverName' | 'packageName' | 'cvss3Score' | 'epss' | 'severity' | 'fixState' | 'fixedIn' | 'firstSeenAt';
 type SortDirection = 'asc' | 'desc';
 
 const ITEMS_PER_PAGE = 15;
@@ -29,6 +29,8 @@ export default function Findings() {
   const [includeResolved, setIncludeResolved] = useState(false);
   const [vexStatusFilter, setVexStatusFilter] = useState('');
   const [hideVendorAccepted, setHideVendorAccepted] = useState(false);
+  const [kevOnly, setKevOnly] = useState(false);
+  const [minEpssPercent, setMinEpssPercent] = useState(0); // EPSS threshold in percent (0-100)
 
   // View mode: group rows by (server, CVE) — default ON, persisted in localStorage.
   const [groupByCve, setGroupByCve] = useState<boolean>(() => {
@@ -89,7 +91,7 @@ export default function Findings() {
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [severity, minCvss, includeResolved, vexStatusFilter, hideVendorAccepted]);
+  }, [severity, minCvss, includeResolved, vexStatusFilter, hideVendorAccepted, kevOnly, minEpssPercent]);
 
   // Fetch findings from server
   const fetchData = useCallback(async () => {
@@ -107,6 +109,8 @@ export default function Findings() {
         offset: (currentPage - 1) * ITEMS_PER_PAGE,
         vexStatus: vexStatusFilter || undefined,
         hideVendorAccepted,
+        kevOnly,
+        minEpss: minEpssPercent > 0 ? minEpssPercent / 100 : undefined,
       };
       if (groupByCve) {
         const data = await getFindingsGrouped(params);
@@ -124,7 +128,7 @@ export default function Findings() {
     } finally {
       setLoading(false);
     }
-  }, [severity, minCvss, includeResolved, debouncedSearch, sortField, sortDirection, currentPage, vexStatusFilter, hideVendorAccepted, groupByCve]);
+  }, [severity, minCvss, includeResolved, debouncedSearch, sortField, sortDirection, currentPage, vexStatusFilter, hideVendorAccepted, kevOnly, minEpssPercent, groupByCve]);
 
   useEffect(() => {
     fetchData();
@@ -293,6 +297,37 @@ export default function Findings() {
               <option value="under_investigation">Under Investigation</option>
             </select>
           </div>
+          <div>
+            <label
+              className="block text-sm text-[#a5d6a7] mb-1"
+              title="FIRST EPSS: probability that the CVE is exploited in the next 30 days"
+            >
+              Min EPSS %
+            </label>
+            <input
+              type="number"
+              className="input w-24"
+              min="0"
+              max="100"
+              step="1"
+              value={minEpssPercent}
+              onChange={(e) => setMinEpssPercent(Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)))}
+            />
+          </div>
+          <div className="flex items-end">
+            <label
+              className="flex items-center gap-2 cursor-pointer"
+              title="Only CVEs listed in the CISA Known Exploited Vulnerabilities catalog"
+            >
+              <input
+                type="checkbox"
+                className="w-4 h-4 rounded border-[#2d3f36] bg-[#0a0f0d] text-[#4ade80] focus:ring-[#4ade80]"
+                checked={kevOnly}
+                onChange={(e) => setKevOnly(e.target.checked)}
+              />
+              <span className="text-sm text-[#a5d6a7]">KEV only</span>
+            </label>
+          </div>
           <div className="flex items-end">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -362,6 +397,7 @@ export default function Findings() {
                   <SortHeader field="fixedIn" disabled={groupByCve}>Fixed In</SortHeader>
                   <SortHeader field="fixState" disabled={groupByCve}>Fix State</SortHeader>
                   <SortHeader field="cvss3Score">CVSS</SortHeader>
+                  <SortHeader field="epss">EPSS</SortHeader>
                   <SortHeader field="severity">Vendor</SortHeader>
                   <th className="table-header text-left py-3 px-4">Status</th>
                 </tr>
@@ -374,7 +410,10 @@ export default function Findings() {
                     onClick={() => handleFindingClick(finding)}
                   >
                     <td className="py-3 px-4 font-mono text-[#4ade80]">
-                      {finding.cveId}
+                      <div className="flex items-center gap-2 whitespace-nowrap">
+                        {finding.cveId}
+                        <KEVBadge inKev={finding.inKev} ransomware={finding.kevRansomware} dateAdded={finding.kevDateAdded} dueDate={finding.kevDueDate} />
+                      </div>
                     </td>
                     <td className="py-3 px-4">
                       <Link
@@ -399,6 +438,9 @@ export default function Findings() {
                     </td>
                     <td className="py-3 px-4">
                       <CVSSBadge score={finding.nvdCvss3Score ?? finding.cvss3Score} cveId={finding.cveId} />
+                    </td>
+                    <td className="py-3 px-4">
+                      <EPSSBadge epss={finding.epss} percentile={finding.epssPercentile} />
                     </td>
                     <td className="py-3 px-4">
                       <VendorSeverityBadge severity={finding.severity} sourceLink={finding.sourceLink} />
@@ -435,7 +477,10 @@ export default function Findings() {
                             : <ChevronRight className="w-4 h-4" />}
                         </td>
                         <td className="py-3 px-4 font-mono text-[#4ade80]">
-                          {group.cveId}
+                          <div className="flex items-center gap-2 whitespace-nowrap">
+                            {group.cveId}
+                            <KEVBadge inKev={group.inKev} ransomware={group.kevRansomware} dateAdded={group.kevDateAdded} dueDate={group.kevDueDate} />
+                          </div>
                         </td>
                         <td className="py-3 px-4">
                           <Link
@@ -458,6 +503,9 @@ export default function Findings() {
                         <td className="py-3 px-4">{renderGroupFixState(group)}</td>
                         <td className="py-3 px-4">
                           <CVSSBadge score={group.nvdCvss3Score ?? group.cvss3Score} cveId={group.cveId} />
+                        </td>
+                        <td className="py-3 px-4">
+                          <EPSSBadge epss={group.epss} percentile={group.epssPercentile} />
                         </td>
                         <td className="py-3 px-4">
                           <VendorSeverityBadge severity={group.severity} sourceLink={group.sourceLink} />
@@ -488,7 +536,7 @@ export default function Findings() {
                           className="bg-[#0a0f0d] hover:bg-[#1a2420] cursor-pointer border-b border-[#1a2420]"
                           onClick={() => handlePackageClick(pkg.id)}
                         >
-                          {/* 9 cells, matching the grouped-mode header (no "Version" column).
+                          {/* 10 cells, matching the grouped-mode header (no "Version" column).
                               Package name + version share one cell under the "Packages" header. */}
                           <td></td>
                           <td className="py-2 px-4"></td>
@@ -505,6 +553,7 @@ export default function Findings() {
                           <td className="py-2 px-4">
                             <FixStateBadge fixState={pkg.fixState} />
                           </td>
+                          <td className="py-2 px-4"></td>
                           <td className="py-2 px-4"></td>
                           <td className="py-2 px-4"></td>
                           <td className="py-2 px-4">
@@ -528,7 +577,7 @@ export default function Findings() {
                 })}
                 {((groupByCve && groups.length === 0) || (!groupByCve && findings.length === 0)) && (
                   <tr>
-                    <td colSpan={groupByCve ? 10 : 9} className="py-8 text-center text-[#6b7280]">
+                    <td colSpan={groupByCve ? 11 : 10} className="py-8 text-center text-[#6b7280]">
                       {debouncedSearch ? 'No findings match your search' : 'No findings match your filters'}
                     </td>
                   </tr>
@@ -664,6 +713,33 @@ export default function Findings() {
                     <div className="text-xs text-[#6b7280] uppercase tracking-wide mb-1">CVSS 3</div>
                     <div className="text-sm">
                       <CVSSBadge score={selectedFinding.nvdCvss3Score ?? selectedFinding.cvss3Score} cveId={selectedFinding.cveId} />
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-[#6b7280] uppercase tracking-wide mb-1">EPSS</div>
+                    <div className="text-sm flex items-center gap-2">
+                      <EPSSBadge epss={selectedFinding.epss} percentile={selectedFinding.epssPercentile} />
+                      {selectedFinding.epssPercentile !== undefined && selectedFinding.epssPercentile !== null && (
+                        <span className="text-xs text-[#6b7280]">percentile {(selectedFinding.epssPercentile * 100).toFixed(1)}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-[#6b7280] uppercase tracking-wide mb-1">CISA KEV</div>
+                    <div className="text-sm">
+                      {selectedFinding.inKev ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <KEVBadge inKev ransomware={selectedFinding.kevRansomware} dateAdded={selectedFinding.kevDateAdded} dueDate={selectedFinding.kevDueDate} />
+                          {selectedFinding.kevDateAdded && (
+                            <span className="text-xs text-[#a5d6a7]">added {new Date(selectedFinding.kevDateAdded).toLocaleDateString()}</span>
+                          )}
+                          {selectedFinding.kevDueDate && (
+                            <span className="text-xs text-[#a5d6a7]">due {new Date(selectedFinding.kevDueDate).toLocaleDateString()}</span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-[#6b7280]">Not listed</span>
+                      )}
                     </div>
                   </div>
                   <div className="col-span-2">

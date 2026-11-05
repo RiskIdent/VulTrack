@@ -42,6 +42,7 @@ type Deps struct {
 	ServerGroupService  *services.ServerGroupService
 	SettingsService     *services.SettingsService
 	PackageService      *services.PackageService
+	ThreatIntelService  *services.ThreatIntelService
 	ScanQueue           *scanqueue.Queue
 
 	// UpsertAssessment performs the same create-or-update assessment logic as the
@@ -144,6 +145,8 @@ type listFindingsInput struct {
 	MinCVSS            float64 `json:"minCvss,omitempty" jsonschema:"only findings with CVSS score >= this value"`
 	VexStatus          string  `json:"vexStatus,omitempty" jsonschema:"filter by VEX status: not_affected, will_not_fix, under_investigation"`
 	HideVendorAccepted bool    `json:"hideVendorAccepted,omitempty" jsonschema:"hide findings the vendor will not fix or has deferred; only fix states affected and fix_available remain (default false)"`
+	KEVOnly            bool    `json:"kevOnly,omitempty" jsonschema:"only CVEs listed in the CISA Known Exploited Vulnerabilities catalog (default false)"`
+	MinEPSS            float64 `json:"minEpss,omitempty" jsonschema:"only CVEs whose EPSS score (probability of exploitation in the next 30 days, 0-1) is at least this value"`
 	Search             string  `json:"search,omitempty" jsonschema:"free-text search across CVE, package and server name"`
 	IncludeResolved    bool    `json:"includeResolved,omitempty" jsonschema:"include resolved findings (default false)"`
 	Limit              int     `json:"limit,omitempty" jsonschema:"max results per call (default 50, max 500)"`
@@ -275,6 +278,10 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 			filter.VexStatus = &in.VexStatus
 		}
 		filter.HideVendorAccepted = in.HideVendorAccepted
+		filter.KEVOnly = in.KEVOnly
+		if in.MinEPSS > 0 {
+			filter.MinEPSS = &in.MinEPSS
+		}
 		findings, total, err := d.FindingService.GetAll(ctx, filter)
 		if err != nil {
 			return nil, nil, err
@@ -302,6 +309,12 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		if filter.HideVendorAccepted {
 			applied["hideVendorAccepted"] = true
 		}
+		if filter.KEVOnly {
+			applied["kevOnly"] = true
+		}
+		if filter.MinEPSS != nil {
+			applied["minEpss"] = *filter.MinEPSS
+		}
 		if filter.Search != "" {
 			applied["search"] = filter.Search
 		}
@@ -324,7 +337,7 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "get_cve",
-		Description: "Get details for a CVE including the affected servers and any existing assessment.",
+		Description: "Get details for a CVE including the affected servers, any existing assessment, and its exploitation signals: CISA KEV listing (inKev, date added, due date, known ransomware use) and FIRST EPSS score and percentile.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in cveInput) (*mcpsdk.CallToolResult, any, error) {
 		findings, err := d.FindingService.GetServersByCVE(ctx, in.CVEID)
 		if err != nil {
@@ -334,11 +347,16 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 			return nil, nil, fmt.Errorf("CVE %s not found", in.CVEID)
 		}
 		assessment, _ := d.AssessmentService.GetByCVE(ctx, in.CVEID)
+		threatIntel, err := d.ThreatIntelService.GetForCVE(ctx, in.CVEID)
+		if err != nil {
+			return nil, nil, err
+		}
 		result := map[string]any{
 			"cveId":       in.CVEID,
 			"findings":    findings,
 			"serverCount": len(findings),
 			"assessment":  assessment,
+			"threatIntel": threatIntel,
 		}
 		// Include the advisory AI assessment when available (nil when never assessed).
 		if d.AIAssessmentService != nil {

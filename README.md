@@ -18,6 +18,7 @@ The VulTrack Agent can be found in [this repository](https://github.com/RiskIden
 - **OVAL Integration**: Automatic vulnerability detection using OVAL definitions (Ubuntu and others)
 - **NVD Enrichment**: CVE details enriched with CVSS scores, CWE IDs, and descriptions
 - **ExploitDB Integration**: Identify vulnerabilities with known exploits
+- **CISA KEV and FIRST EPSS**: Marks CVEs that are exploited in the wild (CISA Known Exploited Vulnerabilities catalog) and shows each CVE's probability of exploitation in the next 30 days (EPSS). The triage queue is ordered by them: KEV first, then EPSS, then CVSS. Both are synced daily
 - **Ubuntu VEX Integration**: Automatic enrichment of findings with Canonical's VEX (Vulnerability Exploitability eXchange) data — surfaces `Not Affected`, `Will Not Fix`, and `Under Investigation` assessments from Ubuntu Security directly in your findings and triage queue
 - **Scheduled Reports**: Automated PDF reports delivered by email (weekly / monthly)
 - **Server Groups**: Organize servers into groups for targeted reporting and filtering
@@ -312,8 +313,8 @@ docker compose up -d postgres
 - `DELETE /api/v1/admin/servers/:id` - Delete server
 
 ### Findings
-- `GET /api/v1/findings` - List findings with filters (supports `vexStatus` query param: `not_affected`, `will_not_fix`, `under_investigation`; `hideVendorAccepted=true` keeps only fix states `affected` and `fix_available`)
-- `GET /api/v1/findings/triage` - Get triage queue (supports `hideVexNotAffected=false` to include not-affected findings and `hideVendorAccepted=false` to include findings the vendor will not fix or has deferred; both default to the admin setting, which is `true`)
+- `GET /api/v1/findings` - List findings with filters (supports `vexStatus` query param: `not_affected`, `will_not_fix`, `under_investigation`; `hideVendorAccepted=true` keeps only fix states `affected` and `fix_available`; `kevOnly=true` keeps only CVEs listed in CISA KEV; `minEpss=0.1` keeps only CVEs with an EPSS score of at least 10 %; `sortBy=epss` sorts by EPSS)
+- `GET /api/v1/findings/triage` - Get triage queue (supports `hideVexNotAffected=false` to include not-affected findings and `hideVendorAccepted=false` to include findings the vendor will not fix or has deferred; both default to the admin setting, which is `true`). Ordered by priority: CISA KEV-listed CVEs first, then by EPSS, then by CVSS
 - `GET /api/v1/findings/:id` - Get finding details
 
 ### Packages
@@ -323,7 +324,7 @@ docker compose up -d postgres
 Both accept the filters `name`, `version`, `arch`, `sourcePackage`, `server` and `os` (case-insensitive substring matches, applied before grouping), plus `sortOrder`, `limit` (max 500) and `offset`.
 
 ### CVEs
-- `GET /api/v1/cves/:id` - Get CVE details
+- `GET /api/v1/cves/:id` - Get CVE details, including `threatIntel` (CISA KEV listing and FIRST EPSS score)
 - `GET /api/v1/cves/:id/servers` - Get servers affected by CVE
 
 ### Assessments
@@ -413,7 +414,7 @@ Both accept the filters `name`, `version`, `arch`, `sourcePackage`, `server` and
 - `POST /api/v1/admin/oval/sources/:id/sync` - Trigger sync for a specific source
 - `POST /api/v1/admin/oval/sync-all` - Trigger sync for all enabled sources
 
-### Admin: NVD, ExploitDB & VEX
+### Admin: NVD, ExploitDB, VEX, KEV & EPSS
 - `POST /api/v1/admin/nvd/sync` - Trigger NVD CVE sync
 - `GET /api/v1/admin/nvd/status` - NVD sync status
 - `POST /api/v1/admin/exploitdb/sync` - Trigger ExploitDB sync
@@ -421,6 +422,8 @@ Both accept the filters `name`, `version`, `arch`, `sourcePackage`, `server` and
 - `GET /api/v1/admin/sync/status` - Combined sync status
 - `POST /api/v1/admin/vex/sync` - Trigger Ubuntu VEX sync
 - `GET /api/v1/admin/vex/status` - VEX sync status and statement count
+- `GET /api/v1/admin/threat-intel/status` - CISA KEV and FIRST EPSS sync status
+- `POST /api/v1/admin/threat-intel/:source/sync` - Trigger a KEV (`kev`) or EPSS (`epss`) sync
 
 ### Admin: System
 - `POST /api/v1/admin/system/reset` - Reset all application data

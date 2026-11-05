@@ -185,6 +185,8 @@ export const getFindings = (params?: {
   offset?: number;
   vexStatus?: string;
   hideVendorAccepted?: boolean;
+  kevOnly?: boolean;
+  minEpss?: number;
 }) => {
   const searchParams = new URLSearchParams();
   if (params?.cveId) searchParams.set('cveId', params.cveId);
@@ -198,6 +200,8 @@ export const getFindings = (params?: {
   if (params?.offset != null) searchParams.set('offset', params.offset.toString());
   if (params?.vexStatus) searchParams.set('vexStatus', params.vexStatus);
   if (params?.hideVendorAccepted) searchParams.set('hideVendorAccepted', 'true');
+  if (params?.kevOnly) searchParams.set('kevOnly', 'true');
+  if (params?.minEpss) searchParams.set('minEpss', params.minEpss.toString());
   
   return fetchAPI<{
     findings: import('../types').Finding[];
@@ -221,6 +225,8 @@ export const getFindingsGrouped = (params?: {
   offset?: number;
   vexStatus?: string;
   hideVendorAccepted?: boolean;
+  kevOnly?: boolean;
+  minEpss?: number;
 }) => {
   const searchParams = new URLSearchParams();
   searchParams.set('grouped', 'true');
@@ -235,6 +241,8 @@ export const getFindingsGrouped = (params?: {
   if (params?.offset != null) searchParams.set('offset', params.offset.toString());
   if (params?.vexStatus) searchParams.set('vexStatus', params.vexStatus);
   if (params?.hideVendorAccepted) searchParams.set('hideVendorAccepted', 'true');
+  if (params?.kevOnly) searchParams.set('kevOnly', 'true');
+  if (params?.minEpss) searchParams.set('minEpss', params.minEpss.toString());
 
   return fetchAPI<{
     groups: import('../types').GroupedFinding[];
@@ -812,3 +820,21 @@ export const cancelScan = (id: string) =>
 
 export const retryScan = (id: string) =>
   fetchAPI<{ message: string; jobId: string }>(`/scans/${id}/retry`, { method: 'POST' });
+
+// CISA KEV and FIRST EPSS sync status (admin)
+export interface ThreatIntelSourceStatus {
+  source: 'kev' | 'epss';
+  records: number;
+  lastSyncAt?: string;
+  status?: string;
+  error?: string;
+  recordsProcessed: number;
+  intervalHours: string;
+  syncing: boolean;
+}
+
+export const getThreatIntelStatus = () =>
+  fetchAPI<{ sources: ThreatIntelSourceStatus[] }>('/admin/threat-intel/status');
+
+export const triggerThreatIntelSync = (source: 'kev' | 'epss') =>
+  fetchAPI<{ message: string }>(`/admin/threat-intel/${source}/sync`, { method: 'POST' });

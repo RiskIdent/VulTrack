@@ -342,11 +342,14 @@ func (c *DBCollector) collectScanJobs(ctx context.Context, ch chan<- prometheus.
 }
 
 func (c *DBCollector) collectSyncTimestamps(ctx context.Context, ch chan<- prometheus.Metric) {
-	// NVD, ExploitDB and VEX from the shared sync_status table
+	// NVD, ExploitDB, VEX, KEV and EPSS from the shared sync_status table
 	rows, err := c.db.Query(ctx, `
 		SELECT source_type, last_sync_at
 		FROM sync_status
-		WHERE status = 'success' AND source_type IN ('nvd', 'exploitdb', 'vex')
+		-- The KEV/EPSS syncer only moves last_sync_at on success; the others also
+		-- write it on failure, so for them only a 'success' row counts.
+		WHERE (status = 'success' AND source_type IN ('nvd', 'exploitdb', 'vex'))
+		   OR (last_sync_at IS NOT NULL AND source_type IN ('kev', 'epss'))
 	`)
 	if err == nil {
 		defer rows.Close()

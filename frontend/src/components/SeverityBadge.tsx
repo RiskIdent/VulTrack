@@ -266,3 +266,48 @@ export function PocketBadge({ pocket }: { pocket?: string }) {
     </span>
   );
 }
+
+// KEVBadge marks a CVE listed in the CISA Known Exploited Vulnerabilities
+// catalog: it is being exploited in the wild. Renders nothing otherwise.
+export function KEVBadge({ inKev, ransomware, dateAdded, dueDate }: {
+  inKev?: boolean;
+  ransomware?: boolean;
+  dateAdded?: string;
+  dueDate?: string;
+}) {
+  if (!inKev) return null;
+  const parts = ['Listed in the CISA Known Exploited Vulnerabilities catalog: exploited in the wild.'];
+  if (dateAdded) parts.push(`Added ${new Date(dateAdded).toLocaleDateString()}.`);
+  if (dueDate) parts.push(`CISA remediation due date ${new Date(dueDate).toLocaleDateString()}.`);
+  if (ransomware) parts.push('Known use in ransomware campaigns.');
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold border bg-red-700/30 text-red-300 border-red-500/60 whitespace-nowrap"
+      title={parts.join(' ')}
+    >
+      KEV{ransomware && <span className="font-normal">· ransomware</span>}
+    </span>
+  );
+}
+
+// EPSSBadge shows the FIRST EPSS score: the probability that the CVE is
+// exploited in the next 30 days. Colour by probability, percentile on hover.
+export function EPSSBadge({ epss, percentile }: { epss?: number | null; percentile?: number | null }) {
+  if (epss === undefined || epss === null) {
+    return <span className="text-xs text-[#6b7280]" title="No EPSS score for this CVE">–</span>;
+  }
+  const pct = epss * 100;
+  const className =
+    epss >= 0.5 ? 'bg-red-600/20 text-red-400 border-red-600/50'
+    : epss >= 0.1 ? 'bg-orange-600/20 text-orange-400 border-orange-600/50'
+    : epss >= 0.01 ? 'bg-yellow-600/20 text-yellow-400 border-yellow-600/50'
+    : 'bg-gray-600/20 text-gray-400 border-gray-600/50';
+  const label = pct >= 10 ? `${pct.toFixed(0)}%` : pct >= 1 ? `${pct.toFixed(1)}%` : `${pct.toFixed(2)}%`;
+  const title = `EPSS: ${pct.toFixed(2)}% probability of exploitation in the next 30 days` +
+    (percentile !== undefined && percentile !== null ? `, higher than ${(percentile * 100).toFixed(1)}% of all CVEs` : '');
+  return (
+    <span className={`px-2 py-0.5 rounded text-xs font-medium border whitespace-nowrap ${className}`} title={title}>
+      {label}
+    </span>
+  );
+}

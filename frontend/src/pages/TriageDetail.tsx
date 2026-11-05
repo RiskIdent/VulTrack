@@ -4,7 +4,7 @@ import {
   ArrowLeft, ExternalLink, AlertTriangle, XCircle, CheckCircle, 
   ChevronLeft, ChevronRight, Server, Package
 } from 'lucide-react';
-import { CVSSBadge, VendorSeverityBadge, FixStateBadge } from '../components/SeverityBadge';
+import { CVSSBadge, VendorSeverityBadge, FixStateBadge, KEVBadge, EPSSBadge } from '../components/SeverityBadge';
 import { AIAssessmentCard } from '../components/AIAssessmentCard';
 import { getTriageQueue, getFindings, getFinding, createAssessment, getReasonTemplates } from '../api/client';
 import { useAuth } from '../context/AuthContext';
@@ -290,7 +290,30 @@ export default function TriageDetail() {
               <CVSSBadge score={currentFinding.nvdCvss3Score ?? currentFinding.cvss3Score} cveId={currentFinding.cveId} />
               <VendorSeverityBadge severity={currentFinding.severity} sourceLink={currentFinding.sourceLink} />
               <FixStateBadge fixState={currentFinding.fixState} />
+              <KEVBadge inKev={currentFinding.inKev} ransomware={currentFinding.kevRansomware} dateAdded={currentFinding.kevDateAdded} dueDate={currentFinding.kevDueDate} />
+              {currentFinding.epss !== undefined && currentFinding.epss !== null && (
+                <span className="flex items-center gap-1 text-xs text-[#6b7280]">
+                  EPSS <EPSSBadge epss={currentFinding.epss} percentile={currentFinding.epssPercentile} />
+                </span>
+              )}
             </div>
+
+            {/* CISA KEV: exploited in the wild */}
+            {currentFinding.inKev && (
+              <div className="mb-6 p-4 rounded-lg bg-red-700/10 border border-red-500/40">
+                <div className="flex items-center gap-3">
+                  <AlertTriangle className="w-5 h-5 text-red-300" />
+                  <h3 className="text-sm font-semibold text-red-300">
+                    Listed in the CISA Known Exploited Vulnerabilities catalog: exploited in the wild
+                  </h3>
+                </div>
+                <p className="text-sm text-[#a5d6a7] mt-2">
+                  {currentFinding.kevDateAdded && <>Added {new Date(currentFinding.kevDateAdded).toLocaleDateString()}. </>}
+                  {currentFinding.kevDueDate && <>CISA remediation due date for US federal agencies: {new Date(currentFinding.kevDueDate).toLocaleDateString()}. </>}
+                  {currentFinding.kevRansomware && <span className="text-red-300">Known use in ransomware campaigns.</span>}
+                </p>
+              </div>
+            )}
 
             {/* Summary */}
             <div className="mb-6">

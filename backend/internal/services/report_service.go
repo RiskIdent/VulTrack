@@ -26,6 +26,8 @@ import (
 	"github.com/johnfercher/maroto/v2/pkg/props"
 	"github.com/wcharczuk/go-chart/v2"
 	"github.com/wcharczuk/go-chart/v2/drawing"
+
+	"github.com/vultrack/vultrack/internal/models"
 )
 
 // ReportService handles report generation
@@ -115,6 +117,7 @@ type TopCVEData struct {
 	ServerCount    int
 	PackageCount   int
 	VexStatus      string // dominant VEX status for this CVE
+	models.ThreatIntel
 }
 
 // CVEDetail represents a CVE with full details
@@ -127,6 +130,7 @@ type CVEDetail struct {
 	ServerCount    int
 	FirstSeen      time.Time
 	VexStatus      string // dominant VEX status for this CVE
+	models.ThreatIntel
 }
 
 // TrendPoint represents a data point in the trend chart
@@ -631,6 +635,21 @@ func (s *ReportService) getTopCVEs(ctx context.Context, serverIDs []int64, start
 		cve.NVDSeverity = cvssToSeverity(cve.CVSS3Score)
 		cves = append(cves, cve)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	ids := make([]string, len(cves))
+	for i := range cves {
+		ids[i] = cves[i].CVEID
+	}
+	intel, err := loadThreatIntel(ctx, s.db, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cves {
+		cves[i].ThreatIntel = intel[cves[i].CVEID]
+	}
 
 	return cves, nil
 }
@@ -706,6 +725,21 @@ func (s *ReportService) getAllCVEs(ctx context.Context, serverIDs []int64, start
 		// Derive NVD severity from CVSS score
 		cve.NVDSeverity = cvssToSeverity(cve.CVSS3Score)
 		cves = append(cves, cve)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	ids := make([]string, len(cves))
+	for i := range cves {
+		ids[i] = cves[i].CVEID
+	}
+	intel, err := loadThreatIntel(ctx, s.db, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cves {
+		cves[i].ThreatIntel = intel[cves[i].CVEID]
 	}
 
 	return cves, nil
@@ -1416,6 +1450,7 @@ func (s *ReportService) addTopCVEsTable(m core.Maroto, data *ReportData) {
 	m.AddRow(10,
 		col.New(12).Add(text.New("Top 10 Most Widespread CVEs", props.Text{Size: 14, Style: fontstyle.Bold})),
 	)
+	addThreatIntelLegend(m)
 
 	m.AddRow(8,
 		col.New(3).Add(text.New("CVE ID", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
@@ -1423,7 +1458,8 @@ func (s *ReportService) addTopCVEsTable(m core.Maroto, data *ReportData) {
 		col.New(2).Add(text.New("Severity", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
 		col.New(1).Add(text.New("Servers", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
 		col.New(1).Add(text.New("Pkgs", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
-		col.New(4).Add(text.New("VEX Status (Vendor)", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
+		col.New(1).Add(text.New("EPSS", props.Text{Size: 9, Style: fontstyle.Bold, Align: align.Center, Color: headerText})),
+		col.New(3).Add(text.New("VEX Status (Vendor)", props.Text{Size: 9, Style: fontstyle.Bold, Color: headerText})),
 	).WithStyle(headerCell)
 
 	for i, cve := range data.TopCVEs {
@@ -1434,12 +1470,13 @@ func (s *ReportService) addTopCVEsTable(m core.Maroto, data *ReportData) {
 		rowCell := &props.Cell{BackgroundColor: rowBg, BorderType: border.Full, BorderColor: headerBg}
 		vexLabel := formatVexStatus(cve.VexStatus)
 		m.AddRow(7,
-			col.New(3).Add(text.New(cve.CVEID, props.Text{Size: 8})),
+			col.New(3).Add(text.New(cveLabel(cve.CVEID, cve.ThreatIntel), cveLabelProps(cve.ThreatIntel, props.Text{Size: 8}))),
 			col.New(1).Add(text.New(fmt.Sprintf("%.1f", cve.CVSS3Score), props.Text{Size: 8, Align: align.Center})),
 			col.New(2).Add(text.New(cve.NVDSeverity, props.Text{Size: 8})),
 			col.New(1).Add(text.New(fmt.Sprintf("%d", cve.ServerCount), props.Text{Size: 8, Align: align.Center})),
 			col.New(1).Add(text.New(fmt.Sprintf("%d", cve.PackageCount), props.Text{Size: 8, Align: align.Center})),
-			col.New(4).Add(text.New(vexLabel, props.Text{Size: 8})),
+			col.New(1).Add(text.New(formatEPSS(cve.EPSS), props.Text{Size: 8, Align: align.Center})),
+			col.New(3).Add(text.New(vexLabel, props.Text{Size: 8})),
 		).WithStyle(rowCell)
 	}
 
@@ -1459,6 +1496,7 @@ func (s *ReportService) addFullCVEList(m core.Maroto, data *ReportData) {
 			Style: fontstyle.Bold,
 		})),
 	)
+	addThreatIntelLegend(m)
 
 	// Column header row
 	m.AddRow(8,
@@ -1467,7 +1505,8 @@ func (s *ReportService) addFullCVEList(m core.Maroto, data *ReportData) {
 		col.New(2).Add(text.New("Severity", props.Text{Size: 8, Style: fontstyle.Bold, Color: headerText, Top: 1.5})),
 		col.New(1).Add(text.New("Servers", props.Text{Size: 8, Style: fontstyle.Bold, Align: align.Center, Color: headerText, Top: 1.5})),
 		col.New(2).Add(text.New("First Seen", props.Text{Size: 8, Style: fontstyle.Bold, Color: headerText, Top: 1.5})),
-		col.New(3).Add(text.New("VEX Status", props.Text{Size: 8, Style: fontstyle.Bold, Color: headerText, Top: 1.5})),
+		col.New(1).Add(text.New("EPSS", props.Text{Size: 8, Style: fontstyle.Bold, Align: align.Center, Color: headerText, Top: 1.5})),
+		col.New(2).Add(text.New("VEX Status", props.Text{Size: 8, Style: fontstyle.Bold, Color: headerText, Top: 1.5})),
 	).WithStyle(headerCell)
 
 	for i, cve := range data.AllCVEs {
@@ -1479,12 +1518,13 @@ func (s *ReportService) addFullCVEList(m core.Maroto, data *ReportData) {
 		vexLabel := formatVexStatus(cve.VexStatus)
 
 		m.AddRow(8,
-			col.New(3).Add(text.New(cve.CVEID, props.Text{Size: 7.5, Style: fontstyle.Bold, Top: 1.5})),
+			col.New(3).Add(text.New(cveLabel(cve.CVEID, cve.ThreatIntel), cveLabelProps(cve.ThreatIntel, props.Text{Size: 7.5, Style: fontstyle.Bold, Top: 1.5}))),
 			col.New(1).Add(text.New(fmt.Sprintf("%.1f", cve.CVSS3Score), props.Text{Size: 7.5, Align: align.Center, Top: 1.5})),
 			col.New(2).Add(text.New(cve.NVDSeverity, props.Text{Size: 7.5, Top: 1.5})),
 			col.New(1).Add(text.New(fmt.Sprintf("%d", cve.ServerCount), props.Text{Size: 7.5, Align: align.Center, Top: 1.5})),
 			col.New(2).Add(text.New(cve.FirstSeen.Format("2006-01-02"), props.Text{Size: 7.5, Top: 1.5})),
-			col.New(3).Add(text.New(vexLabel, props.Text{Size: 7.5, Top: 1.5})),
+			col.New(1).Add(text.New(formatEPSS(cve.EPSS), props.Text{Size: 7.5, Align: align.Center, Top: 1.5})),
+			col.New(2).Add(text.New(vexLabel, props.Text{Size: 7.5, Top: 1.5})),
 		).WithStyle(rowCell)
 
 		if cve.Summary != "" {
@@ -1537,4 +1577,52 @@ func formatVexStatus(status string) string {
 	default:
 		return "—"
 	}
+}
+
+// kevRed is the text colour of CVEs listed in CISA KEV.
+var kevRed = &props.Color{Red: 185, Green: 28, Blue: 28}
+
+// cveLabel appends a KEV marker to the CVE ID of a CISA KEV-listed CVE.
+func cveLabel(cveID string, t models.ThreatIntel) string {
+	if !t.InKEV {
+		return cveID
+	}
+	if t.KEVRansomware {
+		return cveID + "  KEV*"
+	}
+	return cveID + "  KEV"
+}
+
+// cveLabelProps colours KEV-listed CVEs red.
+func cveLabelProps(t models.ThreatIntel, p props.Text) props.Text {
+	if t.InKEV {
+		p.Color = kevRed
+		p.Style = fontstyle.Bold
+	}
+	return p
+}
+
+// formatEPSS renders an EPSS probability as a percentage, "-" when unscored.
+func formatEPSS(epss *float64) string {
+	if epss == nil {
+		return "-"
+	}
+	pct := *epss * 100
+	switch {
+	case pct >= 10:
+		return fmt.Sprintf("%.0f%%", pct)
+	case pct >= 1:
+		return fmt.Sprintf("%.1f%%", pct)
+	default:
+		return fmt.Sprintf("%.2f%%", pct)
+	}
+}
+
+// addThreatIntelLegend explains the KEV marker and the EPSS column.
+func addThreatIntelLegend(m core.Maroto) {
+	m.AddRow(6, col.New(12).Add(text.New(
+		"KEV: listed in the CISA Known Exploited Vulnerabilities catalog (exploited in the wild); "+
+			"KEV*: also known to be used in ransomware campaigns. "+
+			"EPSS: probability of exploitation in the next 30 days (FIRST).",
+		props.Text{Size: 7, Color: &props.Color{Red: 100, Green: 100, Blue: 100}})))
 }

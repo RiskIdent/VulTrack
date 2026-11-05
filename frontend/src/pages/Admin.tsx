@@ -32,6 +32,9 @@ import {
   triggerNVDSync,
   getExploitDBStatus,
   triggerExploitDBSync,
+  getThreatIntelStatus,
+  triggerThreatIntelSync,
+  type ThreatIntelSourceStatus,
   getVEXStatus,
   triggerVEXSync,
   getAdminUsers,
@@ -1312,7 +1315,7 @@ function OVALSourcesTab() {
 }
 
 // ============================================================================
-// Data Sources Tab (NVD + ExploitDB)
+// Data Sources Tab (NVD, ExploitDB, VEX, CISA KEV, FIRST EPSS)
 // ============================================================================
 
 function DataSourcesTab() {
@@ -1335,6 +1338,7 @@ function DataSourcesTab() {
     status?: string;
     error?: string;
   } | null>(null);
+  const [threatIntel, setThreatIntel] = useState<ThreatIntelSourceStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -1345,6 +1349,8 @@ function DataSourcesTab() {
     nvd_sync_interval_hours: '6',
     exploitdb_sync_interval_hours: '24',
     vex_sync_interval_hours: '24',
+    kev_sync_interval_hours: '24',
+    epss_sync_interval_hours: '24',
   });
   const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1361,7 +1367,8 @@ function DataSourcesTab() {
       const data = await getSettings();
       const settings: Record<string, string> = {};
       (data.settings || []).forEach((s: Setting) => {
-        if (['nvd_api_key', 'nvd_sync_interval_hours', 'exploitdb_sync_interval_hours', 'vex_sync_interval_hours'].includes(s.key)) {
+        if (['nvd_api_key', 'nvd_sync_interval_hours', 'exploitdb_sync_interval_hours', 'vex_sync_interval_hours',
+             'kev_sync_interval_hours', 'epss_sync_interval_hours'].includes(s.key)) {
           settings[s.key] = s.value;
         }
       });
@@ -1373,14 +1380,16 @@ function DataSourcesTab() {
 
   async function fetchStatus() {
     try {
-      const [nvd, exploit, vex] = await Promise.all([
+      const [nvd, exploit, vex, intel] = await Promise.all([
         getNVDStatus(),
         getExploitDBStatus(),
         getVEXStatus(),
+        getThreatIntelStatus(),
       ]);
       setNvdStatus(nvd);
       setExploitStatus(exploit);
       setVexStatus(vex);
+      setThreatIntel(intel.sources || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load status');
     } finally {
@@ -1418,6 +1427,15 @@ function DataSourcesTab() {
       setTimeout(fetchStatus, 1000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger ExploitDB sync');
+    }
+  }
+
+  async function handleThreatIntelSync(source: 'kev' | 'epss') {
+    try {
+      await triggerThreatIntelSync(source);
+      setTimeout(fetchStatus, 1000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to trigger ${source.toUpperCase()} sync`);
     }
   }
 
@@ -1562,6 +1580,66 @@ function DataSourcesTab() {
           </div>
         </div>
       </div>
+
+      {/* CISA KEV and FIRST EPSS */}
+      {threatIntel.map((src) => {
+        const meta = src.source === 'kev'
+          ? { title: 'CISA KEV', text: 'Known Exploited Vulnerabilities catalog — CVEs exploited in the wild. Prioritises the triage queue.', unit: 'CVEs in catalog' }
+          : { title: 'FIRST EPSS', text: 'Exploit Prediction Scoring System — probability that a CVE is exploited in the next 30 days.', unit: 'CVEs with a score' };
+        return (
+          <div className="card" key={src.source}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className={`w-6 h-6 ${src.source === 'kev' ? 'text-red-400' : 'text-orange-400'}`} />
+                <div>
+                  <h2 className="text-lg font-semibold text-[#e8f5e9]">{meta.title}</h2>
+                  <p className="text-sm text-[#6b7280]">{meta.text}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => handleThreatIntelSync(src.source)}
+                disabled={src.syncing}
+                className="btn btn-primary flex items-center gap-2"
+              >
+                <RefreshCw className={`w-4 h-4 ${src.syncing ? 'animate-spin' : ''}`} />
+                {src.syncing ? 'Syncing...' : 'Sync Now'}
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-[#1a2420] rounded-lg p-4">
+                <div className="text-2xl font-bold text-[#e8f5e9]">{formatNumber(src.records)}</div>
+                <div className="text-sm text-[#6b7280]">{meta.unit}</div>
+              </div>
+              <div className="bg-[#1a2420] rounded-lg p-4">
+                <div className="flex items-center gap-2">
+                  {src.syncing ? (
+                    <Clock className="w-5 h-5 text-yellow-400" />
+                  ) : src.status === 'error' ? (
+                    <AlertCircle className="w-5 h-5 text-red-400" />
+                  ) : src.lastSyncAt ? (
+                    <CheckCircle2 className="w-5 h-5 text-[#4ade80]" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-[#6b7280]" />
+                  )}
+                  <span className="text-[#e8f5e9]">
+                    {src.syncing ? 'Syncing...' : formatDate(src.lastSyncAt || null)}
+                  </span>
+                </div>
+                <div className="text-sm text-[#6b7280]">Last successful sync</div>
+              </div>
+              <div className="bg-[#1a2420] rounded-lg p-4">
+                <div className="text-2xl font-bold text-[#e8f5e9]">{src.intervalHours} h</div>
+                <div className="text-sm text-[#6b7280]">Sync interval</div>
+              </div>
+            </div>
+            {src.status === 'error' && src.error && (
+              <div className="mt-4 p-3 rounded-lg border border-red-600/50 bg-red-600/5 text-sm text-red-400">
+                Last sync failed: {src.error}
+              </div>
+            )}
+          </div>
+        );
+      })}
 
       {/* VEX Status */}
       <div className="card">
@@ -1726,6 +1804,38 @@ function DataSourcesTab() {
                 max="168"
                 value={config.vex_sync_interval_hours}
                 onChange={(e) => setConfig({ ...config, vex_sync_interval_hours: e.target.value })}
+                className="input w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-[#a5d6a7] mb-1">
+                CISA KEV Sync Interval (hours)
+              </label>
+              <p className="text-xs text-[#6b7280] mb-2">
+                How often to download the KEV catalog. CISA updates it on working days. Default: 24 hours.
+              </p>
+              <input
+                type="number"
+                min="1"
+                max="168"
+                value={config.kev_sync_interval_hours}
+                onChange={(e) => setConfig({ ...config, kev_sync_interval_hours: e.target.value })}
+                className="input w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-[#a5d6a7] mb-1">
+                EPSS Sync Interval (hours)
+              </label>
+              <p className="text-xs text-[#6b7280] mb-2">
+                How often to download EPSS scores. FIRST publishes new scores once a day. Default: 24 hours.
+              </p>
+              <input
+                type="number"
+                min="1"
+                max="168"
+                value={config.epss_sync_interval_hours}
+                onChange={(e) => setConfig({ ...config, epss_sync_interval_hours: e.target.value })}
                 className="input w-full"
               />
             </div>

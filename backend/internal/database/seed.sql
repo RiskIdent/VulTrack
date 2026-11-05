@@ -45,6 +45,8 @@ INSERT INTO settings (key, value, description) VALUES
     ('nvd_sync_interval_hours', '6', 'Hours between NVD CVE database syncs'),
     ('exploitdb_sync_interval_hours', '24', 'Hours between ExploitDB syncs'),
     ('vex_sync_interval_hours', '24', 'Hours between Ubuntu VEX data syncs'),
+    ('kev_sync_interval_hours', '24', 'Hours between CISA KEV catalog syncs'),
+    ('epss_sync_interval_hours', '24', 'Hours between FIRST EPSS score syncs'),
 
     -- VEX settings
     ('vex_download_url', 'https://security-metadata.canonical.com/vex/vex-all.tar.xz', 'Download URL for Ubuntu VEX archive'),

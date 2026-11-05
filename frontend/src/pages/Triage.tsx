@@ -1,14 +1,18 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play } from 'lucide-react';
-import { CVSSBadge, VendorSeverityBadge, VEXBadge } from '../components/SeverityBadge';
+import { CVSSBadge, VendorSeverityBadge, VEXBadge, KEVBadge, EPSSBadge } from '../components/SeverityBadge';
 import { getTriageQueue, getSettings, TriageFilter } from '../api/client';
 import type { Finding } from '../types';
 
-type SortField = 'cveId' | 'cvss3Score' | 'severity' | 'packageName' | 'serverName';
+// 'priority' keeps the server's order: CISA KEV first, then EPSS, then CVSS.
+type SortField = 'priority' | 'cveId' | 'cvss3Score' | 'epss' | 'severity' | 'packageName' | 'serverName';
 type SortDirection = 'asc' | 'desc';
 
 const ITEMS_PER_PAGE = 15;
+// The queue is loaded in priority order; beyond this many CVEs only the most
+// urgent are shown.
+const QUEUE_LOAD_LIMIT = 1000;
 
 export default function Triage() {
   const [findings, setFindings] = useState<Finding[]>([]);
@@ -19,7 +23,7 @@ export default function Triage() {
 
   // Filtering, sorting, pagination
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortField, setSortField] = useState<SortField>('cvss3Score');
+  const [sortField, setSortField] = useState<SortField>('priority');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -32,7 +36,7 @@ export default function Triage() {
         (settingsData.settings || []).forEach((s: { key: string; value: string }) => { settings[s.key] = s.value; });
         const hideNotAffected = settings['triage_hide_vex_not_affected'] !== 'false';
 
-        const data = await getTriageQueue({ limit: 1000, hideVexNotAffected: hideNotAffected });
+        const data = await getTriageQueue({ limit: QUEUE_LOAD_LIMIT, hideVexNotAffected: hideNotAffected });
         setFindings(data.findings || []);
         setTotal(data.total);
         setFilter(data.filter);
@@ -65,6 +69,7 @@ export default function Triage() {
 
   // Sort findings
   const sortedFindings = useMemo(() => {
+    if (sortField === 'priority') return filteredFindings;
     const sorted = [...filteredFindings].sort((a, b) => {
       let aVal: string | number | null = null;
       let bVal: string | number | null = null;
@@ -77,6 +82,10 @@ export default function Triage() {
         case 'cvss3Score':
           aVal = a.nvdCvss3Score ?? a.cvss3Score ?? 0;
           bVal = b.nvdCvss3Score ?? b.cvss3Score ?? 0;
+          break;
+        case 'epss':
+          aVal = a.epss ?? -1;
+          bVal = b.epss ?? -1;
           break;
         case 'severity':
           aVal = a.severity || '';
@@ -162,6 +171,16 @@ export default function Triage() {
                 : `(Vendor: ${filter.severities?.map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(', ') || 'None'}${filter.includeUnrated ? ' + Unrated' : ''})`
             )}
           </p>
+          <p className="text-xs text-[#6b7280] mt-1">
+            {sortField === 'priority' ? (
+              'Ordered by priority: listed in CISA KEV first, then EPSS, then CVSS.'
+            ) : (
+              <button className="text-[#4ade80] hover:underline" onClick={() => { setSortField('priority'); setCurrentPage(1); }}>
+                Back to priority order (KEV, EPSS, CVSS)
+              </button>
+            )}
+            {total > findings.length && ` Showing the ${findings.length} most urgent of ${total}.`}
+          </p>
         </div>
         
         <div className="flex items-center gap-4">
@@ -204,6 +223,7 @@ export default function Triage() {
               <tr className="border-b border-[#2d3f36]">
                 <SortHeader field="cveId">CVE ID</SortHeader>
                 <SortHeader field="cvss3Score">CVSS</SortHeader>
+                <SortHeader field="epss">EPSS</SortHeader>
                 <SortHeader field="severity">Vendor</SortHeader>
                 <SortHeader field="packageName">Package</SortHeader>
                 <SortHeader field="serverName">Example Server</SortHeader>
@@ -216,10 +236,16 @@ export default function Triage() {
               {paginatedFindings.map((finding) => (
                 <tr key={finding.cveId} className="table-row">
                   <td className="py-3 px-4 font-mono text-[#4ade80]">
-                    {finding.cveId}
+                    <div className="flex items-center gap-2 whitespace-nowrap">
+                      {finding.cveId}
+                      <KEVBadge inKev={finding.inKev} ransomware={finding.kevRansomware} dateAdded={finding.kevDateAdded} dueDate={finding.kevDueDate} />
+                    </div>
                   </td>
                   <td className="py-3 px-4">
                     <CVSSBadge score={finding.nvdCvss3Score ?? finding.cvss3Score} cveId={finding.cveId} />
+                  </td>
+                  <td className="py-3 px-4">
+                    <EPSSBadge epss={finding.epss} percentile={finding.epssPercentile} />
                   </td>
                   <td className="py-3 px-4">
                     <VendorSeverityBadge severity={finding.severity} sourceLink={finding.sourceLink} />
@@ -250,7 +276,7 @@ export default function Triage() {
               ))}
               {paginatedFindings.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-[#6b7280]">
+                  <td colSpan={9} className="py-12 text-center text-[#6b7280]">
                     {searchQuery 
                       ? 'No CVEs match your search' 
                       : 'All caught up! No high-severity findings require assessment.'}

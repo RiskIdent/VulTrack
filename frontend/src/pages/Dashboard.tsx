@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts';
 import StatCard from '../components/StatCard';
-import { CVSSBadge, VendorSeverityBadge } from '../components/SeverityBadge';
+import { CVSSBadge, VendorSeverityBadge, KEVBadge } from '../components/SeverityBadge';
 import { getDashboard, getTopServers, getTopCVEs } from '../api/client';
 import type { DashboardStats, TopServer, TopCVE } from '../types';
 
@@ -212,7 +212,10 @@ export default function Dashboard() {
               {topCVEs.map((cve) => (
                 <tr key={cve.cveId} className="table-row">
                   <td className="py-3 px-4">
-                    <span className="font-mono text-[#e8f5e9]">{cve.cveId}</span>
+                    <span className="inline-flex items-center gap-2 whitespace-nowrap">
+                      <span className="font-mono text-[#e8f5e9]">{cve.cveId}</span>
+                      <KEVBadge inKev={cve.inKev} ransomware={cve.kevRansomware} dateAdded={cve.kevDateAdded} dueDate={cve.kevDueDate} />
+                    </span>
                   </td>
                   <td className="py-3 px-4">
                     <CVSSBadge score={cve.cvss3Score} cveId={cve.cveId} />
