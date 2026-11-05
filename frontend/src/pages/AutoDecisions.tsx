@@ -85,7 +85,7 @@ export default function AutoDecisions() {
           </p>
         </div>
         {user?.isAdmin !== false && (
-          <Link to="/admin" className="btn flex items-center gap-2 bg-[#1a2420] text-[#a5d6a7] hover:bg-[#2d3f36]">
+          <Link to="/admin?tab=auto&section=rules" className="btn flex items-center gap-2 bg-[#1a2420] text-[#a5d6a7] hover:bg-[#2d3f36]">
             <Settings className="w-4 h-4" /> Configure
           </Link>
         )}

@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
-import { Bot, RefreshCw, ShieldAlert, Save, ExternalLink } from 'lucide-react';
+import { useEffect, useState, useCallback, type ReactNode } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Bot, RefreshCw, ShieldAlert, Save, ExternalLink, Sparkles } from 'lucide-react';
 import { ConfirmModal } from './ConfirmModal';
 import {
   getAutoAssessmentStats,
@@ -332,3 +332,78 @@ function Stat({ label, value, hint }: { label: string; value: number; hint?: str
     </div>
   );
 }
+
+type AutomationSection = 'rules' | 'ai';
+const SECTION_STORAGE_KEY = 'vultrack.admin.automationSection';
+
+// AssessmentAutomationTab is the Admin tab for everything that assesses
+// findings without a human: rule-based decisions and the AI advisor. The two
+// are shown as separate sections because they do different things — rules
+// decide, the AI only recommends.
+export function AssessmentAutomationTab({ aiSettings }: { aiSettings: ReactNode }) {
+  const [params] = useSearchParams();
+  const [section, setSection] = useState<AutomationSection>(() => {
+    const fromUrl = params.get('section');
+    if (fromUrl === 'rules' || fromUrl === 'ai') return fromUrl;
+    if (params.get('tab') === 'ai') return 'ai';
+    try {
+      const stored = window.localStorage.getItem(SECTION_STORAGE_KEY);
+      if (stored === 'rules' || stored === 'ai') return stored;
+    } catch {
+      // storage unavailable
+    }
+    return 'rules';
+  });
+  const choose = (s: AutomationSection) => {
+    setSection(s);
+    try {
+      window.localStorage.setItem(SECTION_STORAGE_KEY, s);
+    } catch {
+      // storage unavailable
+    }
+  };
+
+  const sections: { id: AutomationSection; icon: typeof Bot; title: string; role: string; text: string }[] = [
+    {
+      id: 'rules', icon: Bot, title: 'Rules & guards', role: 'decides automatically',
+      text: 'Deterministic rules dismiss findings that cannot affect a server and remove them from the triage queue.',
+    },
+    {
+      id: 'ai', icon: Sparkles, title: 'AI advisor', role: 'recommends only',
+      text: 'An LLM explains attack vectors and recommends a status. It never changes an assessment.',
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3" role="tablist">
+        {sections.map((s) => {
+          const Icon = s.icon;
+          const active = section === s.id;
+          return (
+            <button
+              key={s.id}
+              role="tab"
+              aria-selected={active}
+              onClick={() => choose(s.id)}
+              className={`text-left p-4 rounded-lg border transition-colors ${
+                active ? 'border-[#4ade80] bg-[#4ade80]/10' : 'border-[#2d3f36] bg-[#111916] hover:border-[#4ade80]/40'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Icon className={`w-5 h-5 ${active ? 'text-[#4ade80]' : 'text-[#a5d6a7]'}`} />
+                <span className="font-semibold text-[#e8f5e9]">{s.title}</span>
+                <span className={`ml-auto text-xs px-2 py-0.5 rounded border ${
+                  s.id === 'rules' ? 'border-sky-600/40 text-sky-300 bg-sky-600/10' : 'border-purple-600/40 text-purple-300 bg-purple-600/10'
+                }`}>{s.role}</span>
+              </div>
+              <p className="text-xs text-[#a5d6a7] mt-2">{s.text}</p>
+            </button>
+          );
+        })}
+      </div>
+      {section === 'rules' ? <AutoAssessmentSettings /> : aiSettings}
+    </div>
+  );
+}
+

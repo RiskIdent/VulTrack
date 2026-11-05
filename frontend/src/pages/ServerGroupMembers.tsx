@@ -215,7 +215,7 @@ export default function ServerGroupMembers() {
     return (
       <div className="space-y-4">
         <div className="text-red-400">{error || 'Group not found'}</div>
-        <Link to="/admin" className="text-[#4ade80] hover:underline">Back to Admin</Link>
+        <Link to="/admin?tab=groups" className="text-[#4ade80] hover:underline">Back to Admin</Link>
       </div>
     );
   }
@@ -226,7 +226,7 @@ export default function ServerGroupMembers() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Link
-            to="/admin"
+            to="/admin?tab=groups"
             className="p-2 rounded-lg text-[#a5d6a7] hover:bg-[#1a2420] hover:text-[#e8f5e9]"
             title="Back to Admin"
           >

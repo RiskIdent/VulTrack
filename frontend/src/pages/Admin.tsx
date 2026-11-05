@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, KeyRound, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw, Sparkles, Bot } from 'lucide-react';
-import AutoAssessmentSettings from '../components/AutoAssessmentSettings';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, KeyRound, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw, Bot } from 'lucide-react';
+import { AssessmentAutomationTab } from '../components/AutoAssessmentSettings';
 import { ConfirmModal } from '../components/ConfirmModal';
 import {
   getSettings,
@@ -48,15 +48,18 @@ import type { AdminUser } from '../api/client';
 import type { Setting, ReasonTemplate, ServerGroup, Server as ServerType } from '../types';
 import type { EnrollmentKey, RegisteredAgent, OVALSource, APIToken } from '../api/client';
 
-type TabType = 'triage' | 'auto' | 'ai' | 'templates' | 'groups' | 'oval' | 'agents' | 'keys' | 'apitokens' | 'datasources' | 'users' | 'reset' | 'servers';
+const TAB_IDS = ['triage', 'auto', 'ai', 'templates', 'groups', 'oval', 'agents', 'keys', 'apitokens', 'datasources', 'users', 'reset', 'servers'] as const;
+type TabType = typeof TAB_IDS[number];
 
 export default function Admin() {
-  const [activeTab, setActiveTab] = useState<TabType>('triage');
+  // ?tab=… opens a tab directly, e.g. /admin?tab=auto from the Auto Decisions page.
+  const [searchParams] = useSearchParams();
+  const requested = searchParams.get('tab') as TabType | null;
+  const [activeTab, setActiveTab] = useState<TabType>(requested && TAB_IDS.includes(requested) ? requested : 'triage');
 
   const tabs = [
     { id: 'triage' as TabType, label: 'Triage', icon: ClipboardCheck },
-    { id: 'auto' as TabType, label: 'Automated Assessment', icon: Bot },
-    { id: 'ai' as TabType, label: 'AI Assessment', icon: Sparkles },
+    { id: 'auto' as TabType, label: 'Assessment Automation', icon: Bot },
     { id: 'oval' as TabType, label: 'OVAL Sources', icon: Shield },
     { id: 'datasources' as TabType, label: 'Data Sources', icon: Database },
     { id: 'agents' as TabType, label: 'Agents', icon: Server },
@@ -105,8 +108,9 @@ export default function Admin() {
       {/* Tab Content */}
       <div className="mt-6">
         {activeTab === 'triage' && <TriageSettingsTab />}
-        {activeTab === 'auto' && <AutoAssessmentSettings />}
-        {activeTab === 'ai' && <AIAssessmentSettingsTab />}
+        {(activeTab === 'auto' || activeTab === 'ai') && (
+          <AssessmentAutomationTab aiSettings={<AIAssessmentSettingsTab />} />
+        )}
         {activeTab === 'oval' && <OVALSourcesTab />}
         {activeTab === 'datasources' && <DataSourcesTab />}
         {activeTab === 'agents' && <AgentsTab />}
@@ -362,7 +366,7 @@ function AIAssessmentSettingsTab() {
   const [values, setValues] = useState<Record<string, string>>({
     ai_enabled: 'false',
     ai_auto_assess: 'false',
-    ai_model: 'claude-haiku-4-5',
+    ai_model: 'claude-haiku-5-5',
     ai_system_prompt: '',
   });
 
@@ -410,7 +414,11 @@ function AIAssessmentSettingsTab() {
   return (
     <div className="space-y-6">
       <div className="card">
-        <h2 className="text-lg font-semibold text-[#e8f5e9] mb-4">AI Assessment</h2>
+        <h2 className="text-lg font-semibold text-[#e8f5e9] mb-1">AI Advisor</h2>
+        <p className="text-sm text-[#6b7280] mb-4">
+          An LLM explains each CVE's attack vector and prerequisites and recommends a status. It only advises:
+          it never changes an assessment and never removes anything from the triage queue.
+        </p>
 
         {!apiKeyConfigured && (
           <div className="mb-4 p-3 bg-yellow-600/10 border border-yellow-600/50 rounded-lg text-yellow-400 flex items-start gap-2">
@@ -469,14 +477,24 @@ function AIAssessmentSettingsTab() {
           <div>
             <label className="block text-sm font-medium text-[#a5d6a7] mb-2">Model</label>
             <select
-              value={values.ai_model || 'claude-haiku-4-5'}
+              value={values.ai_model || 'claude-haiku-5-5'}
               onChange={(e) => setValues({ ...values, ai_model: e.target.value })}
               className="w-full max-w-md px-3 py-2 bg-[#1a2420] border border-[#2d3f36] rounded-lg text-[#e8f5e9] focus:outline-none focus:border-[#4ade80]"
             >
-              <option value="claude-haiku-4-5">Claude Haiku 4.5 (fast, low cost)</option>
-              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (balanced)</option>
-              <option value="claude-opus-4-8">Claude Opus 4.8 (most capable)</option>
+              <option value="claude-haiku-5-5">Claude Haiku 5.5 (fast, lowest cost — recommended)</option>
+              <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (balanced)</option>
+              <option value="claude-opus-5-5">Claude Opus 5.5 (most capable)</option>
+              <optgroup label="Previous generation">
+                <option value="claude-haiku-4-5">Claude Haiku 4.5 (about 10× the price of Haiku 5.5)</option>
+                <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                <option value="claude-opus-4-8">Claude Opus 4.8</option>
+              </optgroup>
             </select>
+            {values.ai_model === 'claude-haiku-4-5' && (
+              <p className="text-xs text-yellow-400 mt-2">
+                Claude Haiku 5.5 is the current Haiku: better results at about a tenth of the price. Existing assessments are kept.
+              </p>
+            )}
           </div>
 
           {/* System prompt / infrastructure context */}
