@@ -187,6 +187,15 @@ func TestAnalyzer(t *testing.T) {
 	if n := backlog(); n != 0 {
 		t.Errorf("backlog %d after the batch, want 0", n)
 	}
+
+	// An interrupted collection (restart before the batch was marked ended)
+	// is collected again without counting the cost twice.
+	exec(`UPDATE precondition_batches SET status = 'in_progress', ended_at = NULL`)
+	spentBefore := st.SpentMonth
+	an.RunOnce(context.Background())
+	if st, _ = an.GetStatus(ctx); st.SpentMonth != spentBefore || st.BatchesInProgress != 0 {
+		t.Errorf("re-collection: spent %f (was %f), batches in progress %d", st.SpentMonth, spentBefore, st.BatchesInProgress)
+	}
 	if want := 2*0.0226 + 0.0113; st.SpentMonth < want-1e-9 || st.SpentMonth > want+1e-9 {
 		t.Errorf("spent %f, want %f (batch at half price)", st.SpentMonth, want)
 	}

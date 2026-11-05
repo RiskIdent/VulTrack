@@ -424,10 +424,15 @@ func (a *Analyzer) collectBatches(ctx context.Context) (int, error) {
 			continue
 		}
 		for _, o := range outcomes {
-			var promptHash, inputHash, refusedBy string
+			var promptHash, inputHash, refusedBy, status string
 			err := a.db.QueryRow(ctx, `
-				SELECT prompt_hash, input_hash, COALESCE(refused_by, '') FROM precondition_analyses WHERE cve_id = $1 AND batch_id = $2
-			`, o.CustomID, b.id).Scan(&promptHash, &inputHash, &refusedBy)
+				SELECT prompt_hash, input_hash, COALESCE(refused_by, ''), status FROM precondition_analyses WHERE cve_id = $1 AND batch_id = $2
+			`, o.CustomID, b.id).Scan(&promptHash, &inputHash, &refusedBy, &status)
+			if err == nil && status != "pending" {
+				// Stored by an earlier collection that was interrupted (e.g. a
+				// restart) before the batch was marked ended; its cost is logged.
+				continue
+			}
 			if errors.Is(err, pgx.ErrNoRows) {
 				// Superseded by a newer request; still account for the cost.
 				if err := a.logUsage(ctx, a.db, o.CustomID, b.model, o.Usage, true); err != nil {
