@@ -1,4 +1,4 @@
-import { ReactNode } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { Link, useLocation, Outlet } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -17,22 +17,49 @@ import {
   Sparkles,
   Package,
   Bot,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 interface LayoutProps {
   children?: ReactNode;
 }
 
-const navItems = [
+interface NavLink {
+  path: string;
+  label: string;
+  icon: LucideIcon;
+  adminOnly?: boolean;
+}
+
+// A group shows its pages as an indented sub-menu.
+interface NavGroup {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  children: NavLink[];
+}
+
+type NavEntry = NavLink | NavGroup;
+
+const navItems: NavEntry[] = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/servers', label: 'Servers', icon: Server },
   { path: '/scans', label: 'Scans', icon: Radar },
   { path: '/findings', label: 'Findings', icon: Shield },
   { path: '/packages', label: 'APT Packages', icon: Package },
-  { path: '/triage', label: 'Triage', icon: ClipboardCheck },
+  {
+    id: 'triage',
+    label: 'Triage',
+    icon: ClipboardCheck,
+    children: [
+      { path: '/triage', label: 'Queue', icon: ClipboardCheck },
+      { path: '/auto-decisions', label: 'Auto Decisions', icon: Bot },
+    ],
+  },
   { path: '/assessments', label: 'Assessments', icon: FileCheck },
-  { path: '/auto-decisions', label: 'Auto Decisions', icon: Bot },
   { path: '/ai-assessments', label: 'AI Assessments', icon: Sparkles },
   { path: '/statistics', label: 'Statistics', icon: BarChart3 },
   { path: '/reports', label: 'Reports', icon: FileText },
@@ -40,10 +67,37 @@ const navItems = [
   { path: '/admin', label: 'Admin', icon: Settings, adminOnly: true },
 ];
 
+const isGroup = (e: NavEntry): e is NavGroup => 'children' in e;
+
+const isActivePath = (pathname: string, path: string) =>
+  pathname === path || (path !== '/' && pathname.startsWith(path + '/'));
+
+const GROUPS_STORAGE_KEY = 'vultrack.nav.openGroups';
+
+function readOpenGroups(): string[] {
+  try {
+    return JSON.parse(window.localStorage.getItem(GROUPS_STORAGE_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
 export default function Layout({ children }: LayoutProps) {
   const content = children ?? <Outlet />;
   const location = useLocation();
   const { user, authEnabled, logout } = useAuth();
+
+  // Groups the user opened; a group with the current page is always open.
+  const [openGroups, setOpenGroups] = useState<string[]>(readOpenGroups);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(openGroups));
+    } catch {
+      // storage unavailable: the menu still works, it just forgets
+    }
+  }, [openGroups]);
+  const toggleGroup = (id: string) =>
+    setOpenGroups((prev) => (prev.includes(id) ? prev.filter((g) => g !== id) : [...prev, id]));
 
   return (
     <div className="min-h-screen bg-[#0a0f0d] flex">
@@ -65,17 +119,58 @@ export default function Layout({ children }: LayoutProps) {
         {/* Navigation */}
         <nav className="flex-1 p-4">
           <ul className="space-y-2">
-            {navItems
-              .filter((item) => !item.adminOnly || user?.isAdmin)
-              .map((item) => {
-              const isActive = location.pathname === item.path
-                || (item.path !== '/' && location.pathname.startsWith(item.path + '/'));
-              const Icon = item.icon;
-              
+            {navItems.map((entry) => {
+              if (isGroup(entry)) {
+                const children = entry.children.filter((c) => !c.adminOnly || user?.isAdmin);
+                const childActive = children.some((c) => isActivePath(location.pathname, c.path));
+                const open = childActive || openGroups.includes(entry.id);
+                const GroupIcon = entry.icon;
+                return (
+                  <li key={entry.id}>
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(entry.id)}
+                      aria-expanded={open}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
+                        childActive ? 'text-[#4ade80]' : 'text-[#a5d6a7] hover:bg-[#1a2420] hover:text-[#e8f5e9]'
+                      }`}
+                    >
+                      <GroupIcon className="w-5 h-5" />
+                      <span className="text-sm font-medium flex-1 text-left">{entry.label}</span>
+                      {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                    </button>
+                    {open && (
+                      <ul className="mt-1 ml-5 pl-3 border-l border-[#2d3f36] space-y-1">
+                        {children.map((child) => {
+                          const active = isActivePath(location.pathname, child.path);
+                          return (
+                            <li key={child.path}>
+                              <Link
+                                to={child.path}
+                                className={`block px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
+                                  active
+                                    ? 'bg-[#4ade80]/10 text-[#4ade80] border border-[#4ade80]/30'
+                                    : 'text-[#a5d6a7] hover:bg-[#1a2420] hover:text-[#e8f5e9]'
+                                }`}
+                              >
+                                {child.label}
+                              </Link>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </li>
+                );
+              }
+
+              if (entry.adminOnly && !user?.isAdmin) return null;
+              const isActive = isActivePath(location.pathname, entry.path);
+              const Icon = entry.icon;
               return (
-                <li key={item.path}>
+                <li key={entry.path}>
                   <Link
-                    to={item.path}
+                    to={entry.path}
                     className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
                       isActive
                         ? 'bg-[#4ade80]/10 text-[#4ade80] border border-[#4ade80]/30'
@@ -83,7 +178,7 @@ export default function Layout({ children }: LayoutProps) {
                     }`}
                   >
                     <Icon className="w-5 h-5" />
-                    <span className="text-sm font-medium">{item.label}</span>
+                    <span className="text-sm font-medium">{entry.label}</span>
                   </Link>
                 </li>
               );
