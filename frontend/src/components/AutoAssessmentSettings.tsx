@@ -159,10 +159,11 @@ export default function AutoAssessmentSettings() {
           <div className="flex items-center gap-3">
             <Bot className="w-6 h-6 text-[#4ade80]" />
             <div>
-              <h2 className="text-lg font-semibold text-[#e8f5e9]">Automated Assessment</h2>
+              <h2 className="text-lg font-semibold text-[#e8f5e9]">Rules &amp; Guards</h2>
               <p className="text-sm text-[#6b7280]">
-                Deterministic rules dismiss findings that cannot affect a server. Automation only ever sets
-                &nbsp;<em>not relevant</em>; everything else stays open for a human, and a human decision always wins.
+                <span className="text-sky-300">Decides automatically.</span> Deterministic rules dismiss findings that cannot
+                affect a server and remove them from the triage queue. Automation only ever sets <em>not relevant</em>;
+                everything else stays open for a human, and a human decision always wins.
               </p>
             </div>
           </div>
@@ -363,20 +364,15 @@ export function AssessmentAutomationTab({ aiSettings }: { aiSettings: ReactNode 
     }
   };
 
-  const sections: { id: AutomationSection; icon: typeof Bot; title: string; role: string; text: string }[] = [
-    {
-      id: 'rules', icon: Bot, title: 'Rules & guards', role: 'decides automatically',
-      text: 'Deterministic rules dismiss findings that cannot affect a server and remove them from the triage queue.',
-    },
-    {
-      id: 'ai', icon: Sparkles, title: 'AI advisor', role: 'recommends only',
-      text: 'An LLM explains attack vectors and recommends a status. It never changes an assessment.',
-    },
+  const sections: { id: AutomationSection; icon: typeof Bot; title: string }[] = [
+    { id: 'rules', icon: Bot, title: 'Rules & Guards' },
+    { id: 'ai', icon: Sparkles, title: 'AI Advisor' },
   ];
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3" role="tablist">
+      {/* Sub-navigation: a segmented control, visibly subordinate to the Admin tabs */}
+      <div role="tablist" aria-label="Assessment automation" className="inline-flex rounded-lg border border-[#2d3f36] bg-[#111916] p-1">
         {sections.map((s) => {
           const Icon = s.icon;
           const active = section === s.id;
@@ -386,18 +382,12 @@ export function AssessmentAutomationTab({ aiSettings }: { aiSettings: ReactNode 
               role="tab"
               aria-selected={active}
               onClick={() => choose(s.id)}
-              className={`text-left p-4 rounded-lg border transition-colors ${
-                active ? 'border-[#4ade80] bg-[#4ade80]/10' : 'border-[#2d3f36] bg-[#111916] hover:border-[#4ade80]/40'
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                active ? 'bg-[#4ade80]/15 text-[#4ade80]' : 'text-[#6b7280] hover:text-[#a5d6a7]'
               }`}
             >
-              <div className="flex items-center gap-2">
-                <Icon className={`w-5 h-5 ${active ? 'text-[#4ade80]' : 'text-[#a5d6a7]'}`} />
-                <span className="font-semibold text-[#e8f5e9]">{s.title}</span>
-                <span className={`ml-auto text-xs px-2 py-0.5 rounded border ${
-                  s.id === 'rules' ? 'border-sky-600/40 text-sky-300 bg-sky-600/10' : 'border-purple-600/40 text-purple-300 bg-purple-600/10'
-                }`}>{s.role}</span>
-              </div>
-              <p className="text-xs text-[#a5d6a7] mt-2">{s.text}</p>
+              <Icon className="w-4 h-4" />
+              {s.title}
             </button>
           );
         })}
