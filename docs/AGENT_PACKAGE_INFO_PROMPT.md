@@ -63,7 +63,10 @@ default, like the other collectors). Nothing else.
 ```
 
 One entry per installed package: every package in `/var/lib/dpkg/status`
-whose `Status` is `install ok installed`.
+whose files may be on disk, i.e. whose state (third word of `Status`) is
+`installed`, `half-installed`, `half-configured`, `unpacked`,
+`triggers-awaited` or `triggers-pending`, whatever the selection (`install`,
+`hold`, …). The same set is used for the Provides map in §5.
 
 - `package`: the package name without architecture qualifier. When the same
   package is installed for several architectures, emit ONE entry and merge
@@ -124,7 +127,22 @@ same as the `/usr/...` path, and vice versa.
   `/usr/lib/systemd/system-shutdown`.
 
 A path that is a directory in the file list (dpkg lists directories too) does
-not count by itself; only files and symlinks do.
+not count by itself; only files and symlinks do. A path is a directory when
+another path of the list lies below it or `lstat` reports a directory.
+
+Compare paths with the rules always in their `/usr` form, also on systems
+without merged `/usr` (`/lib/systemd/system/x.service` counts as
+`/usr/lib/systemd/system/x.service`).
+
+When `lstat` fails for a single file:
+- the file does not exist (deleted by an administrator): apply only the
+  path-based rules; the execute-bit check is skipped;
+- any other error (e.g. permission denied): count the file as `executable`;
+- diverted files (`/var/lib/dpkg/diversions`): check the file at the
+  diversion target.
+
+"All or nothing" (§1) applies to the dpkg database, the `.list` files and the
+time budget, not to single files.
 
 ## 5. Dependencies
 
@@ -148,8 +166,11 @@ Read `Depends`, `Pre-Depends` and `Recommends` of the package from
   object would exceed 1 MB, extend the existing drop order: first
   `moduleIndex.available`/`builtin`, then `packageInfo`, then `packagesInUse`,
   each recorded in `errors`.
+- Build the dpkg file index once per report and share it between
+  `packagesInUse` and `packageInfo`.
 - Building `packageInfo` stats up to a few hundred thousand files. It must take
-  well under 2 seconds on a typical server. To keep reports cheap, you MAY cache
+  well under 2 seconds on a typical server. Build it without a cache first and
+  measure on a real server; only if that is too slow, you MAY cache
   the result per package in a state file next to the module index state file,
   keyed by the size and modification time of the package's `.list` file(s) and
   of `/var/lib/dpkg/status`; anything changed is recomputed. Without such a
