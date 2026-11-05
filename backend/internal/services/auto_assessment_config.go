@@ -22,7 +22,12 @@ const (
 	SettingAutoGuardExploit = "auto_assessment_guard_exploit"
 	SettingAutoGuardEPSS    = "auto_assessment_guard_epss"
 	SettingAutoFactSettle   = "auto_assessment_fact_settle_minutes"
+	SettingAutoUnusedDays   = "auto_assessment_unused_days"
 )
+
+// DefaultUnusedDays is how long R-UNUSED needs a package to be observed
+// unused; two weeks so that weekly jobs are seen at least once.
+const DefaultUnusedDays = 14
 
 // DefaultFactSettleMinutes is how long runtime facts must stay unchanged
 // before a rule that reads them may create a new decision.
@@ -47,6 +52,9 @@ type AutoAssessmentConfig struct {
 	// that is loaded now and then does not make decisions come and go.
 	// Existing decisions are kept while the rule still holds.
 	FactSettleMinutes int `json:"factSettleMinutes"`
+	// UnusedDays: R-UNUSED needs a gap-free usage observation of this many
+	// days during which the package was not in use.
+	UnusedDays int `json:"unusedDays"`
 }
 
 // RuleMode returns the effective mode of a rule. With the global mode off or in
@@ -94,6 +102,7 @@ func (s *SettingsService) LoadAutoAssessmentConfig(ctx context.Context) (AutoAss
 		GuardEPSS:    DefaultEPSSGuard,
 
 		FactSettleMinutes: DefaultFactSettleMinutes,
+		UnusedDays:        DefaultUnusedDays,
 	}
 	all, err := s.GetAll(ctx)
 	if err != nil {
@@ -124,6 +133,10 @@ func (s *SettingsService) LoadAutoAssessmentConfig(ctx context.Context) (AutoAss
 		case SettingAutoFactSettle:
 			if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 7*24*60 {
 				cfg.FactSettleMinutes = n
+			}
+		case SettingAutoUnusedDays:
+			if n, err := strconv.Atoi(v); err == nil && n >= 7 && n <= 90 {
+				cfg.UnusedDays = n
 			}
 		}
 	}

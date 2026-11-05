@@ -90,7 +90,7 @@ func (e *Evaluator) evaluateServer(ctx context.Context, serverID int64, cfg serv
 		return Result{}, err
 	}
 	rules := enabledRules(cfg)
-	host, err := e.loadHost(ctx, tx, serverID, findings, rules)
+	host, err := e.loadHost(ctx, tx, serverID, findings, rules, time.Duration(cfg.UnusedDays)*24*time.Hour)
 	if err != nil {
 		return Result{}, err
 	}

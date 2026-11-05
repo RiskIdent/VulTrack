@@ -313,6 +313,8 @@ export default function AutoAssessmentSettings() {
 
       <KernelDataCard
         settleMinutes={config.factSettleMinutes}
+        unusedDays={config.unusedDays}
+        onSaveUnused={(d) => save({ unusedDays: d }, 'Observation period saved.')}
         kmodMode={config.rules.find((r) => r.id === 'R-KMOD')?.effectiveMode ?? 'off'}
         saving={saving}
         onSaveSettle={(m) => save({ factSettleMinutes: m }, 'Settle time saved.')}
@@ -347,8 +349,10 @@ function Stat({ label, value, hint }: { label: string; value: number; hint?: str
 // KernelDataCard shows the data R-KMOD relies on (CVE records listing the
 // affected source files, mapped kernel builds) and the settle time for
 // decisions based on runtime facts.
-function KernelDataCard({ settleMinutes, kmodMode, saving, onSaveSettle, onError }: {
+function KernelDataCard({ settleMinutes, unusedDays, kmodMode, saving, onSaveSettle, onSaveUnused, onError }: {
   settleMinutes: number;
+  unusedDays: number;
+  onSaveUnused: (days: number) => void;
   kmodMode: AutoMode;
   saving: boolean;
   onSaveSettle: (minutes: number) => void;
@@ -356,8 +360,19 @@ function KernelDataCard({ settleMinutes, kmodMode, saving, onSaveSettle, onError
 }) {
   const [status, setStatus] = useState<KernelIntelStatus | null>(null);
   const [settle, setSettle] = useState(String(settleMinutes));
+  const [unused, setUnused] = useState(String(unusedDays));
 
   useEffect(() => setSettle(String(settleMinutes)), [settleMinutes]);
+  useEffect(() => setUnused(String(unusedDays)), [unusedDays]);
+
+  const saveUnused = () => {
+    const n = parseInt(unused, 10);
+    if (isNaN(n) || n < 7 || n > 90) {
+      onError('Observation period must be between 7 and 90 days');
+      return;
+    }
+    onSaveUnused(n);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -423,6 +438,21 @@ function KernelDataCard({ settleMinutes, kmodMode, saving, onSaveSettle, onError
           </div>
         </div>
         <button onClick={saveSettle} disabled={saving} className="btn btn-primary flex items-center gap-2">
+          <Save className="w-4 h-4" /> Save
+        </button>
+      </div>
+
+      <div className="flex items-start gap-3 mb-5">
+        <input type="number" min="7" max="90" step="1" value={unused} onChange={(e) => setUnused(e.target.value)} className="input w-24" />
+        <div className="flex-1">
+          <div className="text-[#e8f5e9]">R-UNUSED observation period in days</div>
+          <div className="text-xs text-[#6b7280]">
+            R-UNUSED dismisses a package only after every agent report of this period said which packages were in use, without a gap
+            of more than six hours, and none of them used it. The period counts from the start of the observation, not from the
+            finding. 14 days or more catches weekly jobs.
+          </div>
+        </div>
+        <button onClick={saveUnused} disabled={saving} className="btn btn-primary flex items-center gap-2">
           <Save className="w-4 h-4" /> Save
         </button>
       </div>

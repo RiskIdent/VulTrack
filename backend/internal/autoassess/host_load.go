@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/vultrack/vultrack/internal/services"
 )
 
 // moduleIndexCache keeps module indexes in memory; they are content-addressed
@@ -79,10 +81,63 @@ var blockingInstallCommands = map[string]bool{
 	"/bin/false": true, "/bin/true": true, "/usr/bin/false": true, "/usr/bin/true": true,
 }
 
-// loadHost reads the host context the enabled rules need. Only R-KMOD needs
-// one so far; without it (or without kernel findings) the host stays empty.
-func (e *Evaluator) loadHost(ctx context.Context, tx pgx.Tx, serverID int64, findings []Finding, rules []Rule) (*Host, error) {
+// loadHost reads the host context the enabled rules need: the running kernel
+// for R-KMOD, the packages and their usage for R-UNUSED. Parts no enabled rule
+// needs, or that are unknown, stay nil.
+func (e *Evaluator) loadHost(ctx context.Context, tx pgx.Tx, serverID int64, findings []Finding, rules []Rule, unusedWindow time.Duration) (*Host, error) {
 	h := &Host{FactHashes: map[string]string{}, FactsAge: map[string]time.Duration{}}
+	if _, err := loadKernelHost(ctx, e, tx, serverID, findings, rules, h); err != nil {
+		return nil, err
+	}
+	for _, r := range rules {
+		if r.ID() == "R-UNUSED" {
+			if err := loadPackageHost(ctx, tx, serverID, h, unusedWindow); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return h, nil
+}
+
+// loadPackageHost reads packageInfo and the usage observation. A truncated
+// or unreadable packageInfo leaves Packages nil.
+func loadPackageHost(ctx context.Context, tx pgx.Tx, serverID int64, h *Host, window time.Duration) error {
+	var (
+		hash       string
+		truncated  bool
+		ageSeconds float64
+		data       []byte
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT sf.hash, sf.truncated, EXTRACT(EPOCH FROM NOW() - sf.stable_since)::float8, snap.data
+		FROM server_facts sf JOIN fact_snapshots snap ON snap.hash = sf.hash
+		WHERE sf.server_id = $1 AND sf.category = 'packageInfo'
+	`, serverID).Scan(&hash, &truncated, &ageSeconds, &data)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var entries []PackageInfo
+	if truncated || json.Unmarshal(data, &entries) != nil {
+		return nil
+	}
+	usage, err := services.GetPackageUsage(ctx, tx, serverID)
+	if err != nil {
+		return err
+	}
+	p := NewPackageHost(entries)
+	p.ObservedFor, p.LastInUse, p.Window = usage.ObservedFor, usage.LastInUse, window
+	h.Packages = p
+	h.FactHashes["packageInfo"] = hash
+	h.FactsAge["packageInfo"] = time.Duration(ageSeconds * float64(time.Second))
+	return nil
+}
+
+// loadKernelHost fills h.Kernel when R-KMOD is enabled and the server has
+// kernel findings.
+func loadKernelHost(ctx context.Context, e *Evaluator, tx pgx.Tx, serverID int64, findings []Finding, rules []Rule, h *Host) (*Host, error) {
 	needKernel := false
 	for _, r := range rules {
 		if r.ID() == "R-KMOD" {

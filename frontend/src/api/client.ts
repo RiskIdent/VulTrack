@@ -850,6 +850,7 @@ export const updateAutoAssessmentConfig = (data: {
   guardExploit?: boolean;
   guardEpss?: number;
   factSettleMinutes?: number;
+  unusedDays?: number;
 }) =>
   fetchAPI<import('../types').AutoAssessmentConfig>('/admin/auto-assessment/config', {
     method: 'PUT',

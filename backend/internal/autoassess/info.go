@@ -46,6 +46,7 @@ func Info(cfg services.AutoAssessmentConfig) map[string]any {
 		"guardExploit":      cfg.GuardExploit,
 		"guardEpss":         cfg.GuardEPSS,
 		"factSettleMinutes": cfg.FactSettleMinutes,
+		"unusedDays":        cfg.UnusedDays,
 		"activeRules":       cfg.ActiveRuleIDs(),
 	}
 }

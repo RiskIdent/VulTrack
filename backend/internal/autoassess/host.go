@@ -14,6 +14,9 @@ type Host struct {
 	// Kernel is the running kernel as described by the agent's kernel facts
 	// and the mapped kernel build. Nil when the facts are unknown.
 	Kernel *KernelHost
+	// Packages is the agent's packageInfo with the usage observation. Nil
+	// when packageInfo is unknown or truncated.
+	Packages *PackageHost
 	// FactHashes holds the snapshot hash of each fact category the host
 	// context was built from; recorded as evidence by rules that read them.
 	FactHashes map[string]string

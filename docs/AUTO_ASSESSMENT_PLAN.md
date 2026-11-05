@@ -476,7 +476,8 @@ short-lived processes (cron jobs, scripts), plugins loaded on demand (PAM,
 NSS) and programs shipped in the package itself are all missed. R-UNUSED
 therefore needs three things:
 
-- **Observation over time** (implemented in v1.6.5): `package_usage` records
+- **Observation over time** (since v1.6.5, fixed in v1.6.6 to ignore cut
+  process lists): `package_usage` records
   per server and package when it was last seen in use (also as a replaced,
   still running version); `package_usage_observation` records since when every
   report carried complete `packagesInUse`, at most six hours apart. A missing
@@ -498,3 +499,11 @@ Remaining gap: software outside dpkg (`/opt`, `/usr/local`, pip wheels)
 linking a system library only becomes visible while it runs. That is why
 R-UNUSED stays in shadow mode until the agreement with human assessments has
 been reviewed.
+
+Implemented: `R-UNUSED` v1 (`internal/autoassess/rule_unused.go`), shadow by
+default. Setting `auto_assessment_unused_days` (default 14, 7–90; Admin →
+Assessment Automation). Decisions record the `packageInfo` snapshot hash and
+wait for the settle time like R-KMOD; a package seen in use revokes them at
+once. On a typical Ubuntu 24.04 server almost every library is reachable from a
+package with entry points, so hits are rare by design; old releases upgraded
+in place carry most of the orphaned libraries.

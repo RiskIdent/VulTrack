@@ -439,6 +439,7 @@ export interface AutoAssessmentConfig {
   guardExploit: boolean;
   guardEpss: number;
   factSettleMinutes: number;
+  unusedDays: number;
   activeRules: string[];
 }
 

@@ -30,6 +30,8 @@ type autoAssessmentConfigInput struct {
 	GuardEPSS    *float64          `json:"guardEpss"`
 	// FactSettleMinutes: see services.AutoAssessmentConfig.
 	FactSettleMinutes *int `json:"factSettleMinutes"`
+	// UnusedDays: see services.AutoAssessmentConfig.
+	UnusedDays *int `json:"unusedDays"`
 }
 
 // updateAutoAssessmentConfig validates and stores the configuration, then
@@ -76,6 +78,12 @@ func (h *Handler) updateAutoAssessmentConfig(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusBadRequest, "factSettleMinutes must be between 0 and 10080")
 		}
 		updates[services.SettingAutoFactSettle] = strconv.Itoa(*in.FactSettleMinutes)
+	}
+	if in.UnusedDays != nil {
+		if *in.UnusedDays < 7 || *in.UnusedDays > 90 {
+			return fiber.NewError(fiber.StatusBadRequest, "unusedDays must be between 7 and 90")
+		}
+		updates[services.SettingAutoUnusedDays] = strconv.Itoa(*in.UnusedDays)
 	}
 	if len(updates) > 0 {
 		if err := h.settingsService.SetMultiple(c.Context(), updates); err != nil {
