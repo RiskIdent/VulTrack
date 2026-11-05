@@ -193,7 +193,7 @@ version, which re-evaluates its decisions.
 | R-HDR | 2 | package ships only kernel headers, kernel sources or documentation: `linux-libc-dev`, `linux-headers-*`, `linux-*-headers-*`, `linux-source-*`, `linux-doc`, `*-doc`; not `-dev` packages (static libraries end up in programs built on the host) | not_relevant |
 | R-KMOD | 4 | kernel CVE whose affected code lies only in modules that are neither loaded nor built-in, **and** cannot be loaded (`modules_disabled=1`, blacklisted with `install … /bin/false`, or not present in the module index at all) | not_relevant |
 | R-NET | 4 | network-only CVE (CVSS `AV:N`) in a package whose processes listen on loopback only, and the package has no other attack surface per its precondition analysis | open, with a hint to the AI stage |
-| R-UNUSED | 4 | library CVE, package not mapped by any process, and the package ships no executables or services | candidate; enabled only after shadow evaluation shows it safe |
+| R-UNUSED | 4 | library CVE; the package has not been in use for the observation period (default 14 days, gap-free), has no entry points of its own (programs, services, plugins, hooks) and no installed package with entry points depends on it, directly or transitively | not_relevant; shadow until the comparison with human assessments is reviewed (see §17) |
 
 R-KRN-IDLE (a kernel package installed but not running) was dropped while
 implementing phase 2: the scanner never reports findings for installed kernel
@@ -468,3 +468,33 @@ Each phase is shippable on its own and leaves the system working.
 - **Admin.** `GET /api/v1/admin/kernel-intel/status` and
   `POST /api/v1/admin/kernel-intel/sync`; the Admin card shows CVE record
   counts and every mapped build with its server count.
+
+## 17. R-UNUSED design (phase 4)
+
+A single `packagesInUse` snapshot cannot show that a library is unused:
+short-lived processes (cron jobs, scripts), plugins loaded on demand (PAM,
+NSS) and programs shipped in the package itself are all missed. R-UNUSED
+therefore needs three things:
+
+- **Observation over time** (implemented in v1.6.5): `package_usage` records
+  per server and package when it was last seen in use (also as a replaced,
+  still running version); `package_usage_observation` records since when every
+  report carried complete `packagesInUse`, at most six hours apart. A missing
+  or truncated `packagesInUse` ends the observation. The period starts with the
+  observation, not with the finding: a new CVE for a package that has been
+  unused for weeks is decided at once. Default 14 days, so weekly jobs are
+  seen at least once; configurable.
+- **Entry points and dependencies** from the agent (`packageInfo`, see
+  [AGENT_PACKAGE_INFO_PROMPT.md](AGENT_PACKAGE_INFO_PROMPT.md)): programs,
+  services, plugins and hooks per package, and `Depends`, `Pre-Depends`,
+  `Recommends` with virtual packages resolved. The agent over-reports entry
+  points when in doubt.
+- **Reachability**: a library is dismissed only when no installed package with
+  entry points reaches it through dependencies. This mainly hits libraries left
+  behind by upgrades (old sonames). `libcurl4t64` stays open as long as `curl`
+  is installed, even when `curl` never ran in a report.
+
+Remaining gap: software outside dpkg (`/opt`, `/usr/local`, pip wheels)
+linking a system library only becomes visible while it runs. That is why
+R-UNUSED stays in shadow mode until the agreement with human assessments has
+been reviewed.

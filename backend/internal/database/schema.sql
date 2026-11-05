@@ -539,6 +539,26 @@ CREATE TABLE IF NOT EXISTS kernel_module_index (
     PRIMARY KEY (kernel_release, hash)
 );
 
+-- When each package was last seen in use on a server (packagesInUse: mapped
+-- by a process, also in a replaced version). Rows exist only for packages seen
+-- in use at least once.
+CREATE TABLE IF NOT EXISTS package_usage (
+    server_id      INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    package        VARCHAR(255) NOT NULL,
+    first_in_use_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    last_in_use_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (server_id, package)
+);
+
+-- Since when package usage has been observed on a server without a gap: every
+-- report carried complete packagesInUse and no two were more than six hours
+-- apart. A report without it, or with it truncated, ends the observation.
+CREATE TABLE IF NOT EXISTS package_usage_observation (
+    server_id        INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+    observed_since   TIMESTAMP,          -- NULL: not observed at the moment
+    last_observed_at TIMESTAMP
+);
+
 -- ============================================================================
 -- KERNEL CODE MAP FOR R-KMOD (docs/AUTO_ASSESSMENT_PLAN.md §7)
 -- ============================================================================

@@ -35,6 +35,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   packagesInUse: 'Packages in use',
   services: 'Services',
   virtualization: 'Virtualization',
+  packageInfo: 'Package entry points and dependencies',
 };
 
 // isLoopback tells whether a bind address is reachable only from the host.
@@ -117,6 +118,7 @@ export default function RuntimeFactsPanel({ serverId }: { serverId: number }) {
   const inUse = (cat.packagesInUse?.data as PackageInUse[] | undefined) ?? [];
   const services = (cat.services?.data as ServiceFact[] | undefined) ?? [];
   const virt = cat.virtualization?.data as string | undefined;
+  const pkgInfo = cat.packageInfo?.data as { package: string; entryPoints?: string[]; depends?: string[] }[] | undefined;
   const errors = (rt.errors as { collector: string; error: string }[] | null) ?? [];
   const stale = inUse.filter((p) => p.staleProcesses?.length);
   const exposed = listeners.filter((l) => !isLoopback(l.address));
@@ -134,6 +136,17 @@ export default function RuntimeFactsPanel({ serverId }: { serverId: number }) {
           <div><span className="text-[#6b7280]">Virtualization </span><span className="text-[#e8f5e9]">{virt ?? 'unknown'}</span></div>
           <div><span className="text-[#6b7280]">Listening on non-loopback </span><span className="text-[#e8f5e9]">{cat.listeners ? exposed.length : 'unknown'}</span></div>
           <div><span className="text-[#6b7280]">Processes needing a restart </span><span className={stale.length ? 'text-yellow-400' : 'text-[#e8f5e9]'}>{cat.packagesInUse ? stale.length : 'unknown'}</span></div>
+          <div title="Since when every report has said which packages are in use, without a gap of more than six hours. R-UNUSED needs a long, gap-free observation.">
+            <span className="text-[#6b7280]">Package usage observed </span>
+            <span className="text-[#e8f5e9]">
+              {rt.packageUsage?.observedSince
+                ? `${rt.packageUsage.observedDays.toLocaleString()} days (since ${new Date(rt.packageUsage.observedSince).toLocaleDateString()})`
+                : 'no'}
+            </span>
+          </div>
+          {pkgInfo && (
+            <div><span className="text-[#6b7280]">Packages with entry points </span><span className="text-[#e8f5e9]">{pkgInfo.filter((p) => p.entryPoints?.length).length} of {pkgInfo.length}</span></div>
+          )}
           {kernel?.rebootRequired !== undefined && (
             <div><span className="text-[#6b7280]">Reboot required </span><span className={kernel.rebootRequired ? 'text-yellow-400' : 'text-[#e8f5e9]'}>{kernel.rebootRequired ? 'yes' : 'no'}</span></div>
           )}

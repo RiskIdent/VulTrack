@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
@@ -34,7 +35,7 @@ func NewRuntimeFactsService(db *pgxpool.Pool) *RuntimeFactsService {
 const RuntimeSchemaVersion = 1
 
 // FactCategories are the fact categories, in display order.
-var FactCategories = []string{"kernel", "listeners", "packagesInUse", "services", "virtualization"}
+var FactCategories = []string{"kernel", "listeners", "packagesInUse", "services", "virtualization", "packageInfo"}
 
 // maxRuntimeBytes bounds the runtime object accepted from one report (the agent
 // keeps it below 1 MB; the module index is sent only when it changes).
@@ -51,6 +52,7 @@ type runtimeReport struct {
 	PackagesInUse  json.RawMessage `json:"packagesInUse"`
 	Services       json.RawMessage `json:"services"`
 	Virtualization json.RawMessage `json:"virtualization"`
+	PackageInfo    json.RawMessage `json:"packageInfo"`
 }
 
 func (r runtimeReport) category(name string) json.RawMessage {
@@ -65,6 +67,8 @@ func (r runtimeReport) category(name string) json.RawMessage {
 		return r.Services
 	case "virtualization":
 		return r.Virtualization
+	case "packageInfo":
+		return r.PackageInfo
 	}
 	return nil
 }
@@ -232,6 +236,10 @@ func (s *RuntimeFactsService) Ingest(ctx context.Context, serverID int64, raw js
 		return res, err
 	}
 
+	if err := recordPackageUsage(ctx, tx, serverID, rep.PackagesInUse, slices.Contains(rep.Truncated, "packagesInUse")); err != nil {
+		return res, err
+	}
+
 	if index != nil {
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO kernel_module_index (kernel_release, hash, available, builtin)
@@ -246,8 +254,123 @@ func (s *RuntimeFactsService) Ingest(ctx context.Context, serverID int64, raw js
 	return res, tx.Commit(ctx)
 }
 
+// UsageGap is the longest pause between two reports with complete
+// packagesInUse that still counts as continuous observation.
+const UsageGap = 6 * time.Hour
+
+// recordPackageUsage updates when each package was last seen in use and since
+// when usage has been observed without a gap. A missing, unreadable or
+// truncated packagesInUse ends the observation: packages beyond the cut could
+// have been in use.
+func recordPackageUsage(ctx context.Context, tx pgx.Tx, serverID int64, raw json.RawMessage, truncated bool) error {
+	var entries []struct {
+		Package string `json:"package"`
+	}
+	if !present(raw) || truncated || json.Unmarshal(raw, &entries) != nil {
+		return endUsageObservation(ctx, tx, serverID)
+	}
+	pkgs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Package != "" {
+			pkgs = append(pkgs, e.Package)
+		}
+	}
+	// Skip rewriting rows touched within the last 50 minutes, so frequent
+	// reports do not churn the table.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO package_usage (server_id, package, first_in_use_at, last_in_use_at)
+		SELECT $1, p, NOW(), NOW() FROM unnest($2::text[]) AS p
+		ON CONFLICT (server_id, package) DO UPDATE SET last_in_use_at = NOW()
+		WHERE package_usage.last_in_use_at < NOW() - interval '50 minutes'
+	`, serverID, pkgs); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO package_usage_observation (server_id, observed_since, last_observed_at)
+		VALUES ($1, NOW(), NOW())
+		ON CONFLICT (server_id) DO UPDATE SET
+			observed_since = CASE
+				WHEN package_usage_observation.observed_since IS NULL
+				  OR package_usage_observation.last_observed_at < NOW() - make_interval(secs => $2)
+				THEN NOW() ELSE package_usage_observation.observed_since END,
+			last_observed_at = NOW()
+	`, serverID, UsageGap.Seconds())
+	return err
+}
+
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func endUsageObservation(ctx context.Context, db execer, serverID int64) error {
+	_, err := db.Exec(ctx, `UPDATE package_usage_observation SET observed_since = NULL WHERE server_id = $1`, serverID)
+	return err
+}
+
+// PackageUsage is what is known about package usage on a server.
+type PackageUsage struct {
+	// ObservedSince is the start of the current gap-free observation; nil
+	// when usage is not being observed (old agent, missing or cut data, or a
+	// gap of more than UsageGap). Only valid while LastObservedAt is recent.
+	ObservedSince  *time.Time `json:"observedSince,omitempty"`
+	LastObservedAt *time.Time `json:"lastObservedAt,omitempty"`
+	// ObservedFor is how long the observation has run, measured by the
+	// database clock; 0 when not observed or the last report is older than
+	// UsageGap.
+	ObservedFor time.Duration `json:"-"`
+	// LastInUse maps each package ever seen in use to how long ago that was.
+	LastInUse map[string]time.Duration `json:"-"`
+	// ObservedDays and TrackedPackages summarise the above for the UI.
+	ObservedDays    float64 `json:"observedDays"`
+	TrackedPackages int     `json:"trackedPackages"`
+}
+
+// GetPackageUsage reads the usage observation of a server. q is the pool or
+// a transaction.
+func GetPackageUsage(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}, serverID int64) (*PackageUsage, error) {
+	u := &PackageUsage{LastInUse: map[string]time.Duration{}}
+	var forSecs float64
+	err := q.QueryRow(ctx, `
+		SELECT observed_since, last_observed_at,
+		       CASE WHEN observed_since IS NOT NULL AND last_observed_at >= NOW() - make_interval(secs => $2)
+		            THEN EXTRACT(EPOCH FROM NOW() - observed_since)::float8 ELSE 0 END
+		FROM package_usage_observation WHERE server_id = $1
+	`, serverID, UsageGap.Seconds()).Scan(&u.ObservedSince, &u.LastObservedAt, &forSecs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return u, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	u.ObservedFor = time.Duration(forSecs * float64(time.Second))
+	rows, err := q.Query(ctx, `
+		SELECT package, EXTRACT(EPOCH FROM NOW() - last_in_use_at)::float8 FROM package_usage WHERE server_id = $1
+	`, serverID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		var ago float64
+		if err := rows.Scan(&p, &ago); err != nil {
+			return nil, err
+		}
+		u.LastInUse[p] = time.Duration(ago * float64(time.Second))
+	}
+	u.ObservedDays = float64(int(u.ObservedFor.Hours()/24*10)) / 10
+	u.TrackedPackages = len(u.LastInUse)
+	return u, rows.Err()
+}
+
 // forget makes every fact category of the server unknown.
 func (s *RuntimeFactsService) forget(ctx context.Context, serverID int64, res *IngestResult) (IngestResult, error) {
+	if err := endUsageObservation(ctx, s.db, serverID); err != nil {
+		return *res, err
+	}
 	rows, err := s.db.Query(ctx, `DELETE FROM server_facts WHERE server_id = $1 RETURNING category`, serverID)
 	if err != nil {
 		return *res, err
@@ -347,6 +470,7 @@ type ServerRuntime struct {
 	Truncated     []string            `json:"truncated"`
 	Categories    []FactCategoryState `json:"categories"`
 	ModuleIndex   *ModuleIndexSummary `json:"moduleIndex,omitempty"`
+	PackageUsage  *PackageUsage       `json:"packageUsage,omitempty"`
 	Unknown       []string            `json:"unknown"` // categories without data
 }
 
@@ -400,6 +524,14 @@ func (s *RuntimeFactsService) Get(ctx context.Context, serverID int64) (*ServerR
 		} else {
 			rt.Unknown = append(rt.Unknown, cat)
 		}
+	}
+
+	usage, err := GetPackageUsage(ctx, s.db, serverID)
+	if err != nil {
+		return nil, err
+	}
+	if usage.LastObservedAt != nil {
+		rt.PackageUsage = usage
 	}
 
 	if k, ok := byCat["kernel"]; ok {

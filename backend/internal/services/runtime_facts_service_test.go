@@ -75,7 +75,7 @@ func TestRuntimeFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rt.Categories) != 3 || strings.Join(rt.Unknown, ",") != "services,virtualization" {
+	if len(rt.Categories) != 3 || strings.Join(rt.Unknown, ",") != "services,virtualization,packageInfo" {
 		t.Errorf("categories %d, unknown %v", len(rt.Categories), rt.Unknown)
 	}
 	if rt.ModuleIndex == nil || !rt.ModuleIndex.Known || rt.ModuleIndex.Available != 2 || rt.ModuleIndex.Builtin != 1 {

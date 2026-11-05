@@ -333,7 +333,7 @@ The report body is identical across v1 and v2.
 | `osCodename` | string | Distribution codename | `"noble"`, `"bookworm"`, `"jammy"` |
 | `packageManager` | string | Package manager type | `"dpkg"`, `"rpm"` |
 | `reportedAt` | string | ISO 8601 timestamp; server uses `NOW()` if omitted | `"2026-01-25T14:30:00Z"` |
-| `runtime` | object | Runtime facts: kernel modules, listening sockets, packages in use, services, virtualization (see below) | |
+| `runtime` | object | Runtime facts: kernel modules, listening sockets, packages in use, services, virtualization, package entry points and dependencies (see below) | |
 
 ### Package object
 
@@ -363,6 +363,7 @@ are specified in [AGENT_RUNTIME_FACTS_PROMPT.md](AGENT_RUNTIME_FACTS_PROMPT.md).
   "packagesInUse": [ {"package": "libssl3t64", "processes": ["nginx", "sshd"], "staleProcesses": ["nginx"]} ],
   "services": [ {"unit": "nginx.service", "activeState": "active", "unitFileState": "enabled", "package": "nginx"} ],
   "virtualization": "kvm",
+  "packageInfo": [ {"package": "curl", "entryPoints": ["executable"], "depends": ["libc6", "libcurl4t64"]} ],
   "errors": [ {"collector": "services", "error": "..."} ],
   "truncated": []
 }
@@ -380,6 +381,12 @@ How the backend treats it:
   last changed.
 - `kernel.moduleIndex.available/builtin` are stored once per kernel release
   and only if they match `moduleIndex.hash`; afterwards the hash alone suffices.
+- `packagesInUse` also feeds the package usage observation: when each
+  package was last in use, and since when usage has been observed without a
+  gap (complete `packagesInUse` in every report, at most six hours apart). A
+  report without it, or with it in `truncated`, ends the observation.
+- `packageInfo` (entry points and dependencies of every installed package) is
+  specified in [AGENT_PACKAGE_INFO_PROMPT.md](AGENT_PACKAGE_INFO_PROMPT.md).
 - The runtime object may be at most 2 MB; the whole request at most 4 MB.
   Request bodies are not accepted gzip-compressed.
 

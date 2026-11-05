@@ -557,6 +557,7 @@ export interface ServerRuntime {
   truncated: string[];
   categories: FactCategoryState[];
   moduleIndex?: { kernelRelease: string; hash: string; known: boolean; available: number; builtin: number };
+  packageUsage?: { observedSince?: string; lastObservedAt?: string; observedDays: number; trackedPackages: number };
   unknown: string[];
 }
 
