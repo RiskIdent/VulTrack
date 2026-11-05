@@ -137,6 +137,10 @@ volumes:
 **Caddyfile:**
 ```
 vultrack.example.com {
+    # Compress the frontend's static files (the backend compresses its own
+    # API responses; Caddy does not compress them twice)
+    encode zstd gzip
+
     # Frontend (static files)
     handle {
         reverse_proxy frontend:8080

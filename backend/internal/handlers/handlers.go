@@ -13,6 +13,7 @@ import (
 
 	"github.com/gofiber/adaptor/v2"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
@@ -226,6 +227,17 @@ func New(
 	app.Use(recover.New())
 	app.Use(logger.New(logger.Config{
 		Format: "[${time}] ${status} - ${method} ${path} (${latency})\n",
+	}))
+	// Compress responses for clients that accept it. Large JSON lists (all
+	// findings of a server: ~5 MB) shrink about 17-fold, which decides the
+	// load time on slower links. MCP streams (Streamable HTTP/SSE) and
+	// /metrics (compressed by the Prometheus handler itself) are left alone.
+	app.Use(compress.New(compress.Config{
+		Level: compress.LevelBestSpeed,
+		Next: func(c *fiber.Ctx) bool {
+			p := c.Path()
+			return p == "/metrics" || strings.HasPrefix(p, "/api/mcp")
+		},
 	}))
 	corsConfig := cors.Config{
 		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
