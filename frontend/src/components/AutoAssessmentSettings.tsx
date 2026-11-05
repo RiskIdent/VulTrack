@@ -28,6 +28,12 @@ export function ModeBadge({ mode }: { mode: AutoMode }) {
   return <span className={`px-2 py-0.5 rounded text-xs font-medium border ${modeBadge[mode]}`}>{mode}</span>;
 }
 
+// agreementPct rounds down to one decimal, so a single contradiction never
+// shows as 100 %.
+export function agreementPct(ok: number, judged: number) {
+  return Math.floor((ok / judged) * 1000) / 10;
+}
+
 // agreement compares a rule with human assessments of the same servers.
 // "Accepted risk" (relevant but acceptable) does not contradict "not
 // relevant"; only "relevant" does.
@@ -35,7 +41,7 @@ function agreement(r?: AutoRuleStats) {
   if (!r) return <span className="text-[#6b7280]">–</span>;
   const judged = r.humanAgree + r.humanAccepted + r.humanDisagree;
   if (judged === 0) return <span className="text-[#6b7280]" title="No human assessment on the same servers yet">no data</span>;
-  const pct = Math.round(((judged - r.humanDisagree) / judged) * 100);
+  const pct = agreementPct(judged - r.humanDisagree, judged);
   const cls = r.humanDisagree === 0 ? 'text-[#4ade80]' : pct >= 95 ? 'text-yellow-400' : 'text-red-400';
   return (
     <span className={cls}

@@ -4,7 +4,7 @@ import { X, Settings } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { getAutoAssessmentStats, getAutoDecisions } from '../api/client';
 import { useAuth } from '../context/AuthContext';
-import { ModeBadge } from '../components/AutoAssessmentSettings';
+import { ModeBadge, agreementPct } from '../components/AutoAssessmentSettings';
 import { DecisionStateBadge, EvidenceTable, DecisionTimeline, ServerDecisionActions, StatusPill } from '../components/AutoDecision';
 import { Pagination } from '../components/TableControls';
 import type { AutoAssessmentConfig, AutoAssessmentStats, AutoDecision } from '../types';
@@ -102,7 +102,7 @@ export default function AutoDecisions() {
           <Card label="Overridden by human" value={t.overridden} onClick={() => setParam('state', 'overridden')} active={state === 'overridden'} />
           <div className="card">
             <div className={`text-2xl font-bold ${t.humanDisagree ? 'text-yellow-400' : 'text-[#4ade80]'}`}>
-              {judged ? `${Math.round(((judged - t.humanDisagree) / judged) * 100)}%` : '–'}
+              {judged ? `${agreementPct(judged - t.humanDisagree, judged)}%` : '–'}
             </div>
             <div className="text-sm text-[#6b7280]"
               title={`Decisions where a human assessed the same server: ${t.humanAgree} not relevant, ${t.humanAccepted} accepted risk (no contradiction), ${t.humanDisagree} relevant (contradiction)`}>
