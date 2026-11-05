@@ -272,6 +272,47 @@ func (s *Syncer) saveBuild(ctx context.Context, in BuildInput, res *BuildResult)
 	return tx.Commit(ctx)
 }
 
+// buildsInUse selects the IDs of kernel builds a server currently runs: its
+// kernel facts name the release and its linux-modules-<release> package the
+// version.
+const buildsInUse = `
+	SELECT kb.id FROM kernel_builds kb
+	JOIN fact_snapshots snap ON snap.data ->> 'release' = kb.release
+	JOIN server_facts sf ON sf.hash = snap.hash AND sf.category = 'kernel'
+	JOIN servers srv ON srv.id = sf.server_id AND srv.arch = kb.arch
+	JOIN server_packages sp ON sp.server_id = sf.server_id AND sp.removed_at IS NULL
+	     AND sp.name = 'linux-modules-' || kb.release AND sp.version = kb.version`
+
+// Cleanup deletes kernel builds no server has run for retention, with their
+// source maps, and CVE records of CVEs without active kernel findings that
+// were fetched more than retention ago. It runs whatever the mode is, so
+// switching R-KMOD off does not leave data behind.
+func (s *Syncer) Cleanup(ctx context.Context, retention time.Duration) (builds, cves int64, err error) {
+	secs := retention.Seconds()
+	if _, err = s.db.Exec(ctx, `UPDATE kernel_builds SET last_used_at = NOW() WHERE id IN (`+buildsInUse+`)`); err != nil {
+		return 0, 0, err
+	}
+	tag, err := s.db.Exec(ctx, `
+		DELETE FROM kernel_builds
+		WHERE COALESCE(last_used_at, built_at) < NOW() - make_interval(secs => $1)
+		  AND id NOT IN (`+buildsInUse+`)
+	`, secs)
+	if err != nil {
+		return 0, 0, err
+	}
+	builds = tag.RowsAffected()
+	tag, err = s.db.Exec(ctx, `
+		DELETE FROM kernel_cve_files k
+		WHERE k.fetched_at < NOW() - make_interval(secs => $1)
+		  AND NOT EXISTS (SELECT 1 FROM findings f
+		                  WHERE f.cve_id = k.cve_id AND f.package_name = 'kernel' AND f.resolved_at IS NULL)
+	`, secs)
+	if err != nil {
+		return builds, 0, err
+	}
+	return builds, tag.RowsAffected(), nil
+}
+
 // Status summarises the kernel data for the UI.
 type Status struct {
 	CVEs struct {

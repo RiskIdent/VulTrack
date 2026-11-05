@@ -196,7 +196,8 @@ func main() {
 	// have changed a rule.
 	autoEvaluator.TriggerAll("start-up")
 
-	// Daily cleanup of runtime fact snapshots nothing refers to any more.
+	// Daily cleanup of runtime fact snapshots nothing refers to any more, and
+	// of kernel builds no server has run for 30 days.
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
@@ -208,6 +209,14 @@ func main() {
 			}
 			if snaps > 0 || idx > 0 {
 				log.Info().Int64("snapshots", snaps).Int64("moduleIndexes", idx).Msg("Runtime facts cleaned up")
+			}
+			builds, cves, err := kernelSyncer.Cleanup(context.Background(), 30*24*time.Hour)
+			if err != nil {
+				log.Error().Err(err).Msg("Kernel data cleanup failed")
+				continue
+			}
+			if builds > 0 || cves > 0 {
+				log.Info().Int64("kernelBuilds", builds).Int64("cveRecords", cves).Msg("Kernel data cleaned up")
 			}
 		}
 	}()

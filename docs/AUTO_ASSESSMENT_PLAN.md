@@ -459,6 +459,12 @@ Each phase is shippable on its own and leaves the system working.
 - **Network.** The backend needs outbound HTTPS to `cveawg.mitre.org` and
   `launchpad.net` (redirects to `launchpadlibrarian.net`). Nothing is fetched
   while automated assessment or R-KMOD is off.
+- **Storage.** Packages are streamed and never written to disk; only the
+  result is stored in PostgreSQL: about 15 MB per kernel build (source map)
+  and about 2 MB for all CVE records. A daily cleanup deletes builds no server
+  has run for 30 days (`kernel_builds.last_used_at`), with their source maps,
+  and CVE records without active kernel findings fetched more than 30 days
+  ago. A build that comes back into use is mapped again.
 - **Admin.** `GET /api/v1/admin/kernel-intel/status` and
   `POST /api/v1/admin/kernel-intel/sync`; the Admin card shows CVE record
   counts and every mapped build with its server count.

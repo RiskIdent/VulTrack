@@ -568,8 +568,10 @@ CREATE TABLE IF NOT EXISTS kernel_builds (
     modules_verified BOOLEAN NOT NULL DEFAULT false, -- module packages were listed
     shipped_modules  INTEGER NOT NULL DEFAULT 0,
     built_at         TIMESTAMP NOT NULL DEFAULT NOW(),
+    last_used_at     TIMESTAMP,              -- last daily check that found a server running it
     UNIQUE (release, version, arch)
 );
+ALTER TABLE kernel_builds ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP;
 
 -- How each source file is built in a kernel build: built in, as a module, or
 -- not at all (see internal/kernelintel).

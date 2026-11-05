@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vultrack/vultrack/internal/services"
 	"github.com/vultrack/vultrack/internal/testdb"
@@ -113,5 +114,27 @@ func TestSyncer(t *testing.T) {
 	s.RunOnce(context.Background())
 	if len(changes) != 1 {
 		t.Errorf("an idle sync triggered a re-evaluation: %v", changes)
+	}
+
+	// Cleanup: a build in use stays, whatever its age.
+	exec(`UPDATE kernel_builds SET built_at = NOW() - interval '90 days'`)
+	exec(`UPDATE kernel_cve_files SET fetched_at = NOW() - interval '90 days'`)
+	if b, c, err := s.Cleanup(ctx, 30*24*time.Hour); err != nil || b != 0 || c != 0 {
+		t.Fatalf("cleanup of data in use: %d builds, %d CVEs, %v", b, c, err)
+	}
+	// The server updates its kernel: the old build is kept for the retention
+	// period after it was last seen in use, then deleted with its source map.
+	exec(`UPDATE server_packages SET version = '6.8.0-150.150'`)
+	exec(`UPDATE findings SET resolved_at = NOW() WHERE cve_id = 'CVE-3'`)
+	if b, c, err := s.Cleanup(ctx, 30*24*time.Hour); err != nil || b != 0 || c != 1 {
+		t.Fatalf("cleanup right after the update: %d builds, %d CVEs, %v", b, c, err)
+	}
+	exec(`UPDATE kernel_builds SET last_used_at = NOW() - interval '31 days'`)
+	if b, _, err := s.Cleanup(ctx, 30*24*time.Hour); err != nil || b != 1 {
+		t.Fatalf("cleanup of the unused build: %d, %v", b, err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM kernel_source_files`).Scan(&left); err != nil || left != 0 {
+		t.Errorf("source map rows left: %d %v", left, err)
 	}
 }
