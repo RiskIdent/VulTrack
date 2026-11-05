@@ -16,11 +16,11 @@ import (
 const (
 	SettingAIEnabled      = "ai_enabled"       // master toggle for the feature
 	SettingAIAutoAssess   = "ai_auto_assess"   // auto-assess findings entering the triage queue
-	SettingAIModel        = "ai_model"         // model id, e.g. "claude-haiku-4-5"
+	SettingAIModel        = "ai_model"         // model id, e.g. "claude-haiku-5-5"
 	SettingAISystemPrompt = "ai_system_prompt" // admin-configured infrastructure context
 
 	// DefaultAIModel is used when ai_model is unset.
-	DefaultAIModel = "claude-haiku-4-5"
+	DefaultAIModel = "claude-haiku-5-5"
 )
 
 // SettingsService handles application settings

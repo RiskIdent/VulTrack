@@ -211,7 +211,7 @@ files.
 
 | Stage | Purpose | Default model | Runs for |
 |---|---|---|---|
-| Advisory (exists) | explains attack vector and prerequisites, recommends a status; advisory only | `claude-haiku-5-5` (today `claude-haiku-4-5`, ~10× more expensive) | every CVE in the triage queue |
+| Advisory (exists) | explains attack vector and prerequisites, recommends a status; advisory only | `claude-haiku-5-5` (default since 2026-11-05; was `claude-haiku-4-5`, ~10× more expensive) | every CVE in the triage queue |
 | Precondition analysis (new) | structured preconditions per CVE; the system checks them per server | `claude-sonnet-5-5`; `claude-opus-5-5` selectable and as optional escalation | only CVEs no rule decided |
 
 ### 8.1 Precondition analysis

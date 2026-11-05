@@ -16,9 +16,11 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-// maxOutputTokens caps the response. The structured output is small, so this is
-// generous; staying well under ~16k also keeps the request non-streaming-safe.
-const maxOutputTokens = 1500
+// maxOutputTokens caps the response. The structured output itself is small, but
+// on Claude Haiku 5.5 (and other current models) adaptive thinking is on by
+// default and counts toward this cap, so it leaves room for thinking. Staying
+// well under ~16k keeps the request non-streaming-safe.
+const maxOutputTokens = 8000
 
 // Non-retryable assessment errors. Transient errors (network, rate limit, 5xx)
 // are returned as wrapped errors and may be retried by the caller.
@@ -90,7 +92,7 @@ func New(apiKey, workspaceID string, timeoutSec int) *Client {
 // AssessOptions carries the per-request configuration that comes from settings
 // and may change between calls.
 type AssessOptions struct {
-	Model        string // model id, e.g. "claude-haiku-4-5"
+	Model        string // model id, e.g. "claude-haiku-5-5"
 	InfraContext string // admin-configured infrastructure context
 }
 
