@@ -21,6 +21,8 @@ type StaleNotifier struct {
 	settings *services.SettingsService
 	servers  *services.ServerService
 	email    mailer
+	// baseURL is where users reach VulTrack, for links; "" = no links.
+	baseURL string
 
 	// now is the clock; tests replace it.
 	now func() time.Time
@@ -37,8 +39,9 @@ type mailer interface {
 }
 
 // NewStaleNotifier creates a StaleNotifier.
-func NewStaleNotifier(settings *services.SettingsService, servers *services.ServerService, email mailer) *StaleNotifier {
-	return &StaleNotifier{settings: settings, servers: servers, email: email, now: time.Now, stopCh: make(chan struct{})}
+func NewStaleNotifier(settings *services.SettingsService, servers *services.ServerService, email mailer, baseURL string) *StaleNotifier {
+	return &StaleNotifier{settings: settings, servers: servers, email: email, baseURL: strings.TrimRight(baseURL, "/"),
+		now: time.Now, stopCh: make(chan struct{})}
 }
 
 // Start checks every ten minutes.
@@ -117,7 +120,7 @@ func (n *StaleNotifier) send(ctx context.Context, cfg services.StaleConfig, toda
 	if len(stale) == 0 {
 		return 0, nil // no warnings, no mail
 	}
-	subject, htmlBody, textBody := staleEmail(stale, cfg.Hours)
+	subject, htmlBody, textBody := staleEmail(stale, cfg.Hours, n.baseURL)
 	if err := n.email.SendEmail(cfg.EmailTo, subject, htmlBody, textBody); err != nil {
 		return 0, err
 	}
@@ -137,7 +140,7 @@ func humanAge(seconds float64) string {
 	return fmt.Sprintf("%d days %d h", h/24, h%24)
 }
 
-func staleEmail(stale []models.Server, hours int) (subject, htmlBody, textBody string) {
+func staleEmail(stale []models.Server, hours int, baseURL string) (subject, htmlBody, textBody string) {
 	subject = fmt.Sprintf("VulTrack: %d server(s) without agent report for more than %d h", len(stale), hours)
 	var hb, tb strings.Builder
 	fmt.Fprintf(&hb, `<p>These servers have not sent an agent report for more than %d hours. Their findings may be out of date.</p>`, hours)
@@ -149,12 +152,28 @@ func staleEmail(stale []models.Server, hours int) (subject, htmlBody, textBody s
 		if s.LastReportAt != nil {
 			last = s.LastReportAt.Format("2006-01-02 15:04") + " UTC"
 		}
+		name := html.EscapeString(s.Name)
+		textName := s.Name
+		if baseURL != "" {
+			link := fmt.Sprintf("%s/servers/%d", baseURL, s.ID)
+			name = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(link), name)
+			textName = s.Name + " <" + link + ">"
+		}
 		fmt.Fprintf(&hb, `<tr style="border-bottom:1px solid #eee"><td>%s</td><td>%s</td><td>%s</td><td>%s %s</td></tr>`,
-			html.EscapeString(s.Name), last, humanAge(s.ReportAgeSeconds), html.EscapeString(s.OSFamily), html.EscapeString(s.OSRelease))
-		fmt.Fprintf(&tb, "- %s: last report %s (%s ago), %s %s\n", s.Name, last, humanAge(s.ReportAgeSeconds), s.OSFamily, s.OSRelease)
+			name, last, humanAge(s.ReportAgeSeconds), html.EscapeString(s.OSFamily), html.EscapeString(s.OSRelease))
+		fmt.Fprintf(&tb, "- %s: last report %s (%s ago), %s %s\n", textName, last, humanAge(s.ReportAgeSeconds), s.OSFamily, s.OSRelease)
 	}
-	hb.WriteString(`</table><p>Servers that were switched off on purpose can be marked as disabled in VulTrack under ` +
-		`Admin &rarr; Servers; they are then no longer reported.</p>`)
-	tb.WriteString("\nServers that were switched off on purpose can be marked as disabled in VulTrack under Admin -> Servers; they are then no longer reported.\n")
+	hb.WriteString(`</table>`)
+	if baseURL != "" {
+		list, admin := baseURL+"/servers?status=stale", baseURL+"/admin?tab=servers"
+		fmt.Fprintf(&hb, `<p><a href="%s">All servers without report</a> &middot; Servers switched off on purpose can be marked as disabled under `+
+			`<a href="%s">Admin &rarr; Servers</a>; they are then no longer reported.</p>`, html.EscapeString(list), html.EscapeString(admin))
+		fmt.Fprintf(&tb, "\nAll servers without report: %s\nServers switched off on purpose can be marked as disabled under Admin -> Servers (%s); "+
+			"they are then no longer reported.\n", list, admin)
+	} else {
+		hb.WriteString(`<p>Servers that were switched off on purpose can be marked as disabled in VulTrack under ` +
+			`Admin &rarr; Servers; they are then no longer reported.</p>`)
+		tb.WriteString("\nServers that were switched off on purpose can be marked as disabled in VulTrack under Admin -> Servers; they are then no longer reported.\n")
+	}
 	return subject, hb.String(), tb.String()
 }

@@ -92,7 +92,7 @@ func TestStaleServers(t *testing.T) {
 
 	// Email: off by default, then only with stale servers, once a day, from the hour on.
 	mail := &fakeMailer{}
-	n := NewStaleNotifier(settings, servers, mail)
+	n := NewStaleNotifier(settings, servers, mail, "https://vultrack.example.com/")
 	clock := time.Date(2026, 11, 11, 7, 0, 0, 0, time.Local)
 	n.now = func() time.Time { return clock }
 	run := func() int {
@@ -114,7 +114,8 @@ func TestStaleServers(t *testing.T) {
 		t.Error("sent before the configured hour")
 	}
 	clock = clock.Add(2 * time.Hour)
-	if run() != 1 || len(mail.sent) != 1 || !strings.Contains(mail.body, "silent") || strings.Contains(mail.body, "off:") {
+	if run() != 1 || len(mail.sent) != 1 || !strings.Contains(mail.body, "silent <https://vultrack.example.com/servers/") ||
+		!strings.Contains(mail.body, "https://vultrack.example.com/servers?status=stale") || strings.Contains(mail.body, "- off") {
 		t.Fatalf("first email: %v %q", mail.sent, mail.body)
 	}
 	if run() != 0 || len(mail.sent) != 1 {

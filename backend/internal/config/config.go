@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -50,6 +51,10 @@ type Config struct {
 	JiraAPIToken   string
 	JiraProjectKey string
 	JiraIssueType  string
+
+	// PublicURL is where users reach VulTrack (e.g. https://vultrack.example.com),
+	// used for links in emails. See BaseURL for the fallbacks.
+	PublicURL string
 
 	// Agent JWT signing secret for v2 API (HS256).
 	// If empty, a random secret is generated on startup — tokens will be invalidated on restart.
@@ -142,6 +147,7 @@ func Load() (*Config, error) {
 		AIWorkers:        getEnvAsInt("AI_ASSESSMENT_WORKERS", 2),
 		AIMaxRetries:     getEnvAsInt("AI_ASSESSMENT_MAX_RETRIES", 2),
 		AIRequestTimeout: getEnvAsInt("AI_ASSESSMENT_TIMEOUT", 60),
+		PublicURL:        getEnv("VULTRACK_URL", ""),
 	}
 
 	return cfg, nil
@@ -204,4 +210,20 @@ func getEnvAsFloat(key string, defaultValue float64) float64 {
 		}
 	}
 	return defaultValue
+}
+
+// BaseURL returns the URL users reach VulTrack under, without trailing
+// slash, for links in emails: VULTRACK_URL, else OIDC_FRONTEND_URL when it is
+// absolute, else scheme and host of OIDC_REDIRECT_URL. "" when none is known.
+func (c *Config) BaseURL() string {
+	if u := strings.TrimRight(strings.TrimSpace(c.PublicURL), "/"); u != "" {
+		return u
+	}
+	if u := strings.TrimSpace(c.OIDCFrontendURL); strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return strings.TrimRight(u, "/")
+	}
+	if u, err := url.Parse(strings.TrimSpace(c.OIDCRedirectURL)); err == nil && u.Scheme != "" && u.Host != "" {
+		return u.Scheme + "://" + u.Host
+	}
+	return ""
 }

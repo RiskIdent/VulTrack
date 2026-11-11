@@ -179,6 +179,7 @@ All configuration is done via environment variables.
 | `POSTGRES_PASSWORD` | PostgreSQL password | `vultrack` |
 | `POSTGRES_DB` | PostgreSQL database name | `vultrack` |
 | `BACKEND_PORT` | Port the backend listens on | `8080` |
+| `VULTRACK_URL` | URL users reach VulTrack under (e.g. `https://vultrack.example.com`), for links in emails. If unset, `OIDC_FRONTEND_URL` (when absolute) or the host of `OIDC_REDIRECT_URL` is used | *(empty)* |
 | `LOG_LEVEL` | Log level (debug, info, warn, error) | `info` |
 | `TRIAGE_CVSS_THRESHOLD` | Minimum CVSS score for triage queue | `7.0` |
 | `CORS_ORIGINS` | Comma-separated origins for CORS (required when using OIDC) | *(empty)* |

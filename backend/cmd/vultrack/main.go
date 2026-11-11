@@ -186,7 +186,10 @@ func main() {
 	reportScheduler := scheduler.NewReportScheduler(reportScheduleService, reportService, emailService)
 
 	// Daily email listing servers without agent reports (only when there are any)
-	staleNotifier := scheduler.NewStaleNotifier(settingsService, serverService, emailService)
+	staleNotifier := scheduler.NewStaleNotifier(settingsService, serverService, emailService, cfg.BaseURL())
+	if cfg.BaseURL() == "" {
+		log.Info().Msg("VULTRACK_URL is not set: emails will not contain links")
+	}
 
 	// Start OVAL syncer
 	go ovalSyncer.Start()
