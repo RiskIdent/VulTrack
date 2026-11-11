@@ -29,7 +29,9 @@ type Rule interface {
 	Version() int
 	Description() string
 	// Dismiss reports whether the finding is not relevant on the host, with a
-	// one-line explanation that is stored as evidence. h may be nil or partly
+	// one-line explanation that is stored as evidence. When it does not
+	// dismiss, the explanation may say why (shown when a decision is revoked);
+	// "" means the rule does not apply to the finding. h may be nil or partly
 	// unknown.
 	Dismiss(f Finding, h *Host) (bool, string)
 }
@@ -65,7 +67,10 @@ func (vexNotAffected) Description() string {
 }
 func (vexNotAffected) Dismiss(f Finding, _ *Host) (bool, string) {
 	if f.VexStatus != "not_affected" {
-		return false, ""
+		if f.VexStatus == "" {
+			return false, "no Canonical VEX statement"
+		}
+		return false, "Canonical VEX status is " + f.VexStatus
 	}
 	if f.VexJustification != "" {
 		return true, "Canonical VEX: not affected (" + f.VexJustification + ")"

@@ -142,14 +142,18 @@ func (h *Handler) getAutoDecisions(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"decisions": decisions, "total": total})
 }
 
-// getDecisionEvents returns the audit trail, optionally for one server or CVE.
+// getDecisionEvents returns the audit trail, filtered by server, CVE, event
+// (e.g. auto_revoked), rule and search, newest first.
 // GET /api/v1/auto-assessment/events
 func (h *Handler) getDecisionEvents(c *fiber.Ctx) error {
-	events, err := h.autoAssessmentService.Events(c.Context(), int64(c.QueryInt("serverId", 0)), c.Query("cveId"), c.QueryInt("limit", 100))
+	events, total, err := h.autoAssessmentService.Events(c.Context(), services.EventFilter{
+		ServerID: int64(c.QueryInt("serverId", 0)), CVEID: c.Query("cveId"), Event: c.Query("event"),
+		RuleID: c.Query("ruleId"), Search: c.Query("search"), Limit: c.QueryInt("limit", 100), Offset: c.QueryInt("offset", 0),
+	})
 	if err != nil {
 		return err
 	}
-	return c.JSON(fiber.Map{"events": events})
+	return c.JSON(fiber.Map{"events": events, "total": total})
 }
 
 // getCVEServerStatus returns the effective status of every affected server.

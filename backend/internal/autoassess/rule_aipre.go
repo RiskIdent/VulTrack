@@ -83,12 +83,19 @@ func (aiPreconditions) FactsUsedBy(f Finding, h *Host) []string {
 }
 
 func (aiPreconditions) Dismiss(f Finding, h *Host) (bool, string) {
-	if h == nil || h.Runtime == nil {
-		return false, ""
+	if h == nil || h.Preconditions == nil {
+		return false, "no AI precondition analysis"
 	}
 	a, ok := h.Preconditions[f.CVEID]
-	if !ok || !a.Result.Determinable || len(a.Result.Paths) == 0 {
-		return false, ""
+	switch {
+	case !ok:
+		return false, "no AI precondition analysis"
+	case h.Runtime == nil:
+		return false, "no runtime facts from the agent"
+	case !a.Result.Determinable:
+		return false, "the analysis could not determine the preconditions"
+	case len(a.Result.Paths) == 0:
+		return false, "the analysis lists no attack path"
 	}
 	parts := make([]string, 0, len(a.Result.Paths))
 	for i, p := range a.Result.Paths {
@@ -103,7 +110,7 @@ func (aiPreconditions) Dismiss(f Finding, h *Host) (bool, string) {
 			}
 		}
 		if reason == "" {
-			return false, "" // this path may be open
+			return false, fmt.Sprintf("attack path %d is not ruled out on this server", i+1)
 		}
 		parts = append(parts, fmt.Sprintf("path %d: %s", i+1, reason))
 	}

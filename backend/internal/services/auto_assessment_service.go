@@ -371,36 +371,59 @@ type DecisionEvent struct {
 	Evidence   json.RawMessage `json:"evidence,omitempty"`
 	Actor      *string         `json:"actor,omitempty"`
 	CreatedAt  time.Time       `json:"createdAt"`
+	// DecidedNow: an automated decision exists for the pair again (or still).
+	DecidedNow bool `json:"decidedNow"`
 }
 
-// Events returns the audit trail, newest first, optionally for one server
-// and/or CVE.
-func (s *AutoAssessmentService) Events(ctx context.Context, serverID int64, cveID string, limit int) ([]DecisionEvent, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+// EventFilter selects decision events.
+type EventFilter struct {
+	ServerID int64
+	CVEID    string
+	Event    string // e.g. auto_revoked; "" = all
+	RuleID   string // events whose decision involved this rule
+	Search   string // CVE ID or server name (substring)
+	Limit    int
+	Offset   int
+}
+
+// Events returns the audit trail, newest first, and the number of matching
+// events.
+func (s *AutoAssessmentService) Events(ctx context.Context, f EventFilter) ([]DecisionEvent, int, error) {
+	if f.Limit <= 0 || f.Limit > 500 {
+		f.Limit = 100
+	}
+	where := `
+		FROM decision_events e JOIN servers srv ON srv.id = e.server_id
+		WHERE ($1::bigint = 0 OR e.server_id = $1) AND ($2 = '' OR e.cve_id = $2)
+		  AND ($3 = '' OR e.event = $3) AND ($4 = '' OR $4 = ANY(e.rule_ids))
+		  AND ($5 = '' OR e.cve_id ILIKE '%' || $5 || '%' OR srv.name ILIKE '%' || $5 || '%')`
+	args := []any{f.ServerID, f.CVEID, f.Event, f.RuleID, f.Search}
+	var total int
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT e.id, e.server_id, srv.name, e.cve_id, e.event, e.verdict, e.rule_ids, e.guards,
-		       e.reason, e.evidence, e.actor, e.created_at
-		FROM decision_events e JOIN servers srv ON srv.id = e.server_id
-		WHERE ($1::bigint = 0 OR e.server_id = $1) AND ($2 = '' OR e.cve_id = $2)
+		       e.reason, e.evidence, e.actor, e.created_at,
+		       EXISTS (SELECT 1 FROM auto_decisions d WHERE d.server_id = e.server_id AND d.cve_id = e.cve_id)
+		`+where+`
 		ORDER BY e.created_at DESC, e.id DESC
-		LIMIT $3
-	`, serverID, cveID, limit)
+		LIMIT $6 OFFSET $7
+	`, append(args, f.Limit, f.Offset)...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := []DecisionEvent{}
 	for rows.Next() {
 		var e DecisionEvent
 		if err := rows.Scan(&e.ID, &e.ServerID, &e.ServerName, &e.CVEID, &e.Event, &e.Verdict, &e.RuleIDs, &e.Guards,
-			&e.Reason, &e.Evidence, &e.Actor, &e.CreatedAt); err != nil {
-			return nil, err
+			&e.Reason, &e.Evidence, &e.Actor, &e.CreatedAt, &e.DecidedNow); err != nil {
+			return nil, 0, err
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 // Override is a human decision for one server.

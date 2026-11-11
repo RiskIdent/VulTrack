@@ -345,7 +345,7 @@ Both accept the filters `name`, `version`, `arch`, `sourcePackage`, `server` and
 - `GET /api/v1/auto-assessment/config` - Mode, rule catalogue with modes, guards
 - `GET /api/v1/auto-assessment/stats` - Decision counts per rule and state, agreement with human assessments, guard counts, open server/CVE pairs, activity of the last 30 days
 - `GET /api/v1/auto-assessment/decisions` - Stored decisions with state (`applied`, `shadow`, `blocked`, `rejected`, `overridden`); filters `ruleId`, `state`, `guard`, `serverId`, `cveId`, `search`; paginated
-- `GET /api/v1/auto-assessment/events` - Audit trail; filters `serverId`, `cveId`, `limit`
+- `GET /api/v1/auto-assessment/events` - Audit trail, newest first; filters `event` (e.g. `auto_revoked`), `ruleId`, `serverId`, `cveId`, `search`; paginated (`limit`, `offset`, `total`). Revocations name the rule and what changed, e.g. a kernel module that is now loaded; `decidedNow` tells whether the pair is decided again
 - `GET /api/v1/cves/:id/server-status` - Effective status of every affected server and where it comes from
 - `PUT /api/v1/servers/:id/cves/:cveId/assessment` - Decide a CVE for one server (`relevant`, `not_relevant`, `accepted_risk`, or `manual` = automation off for this server)
 - `DELETE /api/v1/servers/:id/cves/:cveId/assessment` - Remove that per-server decision

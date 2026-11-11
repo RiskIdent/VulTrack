@@ -8,6 +8,7 @@ package autoassess_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -112,6 +113,13 @@ func TestKMODEvaluation(t *testing.T) {
 	}
 	if ok, _, _ := decision(); ok {
 		t.Error("decision still stored")
+	}
+	var revokeReason string
+	if err := pool.QueryRow(ctx, `SELECT reason FROM decision_events WHERE event = 'auto_revoked' ORDER BY id DESC LIMIT 1`).Scan(&revokeReason); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(revokeReason, "R-KMOD: net/sctp/socket.c: module sctp is loaded") {
+		t.Errorf("revoke reason %q", revokeReason)
 	}
 
 	// Unloaded again: a fresh change, so it waits again.

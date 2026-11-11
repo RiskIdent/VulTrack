@@ -185,6 +185,16 @@ type listAutoDecisionsInput struct {
 	Offset   int    `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
 }
 
+type listDecisionEventsInput struct {
+	Event    string `json:"event,omitempty" jsonschema:"auto_created, auto_changed, auto_revoked, override_set or override_removed"`
+	RuleID   string `json:"ruleId,omitempty" jsonschema:"only events of decisions a rule took part in, e.g. R-KMOD"`
+	ServerID int64  `json:"serverId,omitempty" jsonschema:"only events for this server"`
+	CVEID    string `json:"cveId,omitempty" jsonschema:"only events for this CVE"`
+	Search   string `json:"search,omitempty" jsonschema:"CVE ID or server name contains"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"max results per call (default 50, max 500)"`
+	Offset   int    `json:"offset,omitempty" jsonschema:"results to skip for pagination; increase by limit to fetch the next page"`
+}
+
 type getFindingInput struct {
 	FindingID int64 `json:"findingId" jsonschema:"the numeric ID of the finding"`
 }
@@ -281,6 +291,22 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 			return nil, nil, err
 		}
 		return paginatedResult(map[string]any{"decisions": decisions}, total, f.Limit, f.Offset)
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "list_decision_events",
+		Description: "List the audit trail of automated assessment, newest first: decisions created, changed and revoked, and human per-server " +
+			"decisions. Use event=auto_revoked to see which automated decisions were withdrawn and why (reason names the rule and what changed, " +
+			"e.g. a kernel module that is now loaded); decidedNow tells whether the pair is decided again. Paginated: returns at most `limit` " +
+			"events per call (default 50, max 500) plus the full `total`. When `hasMore` is true, call again with `offset` increased by `limit`.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in listDecisionEventsInput) (*mcpsdk.CallToolResult, any, error) {
+		f := services.EventFilter{Event: in.Event, RuleID: in.RuleID, ServerID: in.ServerID, CVEID: in.CVEID, Search: in.Search,
+			Limit: clampLimit(in.Limit, 50, 500), Offset: max(in.Offset, 0)}
+		events, total, err := d.AutoAssessment.Events(ctx, f)
+		if err != nil {
+			return nil, nil, err
+		}
+		return paginatedResult(map[string]any{"events": events}, total, f.Limit, f.Offset)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{

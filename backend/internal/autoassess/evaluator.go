@@ -140,7 +140,7 @@ func (e *Evaluator) evaluateServer(ctx context.Context, serverID int64, cfg serv
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO decision_events (server_id, cve_id, event, verdict, rule_ids, guards, reason, evidence)
 			VALUES ($1, $2, 'auto_revoked', $3, $4, $5, $6, $7)
-		`, serverID, cve, old.verdict, old.ruleIDs, old.guards, revokeReason(findings, cve), old.evidence); err != nil {
+		`, serverID, cve, old.verdict, old.ruleIDs, old.guards, revokeReason(findings, cve, old.ruleIDs, rules, host, cfg), old.evidence); err != nil {
 			return Result{}, err
 		}
 	}
@@ -183,14 +183,58 @@ func (e *Evaluator) holdUnsettled(want map[string]Decision, have map[string]stor
 	}
 }
 
-// revokeReason explains why a decision no longer holds.
-func revokeReason(findings []Finding, cve string) string {
+// revokeReason explains why a decision no longer holds: per finding of the
+// CVE that is no longer dismissed, why each rule of the old decision does not
+// dismiss it any more.
+func revokeReason(findings []Finding, cve string, oldRules []string, enabled []Rule, h *Host, cfg services.AutoAssessmentConfig) string {
+	var fs []Finding
 	for _, f := range findings {
 		if f.CVEID == cve {
-			return "a finding of this CVE is no longer dismissed by any enabled rule"
+			fs = append(fs, f)
 		}
 	}
-	return "the CVE has no active findings on this server any more"
+	if len(fs) == 0 {
+		return "the CVE has no active findings on this server any more (fixed or package removed)"
+	}
+	active := map[string]Rule{}
+	for _, r := range enabled {
+		active[r.ID()] = r
+	}
+	var parts []string
+	for _, f := range fs {
+		dismissed := false
+		for _, r := range enabled {
+			if ok, _ := r.Dismiss(f, h); ok {
+				dismissed = true
+				break
+			}
+		}
+		if dismissed {
+			continue
+		}
+		var why []string
+		for _, id := range oldRules {
+			r, on := active[id]
+			if !on {
+				why = append(why, id+" is switched off")
+				continue
+			}
+			if _, reason := r.Dismiss(f, h); reason != "" {
+				why = append(why, id+": "+reason)
+			}
+		}
+		if len(why) == 0 {
+			why = append(why, "no enabled rule dismisses it")
+		}
+		parts = append(parts, f.Package+" — "+strings.Join(why, "; "))
+	}
+	if len(parts) == 0 {
+		return "no enabled rule dismisses every finding of the CVE any more"
+	}
+	if cfg.Mode == services.AutoModeOff {
+		return "automated assessment is off"
+	}
+	return strings.Join(parts, " | ")
 }
 
 type storedDecision struct {

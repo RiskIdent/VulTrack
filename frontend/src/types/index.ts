@@ -534,6 +534,7 @@ export interface DecisionEvent {
   evidence?: DecisionEvidence;
   actor?: string;
   createdAt: string;
+  decidedNow?: boolean;
 }
 
 export type ServerOverrideStatus = 'relevant' | 'not_relevant' | 'accepted_risk' | 'manual';

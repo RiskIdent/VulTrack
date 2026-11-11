@@ -2,6 +2,7 @@ package autoassess
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -45,17 +46,28 @@ func (unusedPackage) Dismiss(f Finding, h *Host) (bool, string) {
 // not reachable from a package with entry points, and not in use during a
 // gap-free observation of the configured period.
 func (p *PackageHost) Unused(pkg string) (bool, string) {
-	if p == nil || p.Window <= 0 || p.ObservedFor < p.Window {
-		return false, ""
-	}
-	info, listed := p.Info[pkg]
-	if !listed || len(info.EntryPoints) > 0 || p.Reachable[pkg] {
-		return false, ""
-	}
-	if ago, seen := p.LastInUse[pkg]; seen && ago < p.Window {
-		return false, ""
+	if p == nil {
+		return false, "no package entry points from the agent"
 	}
 	days := int(p.Window / (24 * time.Hour))
+	switch {
+	case p.Window <= 0:
+		return false, "no observation period configured"
+	case p.ObservedFor < p.Window:
+		return false, fmt.Sprintf("package usage observed for %.1f of %d days", p.ObservedFor.Hours()/24, days)
+	}
+	info, listed := p.Info[pkg]
+	switch {
+	case !listed:
+		return false, pkg + " not in the agent's package list"
+	case len(info.EntryPoints) > 0:
+		return false, pkg + " has entry points (" + strings.Join(info.EntryPoints, ", ") + ")"
+	case p.Reachable[pkg]:
+		return false, pkg + " is needed by a package with entry points"
+	}
+	if ago, seen := p.LastInUse[pkg]; seen && ago < p.Window {
+		return false, fmt.Sprintf("%s was in use %s ago", pkg, ago.Round(time.Minute))
+	}
 	return true, fmt.Sprintf("no entry points, not needed by any package with entry points, not in use for %d days", days)
 }
 

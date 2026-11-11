@@ -36,28 +36,40 @@ func (kernelModules) Description() string {
 func (kernelModules) FactCategories() []string { return []string{"kernel"} }
 
 func (kernelModules) Dismiss(f Finding, h *Host) (bool, string) {
-	if f.Package != "kernel" || h == nil || h.Kernel == nil {
+	if f.Package != "kernel" {
 		return false, ""
 	}
+	if h == nil || h.Kernel == nil {
+		return false, "no kernel facts from the agent"
+	}
 	k := h.Kernel
-	if k.Truncated || k.Release == "" || k.Release != k.ScanKernel || !k.IndexKnown || k.Build == nil {
-		return false, ""
+	switch {
+	case k.Truncated:
+		return false, "kernel facts incomplete"
+	case k.Release == "":
+		return false, "running kernel unknown"
+	case k.Release != k.ScanKernel:
+		return false, fmt.Sprintf("running kernel %s differs from the scanned kernel %s", k.Release, k.ScanKernel)
+	case !k.IndexKnown:
+		return false, "module index not received yet"
+	case k.Build == nil:
+		return false, "kernel build not mapped yet"
 	}
 	cve, ok := k.CVEs[f.CVEID]
 	if !ok || len(cve.Files) == 0 {
-		return false, ""
+		return false, "no source file list for the CVE"
 	}
 	var parts []string
 	for _, file := range cve.Files {
 		targets := cve.Targets[file]
 		if len(targets) == 0 {
-			return false, "" // not mapped: unknown
+			return false, file + " is not mapped" // unknown
 		}
 		var why []string
 		for _, t := range targets {
 			reason, ok := k.unreachable(t)
 			if !ok {
-				return false, ""
+				return false, file + ": " + reason
 			}
 			why = append(why, reason)
 		}
@@ -67,7 +79,7 @@ func (kernelModules) Dismiss(f Finding, h *Host) (bool, string) {
 }
 
 // unreachable reports whether code compiled into target cannot run on the
-// server, with the reason.
+// server, with the reason (or why it can).
 func (k *KernelHost) unreachable(t kernelintel.Target) (string, bool) {
 	switch t.Kind {
 	case kernelintel.KindAbsent:
@@ -79,12 +91,19 @@ func (k *KernelHost) unreachable(t kernelintel.Target) (string, bool) {
 		}
 		return "not compiled", true
 	case kernelintel.KindModule:
+	case kernelintel.KindBuiltin:
+		return "built into the kernel", false
 	default:
-		return "", false // built in, or unknown kind
+		return "unknown build kind", false
 	}
 	name := ModuleName(t.Module)
-	if t.Module == "" || k.Loaded[name] || k.Loaded[t.Module] || k.Builtin[t.Module] {
-		return "", false
+	switch {
+	case t.Module == "":
+		return "module unknown", false
+	case k.Loaded[name] || k.Loaded[t.Module]:
+		return "module " + name + " is loaded", false
+	case k.Builtin[t.Module]:
+		return "module " + name + " is built in on this server", false
 	}
 	switch {
 	case k.ModulesDisabled:
@@ -93,11 +112,11 @@ func (k *KernelHost) unreachable(t kernelintel.Target) (string, bool) {
 		if cmd, blocked := k.InstallBlocked[name]; blocked {
 			return "module " + name + " not loaded, modprobe install " + cmd, true
 		}
-		return "", false // installed and loadable
+		return "module " + name + " is installed and can be loaded", false
 	case k.Build.ModulesVerified && t.Shipped:
 		return "module " + name + " not installed", true
 	}
 	// Not in the index, but the build's module packages were not checked or
 	// do not contain it: the mapping itself is in doubt.
-	return "", false
+	return "module " + name + " not confirmed by the kernel's module packages", false
 }

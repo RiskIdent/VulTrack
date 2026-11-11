@@ -881,12 +881,14 @@ export const getAutoDecisions = (params: {
   return fetchAPI<{ decisions: import('../types').AutoDecision[]; total: number }>(`/auto-assessment/decisions?${q}`);
 };
 
-export const getDecisionEvents = (params: { serverId?: number; cveId?: string; limit?: number }) => {
+export const getDecisionEvents = (params: {
+  serverId?: number; cveId?: string; event?: string; ruleId?: string; search?: string; limit?: number; offset?: number;
+}) => {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== '' && v !== 0) q.set(k, String(v));
   }
-  return fetchAPI<{ events: import('../types').DecisionEvent[] }>(`/auto-assessment/events?${q}`);
+  return fetchAPI<{ events: import('../types').DecisionEvent[]; total: number }>(`/auto-assessment/events?${q}`);
 };
 
 export const getCVEServerStatus = (cveId: string) =>
