@@ -217,6 +217,22 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+-- Last agent report per server (stale-server warnings) and the "disabled"
+-- flag for servers switched off but kept in VulTrack.
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS last_report_at TIMESTAMP;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMP;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS disabled_by VARCHAR(255);
+-- Existing servers: the newest package sighting is the last report.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE name = '2026-11-servers-last-report') THEN
+    UPDATE servers s SET last_report_at = COALESCE(
+      (SELECT MAX(sp.last_seen_at) FROM server_packages sp WHERE sp.server_id = s.id), s.last_scan_at, s.created_at)
+    WHERE s.last_report_at IS NULL;
+    INSERT INTO schema_migrations (name) VALUES ('2026-11-servers-last-report');
+  END IF;
+END $$;
+
 -- Forced re-enrollments used to mark the replaced registration 'revoked',
 -- exactly like an admin revocation. They are now 'superseded'. Existing rows:
 -- a revoked registration for which a newer one of the same host exists was

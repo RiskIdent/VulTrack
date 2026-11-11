@@ -3,6 +3,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Settings, FileText, Server, Users, Save, Plus, Pencil, Trash2, X, Check, Search, Key, KeyRound, Shield, Database, RefreshCw, AlertCircle, CheckCircle2, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck, AlertTriangle, RotateCcw, Bot } from 'lucide-react';
 import { AssessmentAutomationTab } from '../components/AutoAssessmentSettings';
 import { ConfirmModal } from '../components/ConfirmModal';
+import StaleServerSettings from '../components/StaleServerSettings';
+import { LastReport, ServerStatusBadge } from '../components/ServerReport';
 import {
   getSettings,
   updateSettings,
@@ -46,6 +48,7 @@ import {
 } from '../api/client';
 import type { AdminUser } from '../api/client';
 import type { Setting, ReasonTemplate, ServerGroup, Server as ServerType } from '../types';
+import { setServerDisabled } from '../api/client';
 import type { EnrollmentKey, RegisteredAgent, OVALSource, APIToken } from '../api/client';
 
 const TAB_IDS = ['triage', 'auto', 'ai', 'templates', 'groups', 'oval', 'agents', 'keys', 'apitokens', 'datasources', 'users', 'reset', 'servers'] as const;
@@ -2871,6 +2874,15 @@ function ServerManagementTab() {
     }
   }
 
+  async function toggleDisabled(server: ServerType) {
+    try {
+      const updated = await setServerDisabled(server.id, !server.disabledAt);
+      setServers((list) => list.map((s) => (s.id === server.id ? { ...s, ...updated, findingsCount: s.findingsCount, criticalCount: s.criticalCount, highCount: s.highCount } : s)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to change the server');
+    }
+  }
+
   function openDeleteModal(server: ServerType) {
     setDeleteModal({ isOpen: true, server });
   }
@@ -2925,7 +2937,8 @@ function ServerManagementTab() {
             Server Management
           </h2>
           <p className="text-sm text-[#a5d6a7] mt-1">
-            Delete servers and all their associated data (findings, packages, etc.)
+            Disable servers that were switched off but should stay in VulTrack (no warnings, not in the triage queue), or delete
+            servers and all their data (findings, packages, etc.)
           </p>
         </div>
       </div>
@@ -2936,6 +2949,8 @@ function ServerManagementTab() {
           {error}
         </div>
       )}
+
+      <StaleServerSettings onSaved={fetchData} />
 
       {/* Search */}
       <div className="card">
@@ -2970,7 +2985,11 @@ function ServerManagementTab() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-3">
                     <div className="flex-1 min-w-0">
-                      <div className="text-[#e8f5e9] font-medium truncate">{server.name}</div>
+                      <div className="flex items-center gap-2">
+                        <span className={`font-medium truncate ${server.disabledAt ? 'text-[#6b7280]' : 'text-[#e8f5e9]'}`}>{server.name}</span>
+                        <ServerStatusBadge server={server} />
+                        <span className="text-xs text-[#6b7280]">last report <LastReport server={server} /></span>
+                      </div>
                       <div className="flex items-center gap-4 mt-1 text-sm text-[#6b7280]">
                         {server.osFamily && (
                           <span>{server.osFamily} {server.osRelease}</span>
@@ -2997,6 +3016,15 @@ function ServerManagementTab() {
                     </div>
                   </div>
                 </div>
+                <button
+                  onClick={() => toggleDisabled(server)}
+                  className={`ml-4 px-3 py-1.5 rounded-lg text-sm border transition-colors ${server.disabledAt
+                    ? 'border-[#4ade80]/40 text-[#4ade80] hover:bg-[#4ade80]/10'
+                    : 'border-[#2d3f36] text-[#a5d6a7] hover:bg-[#1a2420]'}`}
+                  title={server.disabledAt ? 'Enable the server again' : 'Mark as switched off: no warnings, not in the triage queue; data is kept'}
+                >
+                  {server.disabledAt ? 'Enable' : 'Disable'}
+                </button>
                 <button
                   onClick={() => openDeleteModal(server)}
                   className="ml-4 p-2 text-red-400 hover:text-red-300 hover:bg-red-600/10 rounded-lg transition-colors"

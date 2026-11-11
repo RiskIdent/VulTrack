@@ -99,6 +99,7 @@ export const getDashboard = () => fetchAPI<{
 export const getServers = () => fetchAPI<{
   servers: import('../types').Server[];
   total: number;
+  staleThresholdHours: number;
 }>('/servers');
 
 export const getServer = (id: number) => 
@@ -919,3 +920,13 @@ export const runPreconditionAnalysis = () =>
 
 export const getCVEPreconditions = (cveId: string) =>
   fetchAPI<{ analysis: import('../types').PreconditionAnalysis | null }>(`/cves/${encodeURIComponent(cveId)}/preconditions`);
+
+// Servers without agent reports
+export const getStaleServers = () =>
+  fetchAPI<{ servers: import('../types').Server[]; thresholdHours: number }>('/servers/stale');
+
+export const setServerDisabled = (id: number, disabled: boolean) =>
+  fetchAPI<import('../types').Server>(`/admin/servers/${id}/disabled`, { method: 'PUT', body: JSON.stringify({ disabled }) });
+
+export const sendStaleServerEmail = () =>
+  fetchAPI<{ sent: boolean; servers: number; message: string }>('/admin/stale-servers/email', { method: 'POST' });

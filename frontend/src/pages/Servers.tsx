@@ -1,10 +1,12 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Server as ServerIcon, Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { getServers } from '../api/client';
 import type { Server } from '../types';
+import { LastReport, ServerStatusBadge } from '../components/ServerReport';
 
-type SortField = 'name' | 'osFamily' | 'findingsCount' | 'criticalCount' | 'highCount' | 'lastScanAt';
+type SortField = 'name' | 'osFamily' | 'findingsCount' | 'criticalCount' | 'highCount' | 'lastScanAt' | 'reportAge';
+type StatusFilter = 'all' | 'stale' | 'disabled';
 type SortDirection = 'asc' | 'desc';
 
 const ITEMS_PER_PAGE = 25;
@@ -19,12 +21,23 @@ export default function Servers() {
   const [sortField, setSortField] = useState<SortField>('criticalCount');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [currentPage, setCurrentPage] = useState(1);
+  const [params, setParams] = useSearchParams();
+  const status = (['stale', 'disabled'].includes(params.get('status') || '') ? params.get('status') : 'all') as StatusFilter;
+  const [staleHours, setStaleHours] = useState(0);
+  const setStatus = (s: StatusFilter) => {
+    const next = new URLSearchParams(params);
+    if (s === 'all') next.delete('status');
+    else next.set('status', s);
+    setParams(next, { replace: true });
+    setCurrentPage(1);
+  };
 
   useEffect(() => {
     async function fetchData() {
       try {
         const data = await getServers();
         setServers(data.servers || []);
+        setStaleHours(data.staleThresholdHours || 0);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load servers');
       } finally {
@@ -40,16 +53,19 @@ export default function Servers() {
   }, [searchQuery]);
 
   // Filter servers by search query
+  const staleCount = servers.filter((s) => s.stale).length;
+  const disabledCount = servers.filter((s) => s.disabledAt).length;
   const filteredServers = useMemo(() => {
-    if (!searchQuery.trim()) return servers;
+    const byStatus = servers.filter((s) => status === 'all' || (status === 'stale' ? s.stale : !!s.disabledAt));
+    if (!searchQuery.trim()) return byStatus;
     const query = searchQuery.toLowerCase();
-    return servers.filter(s => 
+    return byStatus.filter(s => 
       s.name.toLowerCase().includes(query) ||
       s.osFamily?.toLowerCase().includes(query) ||
       s.osRelease?.toLowerCase().includes(query) ||
       s.ipv4Addrs?.some(ip => ip.includes(query))
     );
-  }, [servers, searchQuery]);
+  }, [servers, searchQuery, status]);
 
   // Sort servers
   const sortedServers = useMemo(() => {
@@ -81,6 +97,10 @@ export default function Servers() {
         case 'lastScanAt':
           aVal = a.lastScanAt ? new Date(a.lastScanAt).getTime() : 0;
           bVal = b.lastScanAt ? new Date(b.lastScanAt).getTime() : 0;
+          break;
+        case 'reportAge':
+          aVal = a.reportAgeSeconds;
+          bVal = b.reportAgeSeconds;
           break;
       }
 
@@ -173,6 +193,27 @@ export default function Servers() {
         </div>
       </div>
 
+      {/* Status filter */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div role="tablist" aria-label="Server status" className="inline-flex rounded-lg border border-[#2d3f36] bg-[#111916] p-1">
+          {([
+            ['all', `All (${servers.length})`],
+            ['stale', `No report${staleHours ? ` > ${staleHours} h` : ''} (${staleCount})`],
+            ['disabled', `Disabled (${disabledCount})`],
+          ] as [StatusFilter, string][]).map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={status === id} onClick={() => setStatus(id)}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                status === id
+                  ? id === 'stale' && staleCount > 0 ? 'bg-red-600/20 text-red-400' : 'bg-[#4ade80]/15 text-[#4ade80]'
+                  : 'text-[#6b7280] hover:text-[#a5d6a7]'
+              }`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {staleHours === 0 && <span className="text-xs text-[#6b7280]">Stale-server warnings are off (Admin → Servers).</span>}
+      </div>
+
       {/* Info Banner */}
       <div className="flex items-center gap-2 px-4 py-2 bg-[#1a2420] border border-[#2d3f36] rounded-lg text-sm text-[#a5d6a7]">
         <span className="text-[#6b7280]">ℹ</span>
@@ -191,6 +232,7 @@ export default function Servers() {
                 <SortHeader field="findingsCount">Findings</SortHeader>
                 <SortHeader field="criticalCount">Critical</SortHeader>
                 <SortHeader field="highCount">High</SortHeader>
+                <SortHeader field="reportAge">Last Report</SortHeader>
                 <SortHeader field="lastScanAt">Last Scan</SortHeader>
               </tr>
             </thead>
@@ -205,6 +247,7 @@ export default function Servers() {
                       <ServerIcon className="w-4 h-4" />
                       {server.name}
                     </Link>
+                    <div className="mt-0.5"><ServerStatusBadge server={server} /></div>
                   </td>
                   <td className="py-3 px-4 text-[#a5d6a7]">
                     {server.osFamily} {server.osRelease}
@@ -235,6 +278,9 @@ export default function Servers() {
                       <span className="text-[#6b7280]">0</span>
                     )}
                   </td>
+                  <td className="py-3 px-4 text-sm whitespace-nowrap">
+                    <LastReport server={server} />
+                  </td>
                   <td className="py-3 px-4 text-sm text-[#6b7280]">
                     {server.lastScanAt 
                       ? new Date(server.lastScanAt).toLocaleString()
@@ -245,7 +291,7 @@ export default function Servers() {
               ))}
               {paginatedServers.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-[#6b7280]">
+                  <td colSpan={8} className="py-12 text-center text-[#6b7280]">
                     {searchQuery ? 'No servers match your search' : 'No servers found. Import scan results to see your servers here.'}
                   </td>
                 </tr>

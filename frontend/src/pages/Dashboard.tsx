@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts';
 import StatCard from '../components/StatCard';
+import { StaleServersWarning } from '../components/ServerReport';
 import { CVSSBadge, VendorSeverityBadge, KEVBadge } from '../components/SeverityBadge';
 import { getDashboard, getTopServers, getTopCVEs } from '../api/client';
 import type { DashboardStats, TopServer, TopCVE } from '../types';
@@ -75,6 +76,8 @@ export default function Dashboard() {
         <h1 className="text-2xl font-bold text-[#e8f5e9]">Dashboard</h1>
         <p className="text-[#a5d6a7] mt-1">Overview of your vulnerability landscape</p>
       </div>
+
+      <StaleServersWarning />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

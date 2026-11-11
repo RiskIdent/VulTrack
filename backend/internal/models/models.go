@@ -19,6 +19,15 @@ type Server struct {
 	LastScanAt     *time.Time `json:"lastScanAt"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	UpdatedAt      time.Time  `json:"updatedAt"`
+	// LastReportAt is the last agent report; DisabledAt marks a server that
+	// was switched off but is kept (no stale warnings, not in the triage queue).
+	LastReportAt *time.Time `json:"lastReportAt"`
+	DisabledAt   *time.Time `json:"disabledAt,omitempty"`
+	DisabledBy   string     `json:"disabledBy,omitempty"`
+	// ReportAgeSeconds is how long ago the last report was, by the database
+	// clock; Stale is set when that exceeds the configured threshold.
+	ReportAgeSeconds float64 `json:"reportAgeSeconds"`
+	Stale            bool    `json:"stale"`
 
 	// Computed fields (not stored in DB)
 	FindingsCount int `json:"findingsCount,omitempty"`

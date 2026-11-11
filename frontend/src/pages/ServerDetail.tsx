@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Server as ServerIcon, Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Tags, Package, RefreshCw, X, ExternalLink, AlertTriangle, Activity } from 'lucide-react';
 import RuntimeFactsPanel from '../components/RuntimeFactsPanel';
+import { ServerReportBanner } from '../components/ServerReport';
 import { CVSSBadge, VendorSeverityBadge, FixStateBadge, SourceBadge, PocketBadge } from '../components/SeverityBadge';
 import { getServer, getServerFindings, getServerGroupsForServer, getServerPackages, triggerServerScan, getFinding } from '../api/client';
 import type { Server, Finding, ServerGroup, ServerPackage } from '../types';
@@ -345,6 +346,8 @@ export default function ServerDetail() {
         <ArrowLeft className="w-4 h-4" />
         Back to servers
       </Link>
+
+      <ServerReportBanner server={server} />
 
       {/* Server Info */}
       <div className="card">

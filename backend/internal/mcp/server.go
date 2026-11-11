@@ -221,14 +221,21 @@ type groupInput struct {
 
 func registerReadTools(s *mcpsdk.Server, d Deps) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "list_servers",
-		Description: "List all monitored servers with their vulnerability status.",
+		Name: "list_servers",
+		Description: "List all monitored servers with their vulnerability status, the time of the last agent report (lastReportAt, " +
+			"reportAgeSeconds), stale (no report for longer than staleThresholdHours; 0 = warnings off) and disabledAt for servers " +
+			"marked as disabled (switched off but kept; never stale, not in the triage queue).",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ emptyInput) (*mcpsdk.CallToolResult, any, error) {
 		servers, err := d.ServerService.GetAll(ctx)
 		if err != nil {
 			return nil, nil, err
 		}
-		return jsonResult(map[string]any{"servers": servers, "total": len(servers)})
+		stale, err := d.SettingsService.LoadStaleConfig(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		stale.MarkStale(servers)
+		return jsonResult(map[string]any{"servers": servers, "total": len(servers), "staleThresholdHours": stale.Hours})
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{

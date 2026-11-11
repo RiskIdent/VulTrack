@@ -237,6 +237,7 @@ func (c *DBCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.dbSequenceUsage
 	ch <- c.autoDecisions
 	describeAutomation(ch)
+	describeServers(ch)
 }
 
 func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
@@ -252,6 +253,7 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectPostgresStats(ctx, ch)
 	c.collectSequenceUsage(ctx, ch)
 	c.collectAutomation(ctx, ch)
+	c.collectServerReports(ctx, ch)
 }
 
 // collectHeavy emits the metrics that scan all findings, from a cache that is

@@ -185,6 +185,9 @@ func main() {
 	// Report scheduler
 	reportScheduler := scheduler.NewReportScheduler(reportScheduleService, reportService, emailService)
 
+	// Daily email listing servers without agent reports (only when there are any)
+	staleNotifier := scheduler.NewStaleNotifier(settingsService, serverService, emailService)
+
 	// Start OVAL syncer
 	go ovalSyncer.Start()
 
@@ -250,6 +253,9 @@ func main() {
 	// Start report scheduler
 	go reportScheduler.Start()
 
+	// Start stale-server email check (sends only when enabled and servers are stale)
+	staleNotifier.Start()
+
 	// Initialize HTTP handlers
 	handler := handlers.New(
 		cfg,
@@ -287,6 +293,7 @@ func main() {
 		threatIntelSyncer,
 		kernelSyncer,
 		preconditionAnalyzer,
+		staleNotifier,
 	)
 
 	// Start server
@@ -305,6 +312,7 @@ func main() {
 	scanQ.Stop()
 	aiQueue.Stop()
 	reportScheduler.Stop()
+	staleNotifier.Stop()
 	ovalSyncer.Stop()
 	nvdSyncer.Stop()
 	exploitDBSyncer.Stop()

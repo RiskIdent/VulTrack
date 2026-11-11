@@ -12,6 +12,13 @@ export interface Server {
   lastScanAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // Last agent report; reportAgeSeconds is measured by the server clock.
+  lastReportAt: string | null;
+  reportAgeSeconds: number;
+  stale: boolean;
+  // Set when the server was marked as disabled (switched off, kept in VulTrack).
+  disabledAt?: string;
+  disabledBy?: string;
   findingsCount?: number;
   criticalCount?: number;
   highCount?: number;

@@ -308,7 +308,8 @@ docker compose up -d postgres
 - `GET /api/v1/dashboard` - Dashboard statistics (`pendingAssessments` is the number of CVEs in the triage queue, using the configured triage filter)
 
 ### Servers
-- `GET /api/v1/servers` - List all servers
+- `GET /api/v1/servers` - List all servers, with `lastReportAt`, `reportAgeSeconds`, `stale` and `disabledAt`, plus `staleThresholdHours`
+- `GET /api/v1/servers/stale` - Enabled servers without an agent report for longer than the threshold
 - `GET /api/v1/servers/:id` - Get server details
 - `GET /api/v1/servers/:id/findings` - Get server findings
 - `GET /api/v1/servers/:id/runtime` - Runtime facts reported by the server's agent (kernel modules, listening ports, packages in use, services), with the time each category last changed; categories not reported are listed as `unknown`
@@ -361,6 +362,8 @@ Decisions are re-evaluated after every scan of a server, after each KEV/EPSS syn
 **R-KMOD** (kernel CVEs in modules that cannot be loaded) needs agents that report runtime facts and outbound HTTPS from the backend to `cveawg.mitre.org` (CVE records listing the affected kernel source files) and `launchpad.net` / `launchpadlibrarian.net` (Ubuntu kernel headers and module packages, to map each source file to built-in code or a module). Both are fetched in the background, hourly, only while automated assessment and R-KMOD are not off. A new decision based on runtime facts waits until the facts have been unchanged for the settle time (default 120 minutes); it is revoked at once when, for example, the module gets loaded.
 
 **AI-PRE** (AI precondition analysis, off by default) needs `ANTHROPIC_API_KEY`. For CVEs of the triage queue that no rule decided, a model (Claude Sonnet 5.5 by default) lists the attack paths and their conditions; VulTrack checks them per server against the runtime facts and dismisses a server only when every path has a necessary, high-confidence condition that is definitely false there. Runs through the Message Batches API by default, with a monthly budget and a daily limit (Admin → Assessment Automation → AI Preconditions).
+
+**Servers without agent report.** A server whose agent has not reported for longer than a threshold (default 24 hours; Admin → Servers) is flagged in the server list, on the dashboard and on its page, and counted in Prometheus. An optional daily email lists the flagged servers; it is sent only when at least one server is flagged. Servers switched off on purpose can be marked as **disabled** in Admin → Servers: they keep their data but are never flagged and their findings leave the triage queue.
 
 **R-UNUSED** (libraries nothing can use) needs agents that report `packageInfo` (entry points and dependencies per package). It dismisses a package only when it has no programs, services, plugins or hooks, no installed package with such entry points depends on it, and no process used it during a gap-free observation period (default 14 days, counted from the start of the observation, not from the finding).
 
@@ -460,6 +463,8 @@ Decisions are re-evaluated after every scan of a server, after each KEV/EPSS syn
 - `POST /api/v1/admin/system/reset` - Reset all application data
 
 ### Monitoring
+- `PUT /api/v1/admin/servers/:id/disabled` - Mark a server as disabled (`{"disabled": true}`) or enable it again
+- `POST /api/v1/admin/stale-servers/email` - Send the stale-server email now (only if a server is stale)
 - `GET /metrics` - Prometheus metrics endpoint (no authentication required)
 
 Metrics of the assessment automation:
@@ -479,6 +484,8 @@ Metrics of the assessment automation:
 | `vultrack_kernel_cve_records{status}`, `vultrack_kernel_builds{status}` | Kernel data for R-KMOD |
 | `vultrack_runtime_fact_servers{category,complete}` | Servers reporting each runtime fact category |
 | `vultrack_package_usage_observed_servers` | Servers whose package usage is observed without a gap (R-UNUSED) |
+| `vultrack_server_last_report_timestamp{server}` | Unix time of the last agent report per enabled server (alert on `time() - … > 86400`) |
+| `vultrack_servers_stale`, `vultrack_servers_disabled` | Enabled servers without a report for longer than the threshold; servers marked as disabled |
 
 AI cost is recorded per call from v1.6.8 on; advisory calls before that are not included.
 

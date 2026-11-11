@@ -17,6 +17,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/vultrack/vultrack/internal/preconditions"
 	"github.com/vultrack/vultrack/internal/scanner"
 	"github.com/vultrack/vultrack/internal/scanqueue"
+	"github.com/vultrack/vultrack/internal/scheduler"
 	"github.com/vultrack/vultrack/internal/services"
 	"github.com/vultrack/vultrack/internal/session"
 	"github.com/vultrack/vultrack/internal/threatintel"
@@ -74,6 +76,7 @@ type Handler struct {
 	runtimeFactsService   *services.RuntimeFactsService
 	kernelSyncer          *kernelintel.Syncer
 	preconditionAnalyzer  *preconditions.Analyzer
+	staleNotifier         *scheduler.StaleNotifier
 
 	// VEX service + syncer
 	vexService *services.VEXService
@@ -159,6 +162,8 @@ func New(
 	kernelSyncer *kernelintel.Syncer,
 	// AI precondition analysis
 	preconditionAnalyzer *preconditions.Analyzer,
+	// Stale-server email
+	staleNotifier *scheduler.StaleNotifier,
 ) *Handler {
 	// Resolve the JWT signing secret.
 	// If JWT_SECRET is not configured we generate a random one and warn — tokens
@@ -210,6 +215,7 @@ func New(
 		threatIntelSyncer:     threatIntelSyncer,
 		kernelSyncer:          kernelSyncer,
 		preconditionAnalyzer:  preconditionAnalyzer,
+		staleNotifier:         staleNotifier,
 		jwtSecret:             jwtSecret,
 	}
 
@@ -301,6 +307,7 @@ func New(
 
 	// Servers
 	protected.Get("/servers", h.getServers)
+	protected.Get("/servers/stale", h.getStaleServers)
 	protected.Get("/servers/:id", h.getServer)
 	protected.Get("/servers/:id/findings", h.getServerFindings)
 	protected.Get("/servers/:id/runtime", h.getServerRuntime)
@@ -407,6 +414,8 @@ func New(
 
 	// Admin: Servers
 	admin.Delete("/servers/:id", h.deleteServer)
+	admin.Put("/servers/:id/disabled", h.setServerDisabled)
+	admin.Post("/stale-servers/email", h.sendStaleServerEmail)
 
 	// Admin: Enrollment Keys
 	admin.Get("/enrollment-keys", h.getEnrollmentKeys)
@@ -536,10 +545,72 @@ func (h *Handler) getServers(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	stale, err := h.settingsService.LoadStaleConfig(ctx)
+	if err != nil {
+		return err
+	}
+	stale.MarkStale(servers)
 	return c.JSON(fiber.Map{
-		"servers": servers,
-		"total":   len(servers),
+		"servers":             servers,
+		"total":               len(servers),
+		"staleThresholdHours": stale.Hours,
 	})
+}
+
+// getStaleServers lists enabled servers without an agent report for longer
+// than the configured threshold (dashboard warning).
+// GET /api/v1/servers/stale
+func (h *Handler) getStaleServers(c *fiber.Ctx) error {
+	cfg, err := h.settingsService.LoadStaleConfig(c.Context())
+	if err != nil {
+		return err
+	}
+	if cfg.Hours == 0 {
+		return c.JSON(fiber.Map{"servers": []any{}, "thresholdHours": 0})
+	}
+	servers, err := h.serverService.StaleServers(c.Context(), cfg.Threshold())
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"servers": servers, "thresholdHours": cfg.Hours})
+}
+
+// sendStaleServerEmail sends the stale-server email now, if any server is
+// stale; nothing is sent otherwise.
+// POST /api/v1/admin/stale-servers/email
+func (h *Handler) sendStaleServerEmail(c *fiber.Ctx) error {
+	n, err := h.staleNotifier.SendNow(c.Context())
+	if err != nil {
+		return fiber.NewError(fiber.StatusConflict, err.Error())
+	}
+	if n == 0 {
+		return c.JSON(fiber.Map{"sent": false, "servers": 0, "message": "No stale servers; nothing sent."})
+	}
+	return c.JSON(fiber.Map{"sent": true, "servers": n, "message": fmt.Sprintf("Email sent listing %d server(s).", n)})
+}
+
+// setServerDisabled marks a server as disabled (switched off, kept in
+// VulTrack) or enables it again.
+// PUT /api/v1/admin/servers/:id/disabled
+func (h *Handler) setServerDisabled(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid server ID")
+	}
+	var in struct {
+		Disabled bool `json:"disabled"`
+	}
+	if err := c.BodyParser(&in); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+	}
+	if err := h.serverService.SetDisabled(c.Context(), id, in.Disabled, h.currentUserEmail(c)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fiber.NewError(fiber.StatusNotFound, "Server not found")
+		}
+		return err
+	}
+	log.Info().Int64("serverId", id).Bool("disabled", in.Disabled).Str("by", h.currentUserEmail(c)).Msg("Server disabled flag changed")
+	return h.getServer(c)
 }
 
 func (h *Handler) getServer(c *fiber.Ctx) error {
@@ -552,6 +623,11 @@ func (h *Handler) getServer(c *fiber.Ctx) error {
 	server, err := h.serverService.GetByID(ctx, id)
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "Server not found")
+	}
+	if stale, err := h.settingsService.LoadStaleConfig(ctx); err == nil {
+		list := []models.Server{*server}
+		stale.MarkStale(list)
+		server.Stale = list[0].Stale
 	}
 
 	return c.JSON(server)

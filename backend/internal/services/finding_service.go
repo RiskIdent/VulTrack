@@ -562,6 +562,7 @@ func triageQueueFrom(opts TriageFilterOptions) (from string, args []any, ok bool
 		LEFT JOIN cve_catalog cve ON f.cve_id = cve.cve_id
 		LEFT JOIN assessments a ON f.cve_id = a.cve_id
 		WHERE f.resolved_at IS NULL
+		AND srv.disabled_at IS NULL
 		AND %s
 		AND (a.id IS NULL OR a.status = 'pending')%s%s
 	`, filterCondition, notAffectedClause, decisionClause)
