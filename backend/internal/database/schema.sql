@@ -301,6 +301,20 @@ CREATE TABLE IF NOT EXISTS oval_definitions (
 CREATE INDEX IF NOT EXISTS idx_oval_definitions_cve_ids 
     ON oval_definitions USING GIN(cve_ids);
 
+-- Ubuntu's priority of each CVE of a definition (USN OVAL: a USN bundles many
+-- CVEs, each with its own priority; the definition's severity is the USN's).
+ALTER TABLE oval_definitions ADD COLUMN IF NOT EXISTS cve_priorities JSONB;
+-- Until v1.6.12 every finding of a USN took the USN's severity, so all CVEs of
+-- a kernel USN rated "Critical" became critical. Re-import the USN feeds now,
+-- so the next scan of each server applies the per-CVE priorities.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE name = '2026-11-usn-cve-priorities') THEN
+    UPDATE oval_sources SET last_sync_at = NULL WHERE source_type = 'usn';
+    INSERT INTO schema_migrations (name) VALUES ('2026-11-usn-cve-priorities');
+  END IF;
+END $$;
+
 -- OVAL criteria (tree structure)
 CREATE TABLE IF NOT EXISTS oval_criteria (
     id SERIAL PRIMARY KEY,

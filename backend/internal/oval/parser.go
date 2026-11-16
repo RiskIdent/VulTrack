@@ -89,6 +89,10 @@ type Advisory struct {
 type CVERef struct {
 	ID   string `xml:",chardata"`
 	Href string `xml:"href,attr"`
+	// Priority is Ubuntu's priority of this CVE (critical, high, medium, low,
+	// negligible); in a USN definition it differs per CVE from the USN's
+	// overall severity.
+	Priority string `xml:"priority,attr"`
 }
 
 type Reference struct {
@@ -525,17 +529,27 @@ func (p *Parser) ParseAndStore(ctx context.Context, sourceID int64, xmlData []by
 			}
 		}
 
-		// Get severity
+		// Get severity, and the priority of each CVE where the feed has one
 		severity := ""
+		var priorities map[string]string
 		if def.Metadata.Advisory != nil {
 			severity = def.Metadata.Advisory.Severity
+			for _, c := range def.Metadata.Advisory.CVE {
+				id, prio := strings.TrimSpace(c.ID), strings.TrimSpace(c.Priority)
+				if id != "" && prio != "" {
+					if priorities == nil {
+						priorities = map[string]string{}
+					}
+					priorities[id] = prio
+				}
+			}
 		}
 
 		// Insert definition
 		defID, err := p.ovalService.InsertDefinition(
 			ctx, tx, sourceID, def.ID, def.Class,
 			def.Metadata.Title, def.Metadata.Description,
-			severity, cveIDs,
+			severity, cveIDs, priorities,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to insert definition %s: %w", def.ID, err)

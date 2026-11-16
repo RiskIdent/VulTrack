@@ -266,7 +266,25 @@ func (s *StatsService) GetFindingsTrend(ctx context.Context, days int) ([]TrendD
 		}
 		trend = append(trend, dp)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
+	// TotalFindings: active findings at the end of each day, worked back from
+	// today's count with the daily new and resolved numbers (a scan of every
+	// finding per day would be far too expensive). A finding that was resolved
+	// and later reopened makes this approximate.
+	var active int
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM findings WHERE resolved_at IS NULL`).Scan(&active); err != nil {
+		return nil, err
+	}
+	for i := len(trend) - 1; i >= 0; i-- {
+		trend[i].TotalFindings = active
+		active = active - trend[i].NewFindings + trend[i].ResolvedCount
+		if active < 0 {
+			active = 0
+		}
+	}
 	return trend, nil
 }
 

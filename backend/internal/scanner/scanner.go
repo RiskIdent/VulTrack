@@ -70,6 +70,9 @@ type OVALDefinitionData struct {
 	Description  string
 	Severity     string
 	CVEIDs       []string
+	// CVEPriorities is Ubuntu's priority per CVE where the feed states one;
+	// it overrides Severity, which for a USN covers the whole bundle.
+	CVEPriorities map[string]string
 }
 
 // ScanServer scans a server for vulnerabilities based on its packages
@@ -487,7 +490,7 @@ func (s *Scanner) loadOVALDefinitionsForTests(ctx context.Context, sourceID int6
 	// Uses oval_criteria + oval_criteria_tests to link definitions to tests
 	rows, err := s.db.Query(ctx, `
 		SELECT DISTINCT d.id, d.oval_id, COALESCE(d.title, ''), COALESCE(d.description, ''), 
-		       COALESCE(d.severity, ''), COALESCE(d.cve_ids, '{}')
+		       COALESCE(d.severity, ''), COALESCE(d.cve_ids, '{}'), d.cve_priorities
 		FROM oval_definitions d
 		INNER JOIN oval_criteria c ON c.definition_id = d.id
 		INNER JOIN oval_criteria_tests ct ON ct.criteria_id = c.id
@@ -503,7 +506,7 @@ func (s *Scanner) loadOVALDefinitionsForTests(ctx context.Context, sourceID int6
 	var definitions []OVALDefinitionData
 	for rows.Next() {
 		var def OVALDefinitionData
-		err := rows.Scan(&def.DefinitionID, &def.OvalID, &def.Title, &def.Description, &def.Severity, &def.CVEIDs)
+		err := rows.Scan(&def.DefinitionID, &def.OvalID, &def.Title, &def.Description, &def.Severity, &def.CVEIDs, &def.CVEPriorities)
 		if err != nil {
 			return nil, err
 		}
@@ -1263,8 +1266,12 @@ func (s *Scanner) upsertFindingWithPocket(ctx context.Context, serverID int64, c
 		fixState = "affected"
 	}
 
-	// Map vendor severity to our severity
+	// Ubuntu's priority of this CVE where the feed states one; otherwise the
+	// definition's severity (for a USN that is the whole bundle's).
 	severity := mapSeverity(def.Severity)
+	if prio := def.CVEPriorities[cveID]; prio != "" {
+		severity = mapSeverity(prio)
+	}
 
 	// Generate vendor advisory link
 	sourceLink := getVendorLink(osFamily, cveID)

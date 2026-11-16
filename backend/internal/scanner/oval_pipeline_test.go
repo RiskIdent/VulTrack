@@ -155,7 +155,10 @@ const ovalFixture = `<?xml version="1.0" encoding="UTF-8"?>
       <metadata>
         <title>CVE-2000-0008 on Ubuntu 24.04 LTS (noble)</title>
         <reference source="CVE" ref_id="CVE-2000-0008" ref_url="https://ubuntu.com/security/CVE-2000-0008" />
-        <advisory><severity>Critical</severity></advisory>
+        <advisory>
+          <severity>Critical</severity>
+          <cve href="https://ubuntu.com/security/CVE-2000-0008" priority="medium" public="20260416">CVE-2000-0008</cve>
+        </advisory>
       </metadata>
       <criteria>
         <extend_definition applicability_check="true" definition_ref="oval:com.ubuntu.noble:def:100" comment="Ubuntu 24.04 LTS (noble) is installed" />
@@ -584,5 +587,43 @@ func assertStringSet(t *testing.T, what string, got, want []string) {
 		if gotSorted[i] != wantSorted[i] {
 			t.Fatalf("%s: got %v, want %v", what, gotSorted, wantSorted)
 		}
+	}
+}
+
+// TestOVALPipelineCVEPriority checks that a finding takes Ubuntu's priority of
+// its CVE, not the severity of the whole definition: a USN bundles many CVEs
+// and carries the highest priority among them (a kernel USN is often
+// "Critical" while most of its CVEs are medium or low).
+func TestOVALPipelineCVEPriority(t *testing.T) {
+	pool, ctx := setupPipeline(t)
+	importFixture(t, ctx, pool)
+
+	serverID := createServer(t, ctx, pool, "6.8.0-79-generic", map[string]string{
+		"libnvidia-cfg1-470": "470.223.02-0ubuntu1",
+		"libfoo1":            "1.9-1",
+	})
+	if _, err := scanner.NewScanner(pool, nil, nil).ScanServer(ctx, serverID); err != nil {
+		t.Fatalf("scan server: %v", err)
+	}
+	got := map[string]string{}
+	rows, err := pool.Query(ctx, `SELECT cve_id, severity FROM findings WHERE server_id = $1 AND resolved_at IS NULL`, serverID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cve, sev string
+		if err := rows.Scan(&cve, &sev); err != nil {
+			t.Fatal(err)
+		}
+		got[cve] = sev
+	}
+	// def:8000 is "Critical" as a whole, its CVE has priority medium.
+	if got["CVE-2000-0008"] != "medium" {
+		t.Errorf("CVE-2000-0008 severity %q, want medium (the CVE's priority, not the definition's Critical)", got["CVE-2000-0008"])
+	}
+	// Without a per-CVE priority the definition's severity applies (def:3000: High).
+	if got["CVE-2000-0002"] != "high" {
+		t.Errorf("CVE-2000-0002 severity %q, want high", got["CVE-2000-0002"])
 	}
 }

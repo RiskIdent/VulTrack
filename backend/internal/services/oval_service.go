@@ -943,16 +943,22 @@ func (s *OVALService) GetRunningSyncs(ctx context.Context) ([]models.SyncStatus,
 // ============================================================================
 
 // InsertDefinition inserts an OVAL definition and returns its ID
-func (s *OVALService) InsertDefinition(ctx context.Context, tx pgx.Tx, sourceID int64, ovalID, class, title, description, severity string, cveIDs []string) (int64, error) {
+// cvePriorities maps each CVE of the definition to Ubuntu's priority for it,
+// where the feed states one (nil otherwise).
+func (s *OVALService) InsertDefinition(ctx context.Context, tx pgx.Tx, sourceID int64, ovalID, class, title, description, severity string, cveIDs []string, cvePriorities map[string]string) (int64, error) {
 	var id int64
+	var prio any
+	if len(cvePriorities) > 0 {
+		prio = cvePriorities
+	}
 	err := tx.QueryRow(ctx, `
-		INSERT INTO oval_definitions (source_id, oval_id, class, title, description, severity, cve_ids)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO oval_definitions (source_id, oval_id, class, title, description, severity, cve_ids, cve_priorities)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (source_id, oval_id) DO UPDATE SET
 			class = EXCLUDED.class, title = EXCLUDED.title, description = EXCLUDED.description,
-			severity = EXCLUDED.severity, cve_ids = EXCLUDED.cve_ids
+			severity = EXCLUDED.severity, cve_ids = EXCLUDED.cve_ids, cve_priorities = EXCLUDED.cve_priorities
 		RETURNING id
-	`, sourceID, ovalID, class, title, description, severity, cveIDs).Scan(&id)
+	`, sourceID, ovalID, class, title, description, severity, cveIDs, prio).Scan(&id)
 	return id, err
 }
 
