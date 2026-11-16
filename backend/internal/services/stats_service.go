@@ -25,6 +25,10 @@ type DashboardStats struct {
 	ActiveFindings     int            `json:"activeFindings"`
 	ResolvedFindings   int            `json:"resolvedFindings"`
 	CriticalFindings   int            `json:"criticalFindings"`
+	// CriticalUnassessed: active critical findings on enabled servers that no
+	// one has decided yet (no CVE assessment, no per-server decision, no
+	// automated decision in effect). Filled when triage options are given.
+	CriticalUnassessed int `json:"criticalUnassessed"`
 	HighFindings       int            `json:"highFindings"`
 	PendingAssessments int            `json:"pendingAssessments"` // CVEs in the triage queue
 	SeverityBreakdown  map[string]int `json:"severityBreakdown"`
@@ -86,6 +90,29 @@ func (s *StatsService) GetDashboardStats(ctx context.Context, triage *TriageFilt
 	if triage != nil {
 		stats.PendingAssessments, err = countTriageQueue(ctx, s.db, *triage)
 		if err != nil {
+			return nil, err
+		}
+		active := triage.AutoActiveRules
+		if active == nil {
+			active = []string{}
+		}
+		// Undecided as in the triage queue, but by severity only.
+		if err := s.db.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM findings f
+			JOIN servers srv ON srv.id = f.server_id AND srv.disabled_at IS NULL
+			LEFT JOIN assessments a ON a.cve_id = f.cve_id
+			WHERE f.resolved_at IS NULL AND LOWER(f.severity) = 'critical'
+			  AND (a.id IS NULL OR a.status = 'pending')
+			  AND NOT EXISTS (SELECT 1 FROM assessment_overrides o
+			                  WHERE o.server_id = f.server_id AND o.cve_id = f.cve_id AND o.status <> 'manual')
+			  AND NOT EXISTS (SELECT 1 FROM auto_decisions d
+			                  WHERE d.server_id = f.server_id AND d.cve_id = f.cve_id
+			                    AND cardinality($1::text[]) > 0
+			                    AND cardinality(d.guards) = 0 AND d.rule_ids <@ $1::text[]
+			                    AND NOT EXISTS (SELECT 1 FROM assessment_overrides o2
+			                                    WHERE o2.server_id = d.server_id AND o2.cve_id = d.cve_id))
+		`, active).Scan(&stats.CriticalUnassessed); err != nil {
 			return nil, err
 		}
 	}

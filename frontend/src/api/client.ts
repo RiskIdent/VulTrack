@@ -90,6 +90,7 @@ export const getDashboard = () => fetchAPI<{
   activeFindings: number;
   resolvedFindings: number;
   criticalFindings: number;
+  criticalUnassessed: number;
   highFindings: number;
   pendingAssessments: number;
   severityBreakdown: Record<string, number>;

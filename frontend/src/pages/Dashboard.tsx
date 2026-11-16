@@ -93,9 +93,17 @@ export default function Dashboard() {
         />
         <StatCard
           title="Critical"
-          value={stats?.criticalFindings || 0}
+          value={(stats?.criticalFindings || 0).toLocaleString()}
           icon={<AlertTriangle className="w-6 h-6 text-red-400" />}
           variant="critical"
+          detail={
+            <span
+              className={stats?.criticalUnassessed ? 'text-red-400' : 'text-[#4ade80]'}
+              title="Active critical findings on enabled servers that nobody has decided yet: no CVE assessment, no per-server decision and no automated decision in effect"
+            >
+              {(stats?.criticalUnassessed || 0).toLocaleString()} not yet assessed
+            </span>
+          }
         />
         <StatCard
           title="Pending Assessment"

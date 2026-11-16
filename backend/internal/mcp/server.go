@@ -623,7 +623,10 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "get_dashboard_stats",
-		Description: "Get the dashboard overview statistics for the whole vulnerability landscape. pendingAssessments is the number of CVEs in the triage queue, filtered by the configured triage settings (same as list_triage_queue's total).",
+		Description: "Get the dashboard overview statistics for the whole vulnerability landscape. pendingAssessments is the number of CVEs in the triage queue, " +
+			"filtered by the configured triage settings (same as list_triage_queue's total). criticalFindings counts all active findings with Ubuntu " +
+			"priority critical; criticalUnassessed only those on enabled servers that nobody has decided yet (no CVE assessment, no per-server " +
+			"decision, no automated decision in effect).",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, _ emptyInput) (*mcpsdk.CallToolResult, any, error) {
 		triage, err := d.SettingsService.BuildTriageOptions(ctx)
 		if err != nil {

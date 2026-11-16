@@ -239,6 +239,8 @@ export interface DashboardStats {
   activeFindings: number;
   resolvedFindings: number;
   criticalFindings: number;
+  // Active critical findings on enabled servers nobody has decided yet.
+  criticalUnassessed: number;
   highFindings: number;
   pendingAssessments: number;
   severityBreakdown: Record<string, number>;
