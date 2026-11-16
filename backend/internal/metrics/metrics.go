@@ -47,6 +47,9 @@ var (
 // over millions of findings per scrape).
 const heavyMetricsTTL = 60 * time.Second
 
+// heavyMetricsTimeout bounds one background refresh of the cached metrics.
+const heavyMetricsTimeout = 2 * time.Minute
+
 // DBCollector implements prometheus.Collector for metrics derived from the database.
 // It is called on every Prometheus scrape.
 type DBCollector struct {
@@ -54,9 +57,11 @@ type DBCollector struct {
 
 	// Cached results of the expensive collectors (findings, assessments,
 	// automated decisions), recomputed at most once per heavyMetricsTTL.
-	heavyMu sync.Mutex
-	heavyAt time.Time
-	heavy   []prometheus.Metric
+	heavyMu     sync.Mutex
+	heavyAt     time.Time
+	heavy       []prometheus.Metric
+	heavyGroups [][]prometheus.Metric // per collector, kept when a refresh of it fails
+	heavyDone   chan struct{}         // non-nil while a refresh runs
 
 	findingsActive  *prometheus.Desc
 	assessments     *prometheus.Desc
@@ -256,38 +261,71 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectServerReports(ctx, ch)
 }
 
-// collectHeavy emits the metrics that scan all findings, from a cache that is
-// refreshed at most once per heavyMetricsTTL. Concurrent scrapes wait for one
-// refresh instead of each running the queries.
+// collectHeavy emits the metrics that scan all findings from a cache. A stale
+// cache is refreshed in the background with its own, longer timeout, so a
+// slow refresh (cold caches after a restart, a large sync running) neither
+// delays the scrape nor gets cancelled by the scrape's deadline. Only the very
+// first scrape waits for a refresh, up to its own deadline.
 func (c *DBCollector) collectHeavy(ctx context.Context, ch chan<- prometheus.Metric) {
 	c.heavyMu.Lock()
-	if c.heavy == nil || time.Since(c.heavyAt) >= heavyMetricsTTL {
-		buf := make(chan prometheus.Metric, 256)
-		done := make(chan struct{})
-		var fresh []prometheus.Metric
-		go func() {
-			for m := range buf {
-				fresh = append(fresh, m)
-			}
-			close(done)
-		}()
-		c.collectFindings(ctx, buf)
-		c.collectAssessments(ctx, buf)
-		c.collectAutoDecisions(ctx, buf)
-		c.collectPreconditionBacklog(ctx, buf)
-		close(buf)
-		<-done
-		// Keep the previous values if this refresh failed entirely (e.g. timeout).
-		if len(fresh) > 0 || c.heavy == nil {
-			c.heavy = fresh
-		}
-		c.heavyAt = time.Now()
+	if c.heavyDone == nil && (c.heavy == nil || time.Since(c.heavyAt) >= heavyMetricsTTL) {
+		c.heavyDone = make(chan struct{})
+		go c.refreshHeavy(c.heavyDone)
 	}
+	first, done := c.heavy == nil, c.heavyDone
+	c.heavyMu.Unlock()
+	if first && done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+	}
+	c.heavyMu.Lock()
 	cached := c.heavy
 	c.heavyMu.Unlock()
 	for _, m := range cached {
 		ch <- m
 	}
+}
+
+// refreshHeavy recomputes the cached metrics. Each group keeps its previous
+// values when its query fails, so a timeout does not drop a metric.
+func (c *DBCollector) refreshHeavy(done chan struct{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), heavyMetricsTimeout)
+	defer cancel()
+	groups := []func(context.Context, chan<- prometheus.Metric){
+		c.collectFindings, c.collectAssessments, c.collectAutoDecisions, c.collectPreconditionBacklog,
+	}
+	fresh := make([][]prometheus.Metric, len(groups))
+	for i, collect := range groups {
+		buf := make(chan prometheus.Metric, 256)
+		go func() {
+			collect(ctx, buf)
+			close(buf)
+		}()
+		for m := range buf {
+			fresh[i] = append(fresh[i], m)
+		}
+	}
+	c.heavyMu.Lock()
+	defer c.heavyMu.Unlock()
+	if c.heavyGroups == nil {
+		c.heavyGroups = make([][]prometheus.Metric, len(groups))
+	}
+	var all []prometheus.Metric
+	for i := range groups {
+		if len(fresh[i]) > 0 {
+			c.heavyGroups[i] = fresh[i]
+		}
+		all = append(all, c.heavyGroups[i]...)
+	}
+	c.heavy = all
+	if c.heavy == nil {
+		c.heavy = []prometheus.Metric{}
+	}
+	c.heavyAt = time.Now()
+	c.heavyDone = nil
+	close(done)
 }
 
 // collectAutoDecisions reports stored decisions by rule and state. The state
