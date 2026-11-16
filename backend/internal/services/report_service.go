@@ -615,7 +615,7 @@ func (s *ReportService) getTopCVEs(ctx context.Context, serverIDs []int64, start
 		SELECT
 			f.cve_id,
 			COALESCE(MAX(cve.cvss3_score), MAX(f.cvss3_score), 0) as max_cvss,
-			MAX(COALESCE(f.severity, '')) as vendor_severity,
+			severity_from_rank(MAX(severity_rank(f.severity))) as vendor_severity,
 			COUNT(DISTINCT f.server_id) as server_count,
 			COUNT(DISTINCT f.package_name) as package_count,
 			CASE
@@ -707,7 +707,7 @@ func (s *ReportService) getAllCVEs(ctx context.Context, serverIDs []int64, start
 		SELECT
 			f.cve_id,
 			COALESCE(MAX(cve.cvss3_score), MAX(f.cvss3_score), 0) as max_cvss,
-			MAX(COALESCE(f.severity, '')) as vendor_severity,
+			severity_from_rank(MAX(severity_rank(f.severity))) as vendor_severity,
 			COALESCE(MAX(cve.description), MAX(f.summary), '') as summary,
 			COUNT(DISTINCT f.server_id) as server_count,
 			MIN(f.first_seen_at) as first_seen,

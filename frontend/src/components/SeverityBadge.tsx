@@ -311,3 +311,16 @@ export function EPSSBadge({ epss, percentile }: { epss?: number | null; percenti
     </span>
   );
 }
+
+// severityRank orders vendor severities naturally (sorting the names as text
+// puts "medium" above "critical").
+export function severityRank(severity?: string | null): number {
+  switch ((severity || '').toLowerCase()) {
+    case 'critical': return 5;
+    case 'high': return 4;
+    case 'medium': return 3;
+    case 'low': return 2;
+    case 'negligible': return 1;
+    default: return 0;
+  }
+}

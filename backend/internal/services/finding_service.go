@@ -320,7 +320,7 @@ func (s *FindingService) GetAllGrouped(ctx context.Context, filter FindingFilter
 			f.server_id,
 			srv.name AS server_name,
 			f.cve_id,
-			COALESCE(MAX(f.severity), '') AS severity,
+			severity_from_rank(MAX(severity_rank(f.severity))) AS severity,
 			MAX(f.cvss3_score) AS finding_cvss,
 			MAX(cve.cvss3_score) AS nvd_cvss,
 			COALESCE(MAX(f.source_link), '') AS source_link,
@@ -428,7 +428,7 @@ func groupedFindingsOrderBy(sortBy, sortOrder string) string {
 	case "serverName":
 		col = "srv.name"
 	case "severity":
-		col = "MAX(f.severity)"
+		col = "MAX(severity_rank(f.severity))"
 	case "firstSeenAt":
 		col = "MIN(f.first_seen_at)"
 	case "epss":
@@ -459,7 +459,7 @@ func findingsOrderBy(sortBy, sortOrder string) string {
 	case "packageName":
 		col = "f.package_name"
 	case "severity":
-		col = "f.severity"
+		col = "severity_rank(f.severity)"
 	case "fixState":
 		col = "f.fix_state"
 	case "fixedIn":

@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Server as ServerIcon, Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Tags, Package, RefreshCw, X, ExternalLink, AlertTriangle, Activity } from 'lucide-react';
 import RuntimeFactsPanel from '../components/RuntimeFactsPanel';
 import { ServerReportBanner } from '../components/ServerReport';
-import { CVSSBadge, VendorSeverityBadge, FixStateBadge, SourceBadge, PocketBadge } from '../components/SeverityBadge';
+import { CVSSBadge, VendorSeverityBadge, FixStateBadge, SourceBadge, PocketBadge, severityRank } from '../components/SeverityBadge';
 import { getServer, getServerFindings, getServerGroupsForServer, getServerPackages, triggerServerScan, getFinding } from '../api/client';
 import type { Server, Finding, ServerGroup, ServerPackage } from '../types';
 
@@ -154,7 +154,7 @@ export default function ServerDetail() {
       switch (findingsSortField) {
         case 'cveId': aVal = a.cveId; bVal = b.cveId; break;
         case 'packageName': aVal = a.packageName; bVal = b.packageName; break;
-        case 'severity': aVal = a.severity || ''; bVal = b.severity || ''; break;
+        case 'severity': aVal = severityRank(a.severity); bVal = severityRank(b.severity); break;
         case 'cvss3Score': aVal = a.nvdCvss3Score ?? a.cvss3Score ?? 0; bVal = b.nvdCvss3Score ?? b.cvss3Score ?? 0; break;
         case 'fixState': aVal = a.fixState || ''; bVal = b.fixState || ''; break;
         case 'fixedIn': aVal = a.fixedIn || ''; bVal = b.fixedIn || ''; break;

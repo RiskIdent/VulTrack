@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Play } from 'lucide-react';
-import { CVSSBadge, VendorSeverityBadge, VEXBadge, KEVBadge, EPSSBadge } from '../components/SeverityBadge';
+import { CVSSBadge, VendorSeverityBadge, VEXBadge, KEVBadge, EPSSBadge, severityRank } from '../components/SeverityBadge';
 import { getTriageQueue, getSettings, TriageFilter } from '../api/client';
 import type { Finding } from '../types';
 
@@ -88,8 +88,8 @@ export default function Triage() {
           bVal = b.epss ?? -1;
           break;
         case 'severity':
-          aVal = a.severity || '';
-          bVal = b.severity || '';
+          aVal = severityRank(a.severity);
+          bVal = severityRank(b.severity);
           break;
         case 'packageName':
           aVal = a.packageName;

@@ -1114,6 +1114,34 @@ CREATE INDEX IF NOT EXISTS idx_pkg_cve_metadata_cve ON pkg_cve_metadata(cve_id);
 -- (will_not_fix, deferred); the package feed only distinguishes vulnerable from
 -- fixed. A weaker source must therefore never overwrite what a stronger one
 -- determined. This is the single definition of that order.
+-- Vendor severity in its natural order. Comparing the names as text sorts
+-- "medium" above "critical"; aggregate and sort with these instead.
+CREATE OR REPLACE FUNCTION severity_rank(p_severity TEXT) RETURNS INT
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $fn$
+    SELECT CASE LOWER(p_severity)
+        WHEN 'critical' THEN 5
+        WHEN 'high' THEN 4
+        WHEN 'medium' THEN 3
+        WHEN 'low' THEN 2
+        WHEN 'negligible' THEN 1
+        ELSE 0
+    END
+$fn$;
+
+-- severity_from_rank turns MAX(severity_rank(...)) back into a name
+-- ('' for unknown).
+CREATE OR REPLACE FUNCTION severity_from_rank(p_rank INT) RETURNS TEXT
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $fn$
+    SELECT CASE p_rank
+        WHEN 5 THEN 'critical'
+        WHEN 4 THEN 'high'
+        WHEN 3 THEN 'medium'
+        WHEN 2 THEN 'low'
+        WHEN 1 THEN 'negligible'
+        ELSE ''
+    END
+$fn$;
+
 CREATE OR REPLACE FUNCTION finding_source_rank(p_source_type TEXT) RETURNS INT
     LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $fn$
     SELECT CASE p_source_type

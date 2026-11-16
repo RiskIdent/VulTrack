@@ -197,7 +197,7 @@ func (s *StatsService) GetTopCVEs(ctx context.Context, limit int) ([]TopCVE, err
 		SELECT r.cve_id, r.cvss3_score, d.severity, d.source_link, r.server_count, d.package_count
 		FROM ranked r
 		CROSS JOIN LATERAL (
-			SELECT COALESCE(MAX(f.severity), '') AS severity,
+			SELECT severity_from_rank(MAX(severity_rank(f.severity))) AS severity,
 			       MAX(f.source_link) FILTER (WHERE f.source_link IS NOT NULL AND f.source_link != '') AS source_link,
 			       COUNT(DISTINCT f.package_name) AS package_count
 			FROM findings f
