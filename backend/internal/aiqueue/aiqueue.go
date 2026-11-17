@@ -1,10 +1,14 @@
 // Package aiqueue runs the background workers that produce AI assessments.
 // The ai_assessments table is the queue: a reconciler enqueues triage CVEs that
-// have no assessment yet, and workers claim and process 'pending' rows.
+// have no assessment yet, re-queues those whose input facts changed or whose
+// result is too old, and workers claim and process 'pending' rows.
 package aiqueue
 
 import (
 	"context"
+	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -21,6 +25,13 @@ const (
 	reconcileInterval = 5 * time.Minute
 	// reconcilePageSize bounds each triage-queue page the reconciler reads.
 	reconcilePageSize = 500
+	// refreshInterval is how often completed assessments of the triage queue
+	// are checked for changed facts and age.
+	refreshInterval = time.Hour
+	// refreshLimit caps the re-runs queued per check, so a change that touches
+	// many CVEs at once (a feed correction, the first check after an upgrade)
+	// is spread over several hours.
+	refreshLimit = 200
 )
 
 // Queue coordinates AI assessment workers and the triage reconciler.
@@ -33,6 +44,8 @@ type Queue struct {
 
 	stopCh chan struct{}
 	doneCh chan struct{} // closed when all goroutines have exited
+
+	lastRefresh time.Time
 }
 
 // New creates the AI assessment queue. The client may be nil when the feature
@@ -177,7 +190,7 @@ func (q *Queue) process(cveID string, retryCount int) {
 		return
 	}
 
-	if err := q.aiService.SaveResult(ctx, cveID, result, meta); err != nil {
+	if err := q.aiService.SaveResult(ctx, cveID, result, meta, ai.FactsOf(in)); err != nil {
 		log.Warn().Err(err).Str("cve", cveID).Msg("Failed to save AI assessment result")
 		return
 	}
@@ -278,6 +291,62 @@ func (q *Queue) reconcile() {
 	if queued > 0 {
 		log.Info().Int("queued", queued).Msg("AI reconcile: enqueued triage CVEs")
 	}
+
+	if time.Since(q.lastRefresh) >= refreshInterval {
+		q.lastRefresh = time.Now()
+		cves := make([]string, 0, len(seen))
+		for c := range seen {
+			cves = append(cves, c)
+		}
+		if n, err := q.refresh(ctx, cves); err != nil {
+			log.Warn().Err(err).Msg("AI reconcile: refresh check failed")
+		} else if n > 0 {
+			log.Info().Int("queued", n).Msg("AI reconcile: re-queued assessments with changed facts or age")
+		}
+	}
+}
+
+// refresh re-queues completed assessments of the given triage CVEs whose
+// input facts changed since the result was produced, or whose result is older
+// than the configured maximum age. Changed facts go first, then results that
+// predate the facts, then old ones; at most refreshLimit per call.
+func (q *Queue) refresh(ctx context.Context, cves []string) (int, error) {
+	maxAge := q.settings.GetIntWithDefault(ctx, services.SettingAIMaxAgeDays, services.DefaultAIMaxAgeDays)
+	candidates, err := q.aiService.CompletedForRefresh(ctx, cves)
+	if err != nil {
+		return 0, err
+	}
+	type due struct{ cve, reason string }
+	var changed, legacy, old []due
+	for _, c := range candidates {
+		in, err := q.aiService.BuildInput(ctx, c.CVEID)
+		if err != nil {
+			log.Warn().Err(err).Str("cve", c.CVEID).Msg("AI refresh: failed to build input")
+			continue
+		}
+		switch diff := ai.FactsOf(in).Changes(c.Facts); {
+		case len(c.Facts) == 0:
+			legacy = append(legacy, due{c.CVEID, strings.Join(diff, "; ")})
+		case len(diff) > 0:
+			changed = append(changed, due{c.CVEID, strings.Join(diff, "; ")})
+		case maxAge > 0 && c.AgeDays >= float64(maxAge):
+			old = append(old, due{c.CVEID, fmt.Sprintf("result older than %d days", maxAge)})
+		}
+	}
+	queued := 0
+	for _, d := range slices.Concat(changed, legacy, old) {
+		if queued >= refreshLimit {
+			break
+		}
+		ok, err := q.aiService.QueueRefresh(ctx, d.cve, d.reason)
+		if err != nil {
+			return queued, err
+		}
+		if ok {
+			queued++
+		}
+	}
+	return queued, nil
 }
 
 // sleep waits for d or until Stop is called. It returns true if Stop fired.

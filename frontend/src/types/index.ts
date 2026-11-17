@@ -217,6 +217,8 @@ export interface AIAssessment {
   error?: string;
   retryCount: number;
   requestedBy?: string;
+  assessedAt?: string; // when the current result was produced
+  refreshReason?: string; // why it was last re-run automatically
   createdAt: string;
   updatedAt: string;
 }

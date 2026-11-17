@@ -50,6 +50,7 @@ const aiAssessmentColumns = `
 	COALESCE(confidence, ''), COALESCE(model, ''), COALESCE(prompt_hash, ''),
 	COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
 	COALESCE(error, ''), retry_count, COALESCE(requested_by, ''),
+	assessed_at, COALESCE(refresh_reason, ''),
 	created_at, updated_at`
 
 // scanAIAssessment scans a single row in aiAssessmentColumns order.
@@ -62,6 +63,7 @@ func scanAIAssessment(row pgx.Row) (*models.AIAssessment, error) {
 		&a.Confidence, &a.Model, &a.PromptHash,
 		&a.InputTokens, &a.OutputTokens,
 		&a.Error, &a.RetryCount, &a.RequestedBy,
+		&a.AssessedAt, &a.RefreshReason,
 		&a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
@@ -175,7 +177,7 @@ func (s *AIAssessmentService) Enqueue(ctx context.Context, cveID, requestedBy st
 		    attack_vector = NULL, prerequisites = NULL, recommended_status = NULL,
 		    recommendation_reasoning = NULL, confidence = NULL, model = NULL,
 		    prompt_hash = NULL, input_tokens = NULL, output_tokens = NULL,
-		    error = NULL, retry_count = 0, updated_at = NOW()
+		    error = NULL, retry_count = 0, refresh_reason = NULL, updated_at = NOW()
 		WHERE cve_id = $1 AND status IN ('completed', 'failed')
 		      AND updated_at < NOW() - make_interval(mins => $3)`,
 		cveID, requestedBy, cooldownMins)
@@ -214,18 +216,20 @@ func (s *AIAssessmentService) ClaimNextPending(ctx context.Context) (*models.AIA
 }
 
 // SaveResult stores a successful assessment and marks the row completed.
-func (s *AIAssessmentService) SaveResult(ctx context.Context, cveID string, r ai.AssessmentResult, meta ai.AssessmentMeta) error {
+// facts are the input facts the result is based on (ai.FactsOf).
+func (s *AIAssessmentService) SaveResult(ctx context.Context, cveID string, r ai.AssessmentResult, meta ai.AssessmentMeta, facts ai.Facts) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE ai_assessments
 		SET status = 'completed',
 		    attack_vector = $2, prerequisites = $3, recommended_status = $4,
 		    recommendation_reasoning = $5, confidence = $6,
 		    model = $7, prompt_hash = $8, input_tokens = $9, output_tokens = $10,
+		    input_facts = $11, assessed_at = NOW(),
 		    error = NULL, updated_at = NOW()
 		WHERE cve_id = $1`,
 		cveID, r.AttackVector, r.Prerequisites, r.RecommendedStatus,
 		r.RecommendationReasoning, r.Confidence,
-		meta.Model, meta.PromptHash, meta.InputTokens, meta.OutputTokens)
+		meta.Model, meta.PromptHash, meta.InputTokens, meta.OutputTokens, facts)
 	return err
 }
 
@@ -269,10 +273,12 @@ func (s *AIAssessmentService) BuildInput(ctx context.Context, cveID string) (ai.
 	in := ai.AssessmentInput{CVEID: cveID}
 	row := s.db.QueryRow(ctx, `
 		WITH rep AS (
+			-- Deterministic, so the facts do not flip between equal findings.
 			SELECT package_name, package_version, severity, summary, cvss3_score, vex_status
 			FROM findings
 			WHERE cve_id = $1
-			ORDER BY cvss3_score DESC NULLS LAST
+			ORDER BY resolved_at IS NOT NULL, cvss3_score DESC NULLS LAST, severity_rank(severity) DESC,
+			         package_name, package_version
 			LIMIT 1
 		),
 		agg AS (
@@ -293,20 +299,71 @@ func (s *AIAssessmentService) BuildInput(ctx context.Context, cveID string) (ai.
 			COALESCE(agg.fix_available, false)                      AS fix_available,
 			COALESCE(rep.vex_status, '')                            AS vex_status,
 			COALESCE(agg.affected_servers, 0)                       AS affected_servers,
-			EXISTS (SELECT 1 FROM exploits e WHERE $1 = ANY(e.cve_ids)) AS exploit_available
+			EXISTS (SELECT 1 FROM exploits e WHERE $1 = ANY(e.cve_ids)) AS exploit_available,
+			kev.cve_id IS NOT NULL                                  AS in_kev,
+			COALESCE(to_char(kev.date_added, 'YYYY-MM-DD'), '')     AS kev_date_added,
+			COALESCE(kev.known_ransomware_use, false)               AS kev_ransomware,
+			COALESCE(ep.epss, 0)::float8                            AS epss,
+			COALESCE(ep.percentile, 0)::float8                      AS epss_percentile
 		FROM agg
 		LEFT JOIN rep ON true
-		LEFT JOIN cve_catalog cve ON cve.cve_id = $1`, cveID)
+		LEFT JOIN cve_catalog cve ON cve.cve_id = $1
+		LEFT JOIN kev_entries kev ON kev.cve_id = $1
+		LEFT JOIN epss_scores ep ON ep.cve_id = $1`, cveID)
 
 	err := row.Scan(
 		&in.Description, &in.CVSS3Score, &in.CVSS3Vector, &in.Severity, &in.CWEIDs,
 		&in.PackageName, &in.PackageVersion, &in.FixAvailable, &in.VexStatus,
 		&in.AffectedServers, &in.ExploitAvailable,
+		&in.InKEV, &in.KEVDateAdded, &in.KEVRansomware, &in.EPSS, &in.EPSSPercentile,
 	)
 	if err != nil {
 		return ai.AssessmentInput{}, fmt.Errorf("build ai input for %s: %w", cveID, err)
 	}
 	return in, nil
+}
+
+// RefreshCandidate is a completed assessment with the facts and age of its result.
+type RefreshCandidate struct {
+	CVEID   string
+	Facts   ai.Facts // nil for results stored before facts were recorded
+	AgeDays float64
+}
+
+// CompletedForRefresh returns the completed assessments of the given CVEs.
+func (s *AIAssessmentService) CompletedForRefresh(ctx context.Context, cveIDs []string) ([]RefreshCandidate, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT cve_id, input_facts,
+		       EXTRACT(EPOCH FROM NOW() - COALESCE(assessed_at, updated_at)) / 86400
+		FROM ai_assessments
+		WHERE status = 'completed' AND cve_id = ANY($1)`, cveIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load assessments for refresh: %w", err)
+	}
+	defer rows.Close()
+	var out []RefreshCandidate
+	for rows.Next() {
+		var c RefreshCandidate
+		if err := rows.Scan(&c.CVEID, &c.Facts, &c.AgeDays); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// QueueRefresh re-runs a completed assessment automatically. The previous
+// result stays until the new one replaces it. It reports false when the row
+// is no longer completed (a manual re-run or a worker got there first).
+func (s *AIAssessmentService) QueueRefresh(ctx context.Context, cveID, reason string) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE ai_assessments
+		SET status = 'pending', refresh_reason = $2, requested_by = NULL, retry_count = 0, error = NULL, updated_at = NOW()
+		WHERE cve_id = $1 AND status = 'completed'`, cveID, reason)
+	if err != nil {
+		return false, fmt.Errorf("queue ai_assessment refresh: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // RecordUsage logs one model call in ai_usage, the cost record shared by all

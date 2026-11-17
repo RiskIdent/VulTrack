@@ -66,6 +66,18 @@ func buildUserMessage(in AssessmentInput) string {
 	}
 	fmt.Fprintf(&b, "Fix available: %t\n", in.FixAvailable)
 	fmt.Fprintf(&b, "Public exploit known: %t\n", in.ExploitAvailable)
+	if in.InKEV {
+		fmt.Fprintf(&b, "Listed in CISA Known Exploited Vulnerabilities (actively exploited in the wild): yes, since %s", in.KEVDateAdded)
+		if in.KEVRansomware {
+			b.WriteString("; known use in ransomware campaigns")
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString("Listed in CISA Known Exploited Vulnerabilities: no\n")
+	}
+	if in.EPSS > 0 {
+		fmt.Fprintf(&b, "EPSS (probability of exploitation in the next 30 days): %.2f%% (percentile %.0f)\n", in.EPSS*100, in.EPSSPercentile*100)
+	}
 	if in.VexStatus != "" {
 		fmt.Fprintf(&b, "VEX status: %s\n", in.VexStatus)
 	}

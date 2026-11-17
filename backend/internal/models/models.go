@@ -191,23 +191,28 @@ const (
 // AIAssessment represents an advisory LLM assessment of a CVE. It is purely
 // informational: it never automatically sets the human assessment.
 type AIAssessment struct {
-	ID                      int64     `json:"id"`
-	CVEID                   string    `json:"cveId"`
-	Status                  string    `json:"status"` // pending, processing, completed, failed
-	AttackVector            string    `json:"attackVector"`
-	Prerequisites           string    `json:"prerequisites"`
-	RecommendedStatus       string    `json:"recommendedStatus"` // relevant, not_relevant, accepted_risk
-	RecommendationReasoning string    `json:"recommendationReasoning"`
-	Confidence              string    `json:"confidence"` // low, medium, high
-	Model                   string    `json:"model"`
-	PromptHash              string    `json:"promptHash"`
-	InputTokens             int       `json:"inputTokens"`
-	OutputTokens            int       `json:"outputTokens"`
-	Error                   string    `json:"error,omitempty"`
-	RetryCount              int       `json:"retryCount"`
-	RequestedBy             string    `json:"requestedBy,omitempty"`
-	CreatedAt               time.Time `json:"createdAt"`
-	UpdatedAt               time.Time `json:"updatedAt"`
+	ID                      int64  `json:"id"`
+	CVEID                   string `json:"cveId"`
+	Status                  string `json:"status"` // pending, processing, completed, failed
+	AttackVector            string `json:"attackVector"`
+	Prerequisites           string `json:"prerequisites"`
+	RecommendedStatus       string `json:"recommendedStatus"` // relevant, not_relevant, accepted_risk
+	RecommendationReasoning string `json:"recommendationReasoning"`
+	Confidence              string `json:"confidence"` // low, medium, high
+	Model                   string `json:"model"`
+	PromptHash              string `json:"promptHash"`
+	InputTokens             int    `json:"inputTokens"`
+	OutputTokens            int    `json:"outputTokens"`
+	Error                   string `json:"error,omitempty"`
+	RetryCount              int    `json:"retryCount"`
+	RequestedBy             string `json:"requestedBy,omitempty"`
+	// AssessedAt is when the current result was produced (nil before the first).
+	AssessedAt *time.Time `json:"assessedAt,omitempty"`
+	// RefreshReason says why the assessment was last re-run automatically,
+	// e.g. "fix available: no → yes"; empty for first and manual runs.
+	RefreshReason string    `json:"refreshReason,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 // AIConfidence constants

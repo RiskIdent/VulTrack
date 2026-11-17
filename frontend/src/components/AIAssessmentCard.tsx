@@ -68,9 +68,16 @@ export function AIAssessmentContent({ assessment }: { assessment: AIAssessment }
         <h4 className="text-sm font-semibold text-[#a5d6a7] mb-1">Recommendation</h4>
         <p className="text-[#e8f5e9] whitespace-pre-wrap break-words">{assessment.recommendationReasoning || '-'}</p>
       </div>
+      {assessment.refreshReason && (
+        <p className="text-xs text-[#a5d6a7] flex items-start gap-1.5">
+          <RefreshCw className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span>Re-assessed automatically: {assessment.refreshReason}</span>
+        </p>
+      )}
       <p className="text-xs text-[#6b7280]">
         Model: {assessment.model || 'unknown'}
-        {assessment.updatedAt && ` · ${new Date(assessment.updatedAt).toLocaleString()}`}
+        {(assessment.assessedAt || assessment.updatedAt) &&
+          ` · ${new Date(assessment.assessedAt || assessment.updatedAt).toLocaleString()}`}
         {totalTokens > 0 && ` · ${totalTokens.toLocaleString()} tokens`}
       </p>
       <p className="text-xs text-[#6b7280] italic">
@@ -166,9 +173,18 @@ export function AIAssessmentCard({ cveId }: { cveId: string }) {
       ) : status === 'completed' && assessment ? (
         <AIAssessmentContent assessment={assessment} />
       ) : status === 'pending' || status === 'processing' ? (
-        <div className="flex items-center gap-2 text-[#a5d6a7]">
-          <Clock className="w-4 h-4 animate-pulse" />
-          Assessment in progress…
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-[#a5d6a7]">
+            <Clock className="w-4 h-4 animate-pulse" />
+            {assessment?.refreshReason
+              ? `Re-assessment in progress (${assessment.refreshReason}). Previous result:`
+              : 'Assessment in progress…'}
+          </div>
+          {assessment?.refreshReason && assessment.recommendedStatus && (
+            <div className="opacity-60">
+              <AIAssessmentContent assessment={{ ...assessment, refreshReason: '' }} />
+            </div>
+          )}
         </div>
       ) : status === 'failed' ? (
         <div className="text-[#a5d6a7]">

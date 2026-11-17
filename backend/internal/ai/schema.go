@@ -24,6 +24,11 @@ type AssessmentInput struct {
 	VexStatus        string
 	ExploitAvailable bool
 	AffectedServers  int
+	InKEV            bool    // listed in the CISA Known Exploited Vulnerabilities catalog
+	KEVDateAdded     string  // YYYY-MM-DD, when InKEV
+	KEVRansomware    bool    // known use in ransomware campaigns
+	EPSS             float64 // exploit prediction score 0..1; 0 = unknown
+	EPSSPercentile   float64 // 0..1
 }
 
 // AssessmentResult is the structured output returned by the model. The JSON

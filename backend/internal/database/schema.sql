@@ -106,6 +106,13 @@ CREATE TABLE IF NOT EXISTS ai_assessments (
     CONSTRAINT valid_ai_status CHECK (status IN ('pending', 'processing', 'completed', 'failed'))
 );
 CREATE INDEX IF NOT EXISTS idx_ai_assessments_status ON ai_assessments(status);
+-- Automatic refresh: the facts the last result was based on (ai.Facts), when
+-- that result was produced, and why the assessment was last re-run
+-- automatically (changed facts or age).
+ALTER TABLE ai_assessments ADD COLUMN IF NOT EXISTS input_facts JSONB;
+ALTER TABLE ai_assessments ADD COLUMN IF NOT EXISTS assessed_at TIMESTAMP;
+ALTER TABLE ai_assessments ADD COLUMN IF NOT EXISTS refresh_reason TEXT;
+UPDATE ai_assessments SET assessed_at = updated_at WHERE assessed_at IS NULL AND status = 'completed';
 
 -- Server groups table
 CREATE TABLE IF NOT EXISTS server_groups (

@@ -371,6 +371,7 @@ function AIAssessmentSettingsTab() {
     ai_auto_assess: 'false',
     ai_model: 'claude-haiku-5-5',
     ai_system_prompt: '',
+    ai_max_age_days: '90',
   });
 
   useEffect(() => {
@@ -382,7 +383,7 @@ function AIAssessmentSettingsTab() {
       const data = await getSettings();
       const loaded: Record<string, string> = {};
       (data.settings || []).forEach((s: Setting) => {
-        if (['ai_enabled', 'ai_auto_assess', 'ai_model', 'ai_system_prompt'].includes(s.key)) {
+        if (['ai_enabled', 'ai_auto_assess', 'ai_model', 'ai_system_prompt', 'ai_max_age_days'].includes(s.key)) {
           loaded[s.key] = s.value;
         }
       });
@@ -473,7 +474,26 @@ function AIAssessmentSettingsTab() {
               <span className="text-[#e8f5e9]">Auto-assess triage findings</span>
             </label>
             <p className="text-xs text-[#6b7280] mt-1 ml-6">
-              When enabled, every CVE entering the triage queue is automatically assessed once.
+              When enabled, every CVE entering the triage queue is assessed automatically. Once an hour, assessments of
+              triage CVEs are re-run when facts they are based on changed: CISA KEV listing, public exploit, fix
+              availability, VEX status, EPSS range, severity, CVSS, description, or the number of affected servers
+              (1, 2–9, 10–49, 50+). At most 200 re-runs are queued per hour.
+            </p>
+          </div>
+
+          {/* Maximum age */}
+          <div>
+            <label className="block text-sm font-medium text-[#a5d6a7] mb-2">Re-assess after (days)</label>
+            <input
+              type="number"
+              min={0}
+              value={values.ai_max_age_days}
+              onChange={(e) => setValues({ ...values, ai_max_age_days: e.target.value })}
+              className="w-32 px-3 py-2 bg-[#1a2420] border border-[#2d3f36] rounded-lg text-[#e8f5e9] focus:outline-none focus:border-[#4ade80]"
+            />
+            <p className="text-xs text-[#6b7280] mt-1">
+              Also re-run an automatic assessment of a triage CVE when its result is older than this, even if no fact
+              changed (new knowledge of the model, a changed infrastructure context). 0 disables it.
             </p>
           </div>
 

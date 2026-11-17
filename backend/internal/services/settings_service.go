@@ -18,9 +18,14 @@ const (
 	SettingAIAutoAssess   = "ai_auto_assess"   // auto-assess findings entering the triage queue
 	SettingAIModel        = "ai_model"         // model id, e.g. "claude-haiku-5-5"
 	SettingAISystemPrompt = "ai_system_prompt" // admin-configured infrastructure context
+	// SettingAIMaxAgeDays re-runs auto-assessed triage CVEs whose result is
+	// older than this many days, even when no fact changed; 0 = never.
+	SettingAIMaxAgeDays = "ai_max_age_days"
 
 	// DefaultAIModel is used when ai_model is unset.
 	DefaultAIModel = "claude-haiku-5-5"
+	// DefaultAIMaxAgeDays is used when ai_max_age_days is unset.
+	DefaultAIMaxAgeDays = 90
 )
 
 // SettingsService handles application settings

@@ -523,7 +523,10 @@ func registerReadTools(s *mcpsdk.Server, d Deps) {
 		Description: "Get the advisory AI assessment for a CVE: a plain-language explanation of the attack " +
 			"vector and prerequisites, plus a recommended assessment status and confidence. This is generated " +
 			"by an LLM and is advisory only — it never sets the human assessment. The `status` field reports the " +
-			"assessment's lifecycle state (pending, processing, completed, failed). When no assessment exists yet, " +
+			"assessment's lifecycle state (pending, processing, completed, failed). `assessedAt` is when the result was " +
+			"produced; `refreshReason` says why it was last re-run automatically (changed facts such as a CISA KEV " +
+			"listing or a new fix, or its age). While a re-run is pending, the previous result is still returned. " +
+			"When no assessment exists yet, " +
 			"`aiAssessment` is null and `status` is \"none\".",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in cveInput) (*mcpsdk.CallToolResult, any, error) {
 		if d.AIAssessmentService == nil {
