@@ -95,7 +95,7 @@ func (s *Syncer) scheduleLoop() {
 			return
 		case <-timer.C:
 			s.syncIfNeeded()
-			timer.Reset(s.getSyncInterval())
+			timer.Reset(checkEvery(s.getSyncInterval()))
 		}
 	}
 }
@@ -131,6 +131,12 @@ func (s *Syncer) getDownloadURL(ctx context.Context) string {
 }
 
 func (s *Syncer) syncIfNeeded() {
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
+	if running {
+		return
+	}
 	ctx := context.Background()
 	interval := s.getSyncInterval()
 
@@ -469,4 +475,12 @@ func sourceTypeFromPath(path string) string {
 		}
 	}
 	return "cve"
+}
+
+// checkEvery is how often the schedule checks whether a sync is due: hourly,
+// or more often for shorter intervals. Waiting a whole interval between checks
+// let a check that found the last sync just short of due postpone the next
+// sync by almost another interval, and a restart restarted that wait.
+func checkEvery(interval time.Duration) time.Duration {
+	return min(interval, time.Hour)
 }

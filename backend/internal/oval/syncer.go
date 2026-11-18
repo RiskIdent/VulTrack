@@ -78,9 +78,7 @@ func (s *Syncer) scheduleLoop() {
 			// Only sync if enough time has passed since last sync
 			s.syncIfNeeded()
 
-			// Check again after the interval
-			interval := s.getSyncInterval()
-			timer.Reset(interval)
+			timer.Reset(checkEvery(s.getSyncInterval()))
 		}
 	}
 }
@@ -105,6 +103,9 @@ func (s *Syncer) syncIfNeeded() {
 	syncCount := 0
 
 	for _, source := range sources {
+		if s.IsSyncing(source.ID) {
+			continue
+		}
 		// Check when this source was last synced
 		needsSync := false
 
@@ -464,4 +465,12 @@ func (s *Syncer) GetSourceForServer(ctx context.Context, server *models.Server) 
 	}
 
 	return nil, nil
+}
+
+// checkEvery is how often the schedule checks whether a sync is due: hourly,
+// or more often for shorter intervals. Waiting a whole interval between checks
+// let a check that found the last sync just short of due postpone the next
+// sync by almost another interval, and a restart restarted that wait.
+func checkEvery(interval time.Duration) time.Duration {
+	return min(interval, time.Hour)
 }

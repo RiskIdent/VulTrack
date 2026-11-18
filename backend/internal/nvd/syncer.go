@@ -84,8 +84,7 @@ func (s *Syncer) scheduleLoop() {
 		case <-timer.C:
 			s.syncIfNeeded()
 			
-			interval := s.getSyncInterval()
-			timer.Reset(interval)
+			timer.Reset(checkEvery(s.getSyncInterval()))
 		}
 	}
 }
@@ -112,6 +111,12 @@ func (s *Syncer) getSyncInterval() time.Duration {
 
 // syncIfNeeded checks if sync is needed and runs it
 func (s *Syncer) syncIfNeeded() {
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
+	if running {
+		return
+	}
 	ctx := context.Background()
 	interval := s.getSyncInterval()
 	
@@ -619,4 +624,12 @@ func (s *Syncer) IsSyncing() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.running
+}
+
+// checkEvery is how often the schedule checks whether a sync is due: hourly,
+// or more often for shorter intervals. Waiting a whole interval between checks
+// let a check that found the last sync just short of due postpone the next
+// sync by almost another interval, and a restart restarted that wait.
+func checkEvery(interval time.Duration) time.Duration {
+	return min(interval, time.Hour)
 }
